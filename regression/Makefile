@@ -1,4 +1,5 @@
 TESTS=$(sort $(basename $(wildcard test*.lama)))
+LOGS=$(TESTS:=.log)
 
 LAMAC=lamac
 RM=rm -rf
@@ -16,4 +17,4 @@ $(TESTS): %: %.lama
 	cat $@.input | ./$@ -s > $@.log && diff $@.log orig/$@.log
 
 clean:
-	$(RM) *.s *.i *~ $(FILES:.lama=) $(FILES:.lama=.log)
+	$(RM) *.s *.i *~ $(LOGS) $(TESTS)
