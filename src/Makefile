@@ -16,7 +16,7 @@ SM.o: State.o World.o Util.o
 	$(LAMAC) -I . -c $<
 
 variate:
-	../variate -leave '(* Assignment' -remove '(* Implementation' -ending 'End *)' *.lama
+	../variate -leave '\(\* Assignment' -remove '\(\* Implementation' -ending 'End \*\)' *.lama
 
 clean:
 	rm -Rf *.s *.o *.i *~ *.html *.sm lama-impl
