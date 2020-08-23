@@ -4,7 +4,6 @@ FILES=$(wildcard *.lama)
 ALL=$(sort $(FILES:.lama=.o))
 LAMAC=lamac
 
-.PHONY: all clean variate $(FILES)
 all: $(ALL)
 
 Expr.o: State.o
