@@ -12,7 +12,7 @@ Expr.o: State.o Log.o
 
 Stmt.o: State.o Expr.o World.o Log.o
 
-SM.o: State.o World.o
+SM.o: State.o World.o Log.o
 
 %.o: %.lama
 	$(LAMAC) -I . -c $<
