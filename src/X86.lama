@@ -111,7 +111,7 @@ fun makeEnv (stack, stackSlots, globals) {
   fun allocate () {
     case 
       case stack of
-        {[_, Stack]}   -> [R (0), 0]
+        [_, Stack] : _ -> [R (0), 0]
       | [_, S (n)] : _ -> [S (n+1), n+2]
       | [_, R (n)] : _ -> if n < nRegs then [R (n+1), 0] else [S (0), 1] fi
       | _              -> [S (0), 1]
@@ -260,9 +260,12 @@ fun memOpnd (opnd) {
 -- intermediate register if needed
 fun move (from, to) {
   if from == to
-    then emptyBuffer
+    then emptyBuffer ()
     else case from of
-          L (0) -> singletonBuffer (Binop ("^", to, to))
+          L (0) -> if memOpnd (to) 
+                     then move (L (0), eax) <+> move (eax, to) 
+                     else singletonBuffer (Binop ("^", to, to)) 
+                   fi
         | _ -> 
             if memOpnd (from) && memOpnd (to)
               then singletonBuffer (Mov (from, eax)) <+ Mov (eax, to)
@@ -296,35 +299,53 @@ fun binop (op, x, y) {
     case op of
       "+"   -> OpSum
     | "-"   -> OpSum
+    | "^"   -> OpSum
+    | "cmp" -> OpSum
+    | "&&"  -> OpSum
+    | "!!"  -> OpSum
     | "*"   -> OpMul
     | "/"   -> OpDiv
     | "%"   -> OpDiv
-    | "&&"  -> OpSum
-    | "!!"  -> OpSum
-    | "^"   -> OpSum
-    | "cmp" -> OpSum
     esac;
 
-  case opMode of
-    OpSum -> case [x, y, op] of
-          [R (n), _, _] -> singletonBuffer (Binop (op, x, y))
-        | [L (n), _, _] -> singletonBuffer (Binop (op, x, y))
-        | [_, R (n), _] -> singletonBuffer (Binop (op, x, y))
-        | _ -> move (x, eax) <+ if x == y && compare (op, "cmp") == 0 
-                                then Binop (op, eax, eax)
-                                else Binop (op, eax, y)
-                              fi
-        esac
-  | OpMul -> case [x, y] of
-          [L (n), R (m)] -> singletonBuffer (Ternop (op, x, y, y))
-        | [L (n), _]     -> singletonBuffer (Ternop (op, x, y, eax)) <+ Mov (eax, y)
-        | [_, R (n)]     -> singletonBuffer (Binop (op, x, y))
-        | _              -> move (y, eax) <+ Binop (op, x, eax) <+ Mov (eax, y)
-        esac
-  | OpDiv -> move (y, eax) <+ Cdq <+ Push (ecx) <+> move (x, ecx) <+ IDiv (ecx) <+ Pop (ecx) <+ case op of
-          "/" -> Mov (eax, y)
-        | "%" -> Mov (edx, y)
-        esac
+  var opPrep =
+    case op of
+      "&&" -> LogPrep
+    | "!!" -> LogPrep
+    | _    -> NoPrep
+    esac;
+
+  case case opPrep of
+    LogPrep -> [
+        case x of
+          L (n) -> [L (if n == 0 then 0 else 1 fi), emptyBuffer ()]
+        | _     -> [x, test (x) <+> set ("ne", x)]
+        esac, 
+        [y, test (y) <+> set ("ne", y)]
+      ]
+  | NoPrep -> [[x, emptyBuffer ()], [y, emptyBuffer ()]]
+  esac of [[x, code0], [y, code1]] -> code0 <+> code1 <+>
+    case opMode of
+      OpSum -> case [x, y, op] of
+            [R (n), _, _] -> singletonBuffer (Binop (op, x, y))
+          | [L (n), _, _] -> singletonBuffer (Binop (op, x, y))
+          | [_, R (n), _] -> singletonBuffer (Binop (op, x, y))
+          | _ -> move (x, eax) <+ if x == y && compare (op, "cmp") == 0 
+                                  then Binop (op, eax, eax)
+                                  else Binop (op, eax, y)
+                                fi
+          esac
+    | OpMul -> case [x, y] of
+            [L (n), R (m)] -> singletonBuffer (Ternop (op, x, y, y))
+          | [L (n), _]     -> singletonBuffer (Ternop (op, x, y, eax)) <+ Mov (eax, y)
+          | [_, R (n)]     -> singletonBuffer (Binop (op, x, y))
+          | _              -> move (y, eax) <+ Binop (op, x, eax) <+ Mov (eax, y)
+          esac
+    | OpDiv -> move (y, eax) <+ Cdq <+ Push (ecx) <+> move (x, ecx) <+ IDiv (ecx) <+ Pop (ecx) <+ case op of
+            "/" -> Mov (eax, y)
+          | "%" -> Mov (edx, y)
+          esac
+    esac
   esac
 }
 
@@ -361,10 +382,11 @@ fun compile (env, code) {
           esac
       | BINOP (op) ->
           case env.pop2 of [x, y, env] -> 
-            case case [y, env.allocate] of
-              [L (n), [s, env]] -> [env, move (y, s), s]
-            | [y,     [s, env]] -> [env, emptyBuffer (), s]
-            esac of [env, normCode, r] -> [env, code <+>
+            case case [x, y, env.allocate] of
+              [L (m), L (n), [s, env]] -> [env, move (y, s), x, s]
+            | [x,     L (n), [s, env]] -> case env.allocate of [xx, env] -> [env.pop.snd, move (x, xx) <+> move (y, s), xx, s] esac
+            | [x,     y,     [s, env]] -> [env, emptyBuffer (), x, s]
+            esac of [env, normCode, x, r] -> [env, code <+>
                 case suffix (op) of
                   NotCmp         -> normCode <+> binop (op, x, r)
                 | EZCmp (suffix) -> case [x, y] of
