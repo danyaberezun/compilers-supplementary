@@ -42,6 +42,8 @@ global_args:	.int	1
 
 # EXTERN ("LgetBaseName") / 
 
+# EXTERN ("LdumpSM") / 
+
 # EXTERN ("LgetInFile") / 
 
 # EXTERN ("LgetMode") / 

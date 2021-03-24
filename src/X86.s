@@ -16,7 +16,7 @@ string_33:	.string	"!="
 
 string_17:	.string	"# "
 
-string_59:	.string	"$%d"
+string_61:	.string	"$%d"
 
 string_25:	.string	"%"
 
@@ -38,7 +38,9 @@ string_2:	.string	"%esi"
 
 string_7:	.string	"%esp"
 
-string_44:	.string	"%s:\t.int\t0\n"
+string_57:	.string	"%s:\n"
+
+string_43:	.string	"%s:\t.int\t0\n"
 
 string_34:	.string	"&&"
 
@@ -48,7 +50,7 @@ string_21:	.string	"+"
 
 string_22:	.string	"-"
 
-string_58:	.string	"-%d(%%ebp)"
+string_60:	.string	"-%d(%%ebp)"
 
 string_10:	.string	"../runtime/"
 
@@ -74,73 +76,75 @@ string_19:	.string	"Lread"
 
 string_20:	.string	"Lwrite"
 
-string_47:	.string	"Stack     : %s\nStackSlots: %d\nGlobals   : %s\n"
+string_46:	.string	"Stack     : %s\nStackSlots: %d\nGlobals   : %s\n"
 
 string_16:	.string	"X86.lama"
 
 string_18:	.string	"\n"
 
-string_52:	.string	"\t%s\t%s,\t%s\n"
+string_51:	.string	"\t%s\t%s,\t%s\n"
 
-string_45:	.string	"\t.data\n"
+string_44:	.string	"\t.data\n"
 
 string_12:	.string	"\t.global\tmain\n"
 
-string_46:	.string	"\t.text\n"
+string_45:	.string	"\t.text\n"
 
-string_57:	.string	"\tcall\t%s\n"
+string_56:	.string	"\tcall\t%s\n"
 
-string_49:	.string	"\tcltd\n"
+string_48:	.string	"\tcltd\n"
 
-string_51:	.string	"\tidivl\t%s\n"
+string_50:	.string	"\tidivl\t%s\n"
 
-string_53:	.string	"\tmovl\t%s,\t%s\n"
+string_59:	.string	"\tj%s\t%s\n"
 
-string_55:	.string	"\tpopl\t%s\n"
+string_58:	.string	"\tjmp\t%s\n"
 
-string_54:	.string	"\tpushl\t%s\n"
+string_52:	.string	"\tmovl\t%s,\t%s\n"
 
-string_56:	.string	"\tret\n"
+string_54:	.string	"\tpopl\t%s\n"
 
-string_50:	.string	"\tset%s\t%s\n"
+string_53:	.string	"\tpushl\t%s\n"
 
-string_43:	.string	"^"
+string_55:	.string	"\tret\n"
 
-string_60:	.string	"addl"
+string_49:	.string	"\tset%s\t%s\n"
 
-string_63:	.string	"andl"
+string_42:	.string	"^"
+
+string_62:	.string	"addl"
+
+string_65:	.string	"andl"
 
 string_27:	.string	"cmp"
 
-string_66:	.string	"cmpl"
+string_68:	.string	"cmpl"
 
-string_36:	.string	"codegeneration for instruction %s is not yet implemented\n"
+string_38:	.string	"e"
 
-string_39:	.string	"e"
-
-string_42:	.string	"g"
+string_41:	.string	"g"
 
 string_14:	.string	"gcc -g -m32 -o "
 
-string_41:	.string	"ge"
+string_40:	.string	"ge"
 
-string_48:	.string	"global_"
+string_47:	.string	"global_"
 
-string_62:	.string	"imull"
+string_64:	.string	"imull"
 
-string_37:	.string	"l"
+string_36:	.string	"l"
 
-string_38:	.string	"le"
+string_37:	.string	"le"
 
 string_13:	.string	"main:\n"
 
-string_40:	.string	"ne"
+string_39:	.string	"ne"
 
-string_64:	.string	"orl"
+string_66:	.string	"orl"
 
-string_61:	.string	"subl"
+string_63:	.string	"subl"
 
-string_65:	.string	"xorl"
+string_67:	.string	"xorl"
 
 _init:	.int 0
 
@@ -203,6 +207,8 @@ global_wordSize:	.int	1
 # PUBLIC ("LcompileX86") / 
 
 # EXTERN ("LgetBaseName") / 
+
+# EXTERN ("LdumpSM") / 
 
 # EXTERN ("LgetInFile") / 
 
@@ -598,11 +604,11 @@ L1:
 	call	Barray
 	addl	$36,	%esp
 	movl	%eax,	%ebx
-# LINE (13) / 
+# LINE (14) / 
 
-	.stabn 68,0,13,0
+	.stabn 68,0,14,0
 
-	.stabn 68,0,13,.L0-initX86
+	.stabn 68,0,14,.L0-initX86
 
 .L0:
 
@@ -627,9 +633,9 @@ L1:
 
 	subl	%ecx,	%ebx
 	orl	$0x0001,	%ebx
-# LINE (16) / 
+# LINE (17) / 
 
-	.stabn 68,0,16,.L1-initX86
+	.stabn 68,0,17,.L1-initX86
 
 .L1:
 
@@ -650,9 +656,9 @@ L1:
 	call	Bsexp
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# LINE (19) / 
+# LINE (20) / 
 
-	.stabn 68,0,19,.L2-initX86
+	.stabn 68,0,20,.L2-initX86
 
 .L2:
 
@@ -690,9 +696,9 @@ L1:
 	call	Bsexp
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# LINE (20) / 
+# LINE (21) / 
 
-	.stabn 68,0,20,.L3-initX86
+	.stabn 68,0,21,.L3-initX86
 
 .L3:
 
@@ -713,9 +719,9 @@ L1:
 	call	Bsexp
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# LINE (21) / 
+# LINE (22) / 
 
-	.stabn 68,0,21,.L4-initX86
+	.stabn 68,0,22,.L4-initX86
 
 .L4:
 
@@ -736,9 +742,9 @@ L1:
 	call	Bsexp
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# LINE (22) / 
+# LINE (23) / 
 
-	.stabn 68,0,22,.L5-initX86
+	.stabn 68,0,23,.L5-initX86
 
 .L5:
 
@@ -759,9 +765,9 @@ L1:
 	call	Bsexp
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# LINE (23) / 
+# LINE (24) / 
 
-	.stabn 68,0,23,.L6-initX86
+	.stabn 68,0,24,.L6-initX86
 
 .L6:
 
@@ -782,9 +788,9 @@ L1:
 	call	Bsexp
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# LINE (24) / 
+# LINE (25) / 
 
-	.stabn 68,0,24,.L7-initX86
+	.stabn 68,0,25,.L7-initX86
 
 .L7:
 
@@ -805,9 +811,9 @@ L1:
 	call	Bsexp
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# LINE (25) / 
+# LINE (26) / 
 
-	.stabn 68,0,25,.L8-initX86
+	.stabn 68,0,26,.L8-initX86
 
 .L8:
 
@@ -819,9 +825,9 @@ L1:
 # CONST (4) / 
 
 	movl	$9,	%ebx
-# LINE (29) / 
+# LINE (30) / 
 
-	.stabn 68,0,29,.L9-initX86
+	.stabn 68,0,30,.L9-initX86
 
 .L9:
 
@@ -916,11 +922,11 @@ L56:
 
 L59:
 
-# LINE (334) / 
+# LINE (343) / 
 
-	.stabn 68,0,334,0
+	.stabn 68,0,343,0
 
-	.stabn 68,0,334,.L10-LcompileX86
+	.stabn 68,0,343,.L10-LcompileX86
 
 .L10:
 
@@ -1090,9 +1096,9 @@ L70:
 	call	Li__Infix_4343
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# LINE (336) / 
+# LINE (345) / 
 
-	.stabn 68,0,336,.L11-LcompileX86
+	.stabn 68,0,345,.L11-LcompileX86
 
 .L11:
 
@@ -1101,9 +1107,9 @@ L70:
 	movl	%ebx,	-16(%ebp)
 # DROP / 
 
-# LINE (337) / 
+# LINE (346) / 
 
-	.stabn 68,0,337,.L12-LcompileX86
+	.stabn 68,0,346,.L12-LcompileX86
 
 .L12:
 
@@ -1191,9 +1197,9 @@ L86:
 
 L93:
 
-# LINE (339) / 
+# LINE (348) / 
 
-	.stabn 68,0,339,.L13-LcompileX86
+	.stabn 68,0,348,.L13-LcompileX86
 
 .L13:
 
@@ -1236,24 +1242,24 @@ L82:
 	movl	%ebx,	-12(%ebp)
 # DROP / 
 
-# LINE (340) / 
+# LINE (349) / 
 
-	.stabn 68,0,340,.L14-LcompileX86
+	.stabn 68,0,349,.L14-LcompileX86
 
 .L14:
 
-# LINE (342) / 
+# LINE (351) / 
 
-	.stabn 68,0,342,.L15-LcompileX86
+	.stabn 68,0,351,.L15-LcompileX86
 
 .L15:
 
 # LD (Local (3)) / 
 
 	movl	-16(%ebp),	%ebx
-# LINE (343) / 
+# LINE (352) / 
 
-	.stabn 68,0,343,.L16-LcompileX86
+	.stabn 68,0,352,.L16-LcompileX86
 
 .L16:
 
@@ -1277,9 +1283,9 @@ L82:
 	movl	%eax,	%esi
 	popl	%ecx
 	popl	%ebx
-# LINE (344) / 
+# LINE (353) / 
 
-	.stabn 68,0,344,.L17-LcompileX86
+	.stabn 68,0,353,.L17-LcompileX86
 
 .L17:
 
@@ -1323,15 +1329,15 @@ L82:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%edi
-# LINE (345) / 
+# LINE (354) / 
 
-	.stabn 68,0,345,.L18-LcompileX86
+	.stabn 68,0,354,.L18-LcompileX86
 
 .L18:
 
-# LINE (346) / 
+# LINE (355) / 
 
-	.stabn 68,0,346,.L19-LcompileX86
+	.stabn 68,0,355,.L19-LcompileX86
 
 .L19:
 
@@ -1440,9 +1446,9 @@ L82:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%edi
-# LINE (347) / 
+# LINE (356) / 
 
-	.stabn 68,0,347,.L20-LcompileX86
+	.stabn 68,0,356,.L20-LcompileX86
 
 .L20:
 
@@ -1492,15 +1498,15 @@ L82:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	-24(%ebp)
-# LINE (348) / 
+# LINE (357) / 
 
-	.stabn 68,0,348,.L21-LcompileX86
+	.stabn 68,0,357,.L21-LcompileX86
 
 .L21:
 
-# LINE (349) / 
+# LINE (358) / 
 
-	.stabn 68,0,349,.L22-LcompileX86
+	.stabn 68,0,358,.L22-LcompileX86
 
 .L22:
 
@@ -1570,9 +1576,9 @@ L82:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	-24(%ebp)
-# LINE (350) / 
+# LINE (359) / 
 
-	.stabn 68,0,350,.L23-LcompileX86
+	.stabn 68,0,359,.L23-LcompileX86
 
 .L23:
 
@@ -1668,9 +1674,9 @@ L82:
 	movl	%eax,	%ebx
 # DROP / 
 
-# LINE (353) / 
+# LINE (362) / 
 
-	.stabn 68,0,353,.L24-LcompileX86
+	.stabn 68,0,362,.L24-LcompileX86
 
 .L24:
 
@@ -1681,9 +1687,9 @@ L82:
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# LINE (355) / 
+# LINE (364) / 
 
-	.stabn 68,0,355,.L25-LcompileX86
+	.stabn 68,0,364,.L25-LcompileX86
 
 .L25:
 
@@ -1849,10 +1855,10 @@ L69:
 
 L61:
 
-# FAIL ((334, 7), true) / 
+# FAIL ((343, 7), true) / 
 
 	pushl	$15
-	pushl	$669
+	pushl	$687
 	pushl	$string_16
 	pushl	%ebx
 	call	Bmatch_failure
@@ -1929,17 +1935,17 @@ L143:
 
 L146:
 
-# LINE (279) / 
+# LINE (286) / 
 
-	.stabn 68,0,279,0
+	.stabn 68,0,286,0
 
-	.stabn 68,0,279,.L26-Lcompile
+	.stabn 68,0,286,.L26-Lcompile
 
 .L26:
 
-# LINE (281) / 
+# LINE (288) / 
 
-	.stabn 68,0,281,.L27-Lcompile
+	.stabn 68,0,288,.L27-Lcompile
 
 .L27:
 
@@ -1950,9 +1956,9 @@ L146:
 	call	Bclosure
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# LINE (327) / 
+# LINE (338) / 
 
-	.stabn 68,0,327,.L28-Lcompile
+	.stabn 68,0,338,.L28-Lcompile
 
 .L28:
 
@@ -1981,16 +1987,6 @@ L146:
 # LD (Arg (1)) / 
 
 	movl	12(%ebp),	%esi
-# CALL ("LgetBuffer", 1, false) / 
-
-	pushl	%ebx
-	pushl	%ecx
-	pushl	%esi
-	call	LgetBuffer
-	addl	$4,	%esp
-	popl	%ecx
-	popl	%ebx
-	movl	%eax,	%esi
 # CALL ("Lfoldl", 3, true) / 
 
 	pushl	%esi
@@ -2035,7 +2031,7 @@ LLcompile_epilogue:
 
 Llambda_0_11:
 
-# BEGIN ("Llambda_0_11", 2, 7, [], ["__tmp0"; "i"], [{ blab="L155"; elab="L156"; names=[]; subs=[{ blab="L162"; elab="L163"; names=[("env", 1); ("scode", 0)]; subs=[{ blab="L164"; elab="L165"; names=[("code", 2)]; subs=[{ blab="L653"; elab="L654"; names=[]; subs=[{ blab="L655"; elab="L656"; names=[]; subs=[]; }]; }; { blab="L309"; elab="L310"; names=[("op", 3)]; subs=[{ blab="L311"; elab="L312"; names=[]; subs=[{ blab="L318"; elab="L319"; names=[("a", 6); ("b", 5); ("env", 4)]; subs=[{ blab="L320"; elab="L321"; names=[]; subs=[{ blab="L328"; elab="L329"; names=[]; subs=[{ blab="L608"; elab="L609"; names=[]; subs=[{ blab="L610"; elab="L611"; names=[]; subs=[]; }]; }; { blab="L563"; elab="L564"; names=[]; subs=[{ blab="L565"; elab="L566"; names=[]; subs=[]; }]; }; { blab="L537"; elab="L538"; names=[]; subs=[{ blab="L539"; elab="L540"; names=[]; subs=[]; }]; }; { blab="L511"; elab="L512"; names=[]; subs=[{ blab="L513"; elab="L514"; names=[]; subs=[]; }]; }; { blab="L485"; elab="L486"; names=[]; subs=[{ blab="L487"; elab="L488"; names=[]; subs=[]; }]; }; { blab="L459"; elab="L460"; names=[]; subs=[{ blab="L461"; elab="L462"; names=[]; subs=[]; }]; }; { blab="L433"; elab="L434"; names=[]; subs=[{ blab="L435"; elab="L436"; names=[]; subs=[]; }]; }; { blab="L407"; elab="L408"; names=[]; subs=[{ blab="L409"; elab="L410"; names=[]; subs=[]; }]; }; { blab="L390"; elab="L391"; names=[]; subs=[{ blab="L392"; elab="L393"; names=[]; subs=[]; }]; }; { blab="L373"; elab="L374"; names=[]; subs=[{ blab="L375"; elab="L376"; names=[]; subs=[]; }]; }; { blab="L357"; elab="L358"; names=[]; subs=[{ blab="L359"; elab="L360"; names=[]; subs=[]; }]; }; { blab="L345"; elab="L346"; names=[]; subs=[{ blab="L347"; elab="L348"; names=[]; subs=[]; }]; }; { blab="L333"; elab="L334"; names=[]; subs=[{ blab="L335"; elab="L336"; names=[]; subs=[]; }]; }]; }]; }]; }]; }]; }; { blab="L283"; elab="L284"; names=[("x", 3)]; subs=[{ blab="L285"; elab="L286"; names=[]; subs=[{ blab="L294"; elab="L295"; names=[("s", 5); ("env", 4)]; subs=[{ blab="L296"; elab="L297"; names=[]; subs=[]; }]; }]; }]; }; { blab="L257"; elab="L258"; names=[("x", 3)]; subs=[{ blab="L259"; elab="L260"; names=[]; subs=[{ blab="L268"; elab="L269"; names=[("s", 5); ("env", 4)]; subs=[{ blab="L270"; elab="L271"; names=[]; subs=[]; }]; }]; }]; }; { blab="L234"; elab="L235"; names=[("n", 3)]; subs=[{ blab="L236"; elab="L237"; names=[]; subs=[{ blab="L243"; elab="L244"; names=[("s", 5); ("env", 4)]; subs=[{ blab="L245"; elab="L246"; names=[]; subs=[]; }]; }]; }]; }; { blab="L207"; elab="L208"; names=[]; subs=[{ blab="L209"; elab="L210"; names=[]; subs=[{ blab="L216"; elab="L217"; names=[("s", 4); ("env", 3)]; subs=[{ blab="L218"; elab="L219"; names=[]; subs=[]; }]; }]; }]; }; { blab="L182"; elab="L183"; names=[]; subs=[{ blab="L184"; elab="L185"; names=[]; subs=[{ blab="L191"; elab="L192"; names=[("s", 4); ("env", 3)]; subs=[{ blab="L193"; elab="L194"; names=[]; subs=[]; }]; }]; }]; }]; }]; }]; }]) / 
+# BEGIN ("Llambda_0_11", 2, 7, [], ["__tmp0"; "i"], [{ blab="L154"; elab="L155"; names=[]; subs=[{ blab="L161"; elab="L162"; names=[("env", 1); ("scode", 0)]; subs=[{ blab="L163"; elab="L164"; names=[("code", 2)]; subs=[{ blab="L678"; elab="L679"; names=[("x", 4); ("l", 3)]; subs=[{ blab="L680"; elab="L681"; names=[]; subs=[{ blab="L687"; elab="L688"; names=[("s", 6); ("env", 5)]; subs=[{ blab="L689"; elab="L690"; names=[]; subs=[]; }]; }]; }]; }; { blab="L667"; elab="L668"; names=[("l", 3)]; subs=[{ blab="L669"; elab="L670"; names=[]; subs=[]; }]; }; { blab="L655"; elab="L656"; names=[("l", 3)]; subs=[{ blab="L657"; elab="L658"; names=[]; subs=[]; }]; }; { blab="L308"; elab="L309"; names=[("op", 3)]; subs=[{ blab="L310"; elab="L311"; names=[]; subs=[{ blab="L317"; elab="L318"; names=[("a", 6); ("b", 5); ("env", 4)]; subs=[{ blab="L319"; elab="L320"; names=[]; subs=[{ blab="L327"; elab="L328"; names=[]; subs=[{ blab="L607"; elab="L608"; names=[]; subs=[{ blab="L609"; elab="L610"; names=[]; subs=[]; }]; }; { blab="L562"; elab="L563"; names=[]; subs=[{ blab="L564"; elab="L565"; names=[]; subs=[]; }]; }; { blab="L536"; elab="L537"; names=[]; subs=[{ blab="L538"; elab="L539"; names=[]; subs=[]; }]; }; { blab="L510"; elab="L511"; names=[]; subs=[{ blab="L512"; elab="L513"; names=[]; subs=[]; }]; }; { blab="L484"; elab="L485"; names=[]; subs=[{ blab="L486"; elab="L487"; names=[]; subs=[]; }]; }; { blab="L458"; elab="L459"; names=[]; subs=[{ blab="L460"; elab="L461"; names=[]; subs=[]; }]; }; { blab="L432"; elab="L433"; names=[]; subs=[{ blab="L434"; elab="L435"; names=[]; subs=[]; }]; }; { blab="L406"; elab="L407"; names=[]; subs=[{ blab="L408"; elab="L409"; names=[]; subs=[]; }]; }; { blab="L389"; elab="L390"; names=[]; subs=[{ blab="L391"; elab="L392"; names=[]; subs=[]; }]; }; { blab="L372"; elab="L373"; names=[]; subs=[{ blab="L374"; elab="L375"; names=[]; subs=[]; }]; }; { blab="L356"; elab="L357"; names=[]; subs=[{ blab="L358"; elab="L359"; names=[]; subs=[]; }]; }; { blab="L344"; elab="L345"; names=[]; subs=[{ blab="L346"; elab="L347"; names=[]; subs=[]; }]; }; { blab="L332"; elab="L333"; names=[]; subs=[{ blab="L334"; elab="L335"; names=[]; subs=[]; }]; }]; }]; }]; }]; }]; }; { blab="L282"; elab="L283"; names=[("x", 3)]; subs=[{ blab="L284"; elab="L285"; names=[]; subs=[{ blab="L293"; elab="L294"; names=[("s", 5); ("env", 4)]; subs=[{ blab="L295"; elab="L296"; names=[]; subs=[]; }]; }]; }]; }; { blab="L256"; elab="L257"; names=[("x", 3)]; subs=[{ blab="L258"; elab="L259"; names=[]; subs=[{ blab="L267"; elab="L268"; names=[("s", 5); ("env", 4)]; subs=[{ blab="L269"; elab="L270"; names=[]; subs=[]; }]; }]; }]; }; { blab="L233"; elab="L234"; names=[("n", 3)]; subs=[{ blab="L235"; elab="L236"; names=[]; subs=[{ blab="L242"; elab="L243"; names=[("s", 5); ("env", 4)]; subs=[{ blab="L244"; elab="L245"; names=[]; subs=[]; }]; }]; }]; }; { blab="L206"; elab="L207"; names=[]; subs=[{ blab="L208"; elab="L209"; names=[]; subs=[{ blab="L215"; elab="L216"; names=[("s", 4); ("env", 3)]; subs=[{ blab="L217"; elab="L218"; names=[]; subs=[]; }]; }]; }]; }; { blab="L181"; elab="L182"; names=[]; subs=[{ blab="L183"; elab="L184"; names=[]; subs=[{ blab="L190"; elab="L191"; names=[("s", 4); ("env", 3)]; subs=[{ blab="L192"; elab="L193"; names=[]; subs=[]; }]; }]; }]; }]; }]; }]; }]) / 
 
 	.type lambda_0_11, @function
 
@@ -2049,15 +2045,43 @@ Llambda_0_11:
 
 	.stabs "scode:1",128,0,0,-4
 
-	.stabn 192,0,0,L162-Llambda_0_11
+	.stabn 192,0,0,L161-Llambda_0_11
 
 	.stabs "code:1",128,0,0,-12
 
-	.stabn 192,0,0,L164-Llambda_0_11
+	.stabn 192,0,0,L163-Llambda_0_11
+
+	.stabs "x:1",128,0,0,-20
+
+	.stabs "l:1",128,0,0,-16
+
+	.stabn 192,0,0,L678-Llambda_0_11
+
+	.stabs "s:1",128,0,0,-28
+
+	.stabs "env:1",128,0,0,-24
+
+	.stabn 192,0,0,L687-Llambda_0_11
+
+	.stabn 224,0,0,L688-Llambda_0_11
+
+	.stabn 224,0,0,L679-Llambda_0_11
+
+	.stabs "l:1",128,0,0,-16
+
+	.stabn 192,0,0,L667-Llambda_0_11
+
+	.stabn 224,0,0,L668-Llambda_0_11
+
+	.stabs "l:1",128,0,0,-16
+
+	.stabn 192,0,0,L655-Llambda_0_11
+
+	.stabn 224,0,0,L656-Llambda_0_11
 
 	.stabs "op:1",128,0,0,-16
 
-	.stabn 192,0,0,L309-Llambda_0_11
+	.stabn 192,0,0,L308-Llambda_0_11
 
 	.stabs "a:1",128,0,0,-28
 
@@ -2065,73 +2089,73 @@ Llambda_0_11:
 
 	.stabs "env:1",128,0,0,-20
 
-	.stabn 192,0,0,L318-Llambda_0_11
+	.stabn 192,0,0,L317-Llambda_0_11
 
-	.stabn 224,0,0,L319-Llambda_0_11
+	.stabn 224,0,0,L318-Llambda_0_11
 
-	.stabn 224,0,0,L310-Llambda_0_11
+	.stabn 224,0,0,L309-Llambda_0_11
 
 	.stabs "x:1",128,0,0,-16
 
-	.stabn 192,0,0,L283-Llambda_0_11
+	.stabn 192,0,0,L282-Llambda_0_11
 
 	.stabs "s:1",128,0,0,-24
 
 	.stabs "env:1",128,0,0,-20
 
-	.stabn 192,0,0,L294-Llambda_0_11
+	.stabn 192,0,0,L293-Llambda_0_11
 
-	.stabn 224,0,0,L295-Llambda_0_11
+	.stabn 224,0,0,L294-Llambda_0_11
 
-	.stabn 224,0,0,L284-Llambda_0_11
+	.stabn 224,0,0,L283-Llambda_0_11
 
 	.stabs "x:1",128,0,0,-16
 
-	.stabn 192,0,0,L257-Llambda_0_11
+	.stabn 192,0,0,L256-Llambda_0_11
 
 	.stabs "s:1",128,0,0,-24
 
 	.stabs "env:1",128,0,0,-20
 
-	.stabn 192,0,0,L268-Llambda_0_11
+	.stabn 192,0,0,L267-Llambda_0_11
 
-	.stabn 224,0,0,L269-Llambda_0_11
+	.stabn 224,0,0,L268-Llambda_0_11
 
-	.stabn 224,0,0,L258-Llambda_0_11
+	.stabn 224,0,0,L257-Llambda_0_11
 
 	.stabs "n:1",128,0,0,-16
 
-	.stabn 192,0,0,L234-Llambda_0_11
+	.stabn 192,0,0,L233-Llambda_0_11
 
 	.stabs "s:1",128,0,0,-24
 
 	.stabs "env:1",128,0,0,-20
 
-	.stabn 192,0,0,L243-Llambda_0_11
+	.stabn 192,0,0,L242-Llambda_0_11
 
-	.stabn 224,0,0,L244-Llambda_0_11
+	.stabn 224,0,0,L243-Llambda_0_11
 
-	.stabn 224,0,0,L235-Llambda_0_11
-
-	.stabs "s:1",128,0,0,-20
-
-	.stabs "env:1",128,0,0,-16
-
-	.stabn 192,0,0,L216-Llambda_0_11
-
-	.stabn 224,0,0,L217-Llambda_0_11
+	.stabn 224,0,0,L234-Llambda_0_11
 
 	.stabs "s:1",128,0,0,-20
 
 	.stabs "env:1",128,0,0,-16
 
-	.stabn 192,0,0,L191-Llambda_0_11
+	.stabn 192,0,0,L215-Llambda_0_11
 
-	.stabn 224,0,0,L192-Llambda_0_11
+	.stabn 224,0,0,L216-Llambda_0_11
 
-	.stabn 224,0,0,L165-Llambda_0_11
+	.stabs "s:1",128,0,0,-20
 
-	.stabn 224,0,0,L163-Llambda_0_11
+	.stabs "env:1",128,0,0,-16
+
+	.stabn 192,0,0,L190-Llambda_0_11
+
+	.stabn 224,0,0,L191-Llambda_0_11
+
+	.stabn 224,0,0,L164-Llambda_0_11
+
+	.stabn 224,0,0,L162-Llambda_0_11
 
 	.cfi_startproc
 
@@ -2148,9 +2172,9 @@ Llambda_0_11:
 	movl	$filler,	%esi
 	movl	$LSLlambda_0_11_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L155") / 
+# SLABEL ("L154") / 
 
-L155:
+L154:
 
 # LD (Arg (0)) / 
 
@@ -2158,9 +2182,9 @@ L155:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L162") / 
+# SLABEL ("L161") / 
 
-L162:
+L161:
 
 # DUP / 
 
@@ -2177,23 +2201,23 @@ L162:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L160") / 
+# CJMP ("nz", "L159") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L160
-# LABEL ("L161") / 
-
-L161:
-
-# DROP / 
-
-# JMP ("L158") / 
-
-	jmp	L158
+	jnz	L159
 # LABEL ("L160") / 
 
 L160:
+
+# DROP / 
+
+# JMP ("L157") / 
+
+	jmp	L157
+# LABEL ("L159") / 
+
+L159:
 
 # DUP / 
 
@@ -2277,9 +2301,9 @@ L160:
 
 # DROP / 
 
-# SLABEL ("L164") / 
+# SLABEL ("L163") / 
 
-L164:
+L163:
 
 # LD (Local (0)) / 
 
@@ -2353,11 +2377,11 @@ L164:
 	call	Li__Infix_6043
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# LINE (282) / 
+# LINE (289) / 
 
-	.stabn 68,0,282,0
+	.stabn 68,0,289,0
 
-	.stabn 68,0,282,.L29-Llambda_0_11
+	.stabn 68,0,289,.L29-Llambda_0_11
 
 .L29:
 
@@ -2366,9 +2390,9 @@ L164:
 	movl	%ebx,	-12(%ebp)
 # DROP / 
 
-# LINE (283) / 
+# LINE (290) / 
 
-	.stabn 68,0,283,.L30-Llambda_0_11
+	.stabn 68,0,290,.L30-Llambda_0_11
 
 .L30:
 
@@ -2378,9 +2402,9 @@ L164:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L182") / 
+# SLABEL ("L181") / 
 
-L182:
+L181:
 
 # DUP / 
 
@@ -2399,35 +2423,35 @@ L182:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L180") / 
+# CJMP ("nz", "L179") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L180
-# LABEL ("L181") / 
-
-L181:
-
-# DROP / 
-
-# JMP ("L179") / 
-
-	jmp	L179
+	jnz	L179
 # LABEL ("L180") / 
 
 L180:
 
 # DROP / 
 
+# JMP ("L178") / 
+
+	jmp	L178
+# LABEL ("L179") / 
+
+L179:
+
 # DROP / 
 
-# SLABEL ("L184") / 
+# DROP / 
 
-L184:
+# SLABEL ("L183") / 
 
-# LINE (285) / 
+L183:
 
-	.stabn 68,0,285,.L31-Llambda_0_11
+# LINE (292) / 
+
+	.stabn 68,0,292,.L31-Llambda_0_11
 
 .L31:
 
@@ -2443,9 +2467,9 @@ L184:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L191") / 
+# SLABEL ("L190") / 
 
-L191:
+L190:
 
 # DUP / 
 
@@ -2462,23 +2486,23 @@ L191:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L189") / 
+# CJMP ("nz", "L188") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L189
-# LABEL ("L190") / 
-
-L190:
-
-# DROP / 
-
-# JMP ("L186") / 
-
-	jmp	L186
+	jnz	L188
 # LABEL ("L189") / 
 
 L189:
+
+# DROP / 
+
+# JMP ("L185") / 
+
+	jmp	L185
+# LABEL ("L188") / 
+
+L188:
 
 # DUP / 
 
@@ -2562,13 +2586,13 @@ L189:
 
 # DROP / 
 
-# SLABEL ("L193") / 
+# SLABEL ("L192") / 
 
-L193:
+L192:
 
-# LINE (286) / 
+# LINE (293) / 
 
-	.stabn 68,0,286,.L32-Llambda_0_11
+	.stabn 68,0,293,.L32-Llambda_0_11
 
 .L32:
 
@@ -2648,49 +2672,49 @@ L193:
 	call	Barray
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L194") / 
+# SLABEL ("L193") / 
 
-L194:
+L193:
 
-# SLABEL ("L192") / 
+# SLABEL ("L191") / 
 
-L192:
+L191:
 
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-	jmp	L157
-# LABEL ("L186") / 
+	jmp	L156
+# LABEL ("L185") / 
 
-L186:
+L185:
 
-# FAIL ((285, 15), true) / 
+# FAIL ((292, 11), true) / 
 
-	pushl	$31
-	pushl	$571
+	pushl	$23
+	pushl	$585
 	pushl	$string_16
 	pushl	%ebx
 	call	Bmatch_failure
 	addl	$16,	%esp
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-	jmp	L157
-# SLABEL ("L185") / 
+	jmp	L156
+# SLABEL ("L184") / 
 
-L185:
+L184:
 
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-# SLABEL ("L183") / 
+# SLABEL ("L182") / 
 
-L183:
+L182:
 
-# SLABEL ("L207") / 
+# SLABEL ("L206") / 
 
-L207:
+L206:
 
-# LABEL ("L179") / 
+# LABEL ("L178") / 
 
-L179:
+L178:
 
 # DUP / 
 
@@ -2712,35 +2736,35 @@ L179:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L205") / 
+# CJMP ("nz", "L204") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L205
-# LABEL ("L206") / 
-
-L206:
-
-# DROP / 
-
-# JMP ("L204") / 
-
-	jmp	L204
+	jnz	L204
 # LABEL ("L205") / 
 
 L205:
 
 # DROP / 
 
+# JMP ("L203") / 
+
+	jmp	L203
+# LABEL ("L204") / 
+
+L204:
+
 # DROP / 
 
-# SLABEL ("L209") / 
+# DROP / 
 
-L209:
+# SLABEL ("L208") / 
 
-# LINE (289) / 
+L208:
 
-	.stabn 68,0,289,.L33-Llambda_0_11
+# LINE (296) / 
+
+	.stabn 68,0,296,.L33-Llambda_0_11
 
 .L33:
 
@@ -2756,9 +2780,9 @@ L209:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L216") / 
+# SLABEL ("L215") / 
 
-L216:
+L215:
 
 # DUP / 
 
@@ -2775,23 +2799,23 @@ L216:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L214") / 
+# CJMP ("nz", "L213") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L214
-# LABEL ("L215") / 
-
-L215:
-
-# DROP / 
-
-# JMP ("L211") / 
-
-	jmp	L211
+	jnz	L213
 # LABEL ("L214") / 
 
 L214:
+
+# DROP / 
+
+# JMP ("L210") / 
+
+	jmp	L210
+# LABEL ("L213") / 
+
+L213:
 
 # DUP / 
 
@@ -2875,13 +2899,13 @@ L214:
 
 # DROP / 
 
-# SLABEL ("L218") / 
+# SLABEL ("L217") / 
 
-L218:
+L217:
 
-# LINE (290) / 
+# LINE (297) / 
 
-	.stabn 68,0,290,.L34-Llambda_0_11
+	.stabn 68,0,297,.L34-Llambda_0_11
 
 .L34:
 
@@ -2982,49 +3006,49 @@ L218:
 	call	Barray
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L219") / 
+# SLABEL ("L218") / 
 
-L219:
+L218:
 
-# SLABEL ("L217") / 
+# SLABEL ("L216") / 
 
-L217:
+L216:
 
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-	jmp	L157
-# LABEL ("L211") / 
+	jmp	L156
+# LABEL ("L210") / 
 
-L211:
+L210:
 
-# FAIL ((289, 15), true) / 
+# FAIL ((296, 11), true) / 
 
-	pushl	$31
-	pushl	$579
+	pushl	$23
+	pushl	$593
 	pushl	$string_16
 	pushl	%ebx
 	call	Bmatch_failure
 	addl	$16,	%esp
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-	jmp	L157
-# SLABEL ("L210") / 
+	jmp	L156
+# SLABEL ("L209") / 
 
-L210:
+L209:
 
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-# SLABEL ("L208") / 
+# SLABEL ("L207") / 
 
-L208:
+L207:
 
-# SLABEL ("L234") / 
+# SLABEL ("L233") / 
 
-L234:
+L233:
 
-# LABEL ("L204") / 
+# LABEL ("L203") / 
 
-L204:
+L203:
 
 # DUP / 
 
@@ -3046,23 +3070,23 @@ L204:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L232") / 
+# CJMP ("nz", "L231") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L232
-# LABEL ("L233") / 
-
-L233:
-
-# DROP / 
-
-# JMP ("L231") / 
-
-	jmp	L231
+	jnz	L231
 # LABEL ("L232") / 
 
 L232:
+
+# DROP / 
+
+# JMP ("L230") / 
+
+	jmp	L230
+# LABEL ("L231") / 
+
+L231:
 
 # DUP / 
 
@@ -3107,13 +3131,13 @@ L232:
 
 # DROP / 
 
-# SLABEL ("L236") / 
+# SLABEL ("L235") / 
 
-L236:
+L235:
 
-# LINE (293) / 
+# LINE (300) / 
 
-	.stabn 68,0,293,.L35-Llambda_0_11
+	.stabn 68,0,300,.L35-Llambda_0_11
 
 .L35:
 
@@ -3129,9 +3153,9 @@ L236:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L243") / 
+# SLABEL ("L242") / 
 
-L243:
+L242:
 
 # DUP / 
 
@@ -3148,23 +3172,23 @@ L243:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L241") / 
+# CJMP ("nz", "L240") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L241
-# LABEL ("L242") / 
-
-L242:
-
-# DROP / 
-
-# JMP ("L238") / 
-
-	jmp	L238
+	jnz	L240
 # LABEL ("L241") / 
 
 L241:
+
+# DROP / 
+
+# JMP ("L237") / 
+
+	jmp	L237
+# LABEL ("L240") / 
+
+L240:
 
 # DUP / 
 
@@ -3248,13 +3272,13 @@ L241:
 
 # DROP / 
 
-# SLABEL ("L245") / 
+# SLABEL ("L244") / 
 
-L245:
+L244:
 
-# LINE (294) / 
+# LINE (301) / 
 
-	.stabn 68,0,294,.L36-Llambda_0_11
+	.stabn 68,0,301,.L36-Llambda_0_11
 
 .L36:
 
@@ -3311,49 +3335,49 @@ L245:
 	call	Barray
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L246") / 
+# SLABEL ("L245") / 
 
-L246:
+L245:
 
-# SLABEL ("L244") / 
+# SLABEL ("L243") / 
 
-L244:
+L243:
 
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-	jmp	L157
-# LABEL ("L238") / 
+	jmp	L156
+# LABEL ("L237") / 
 
-L238:
+L237:
 
-# FAIL ((293, 15), true) / 
+# FAIL ((300, 11), true) / 
 
-	pushl	$31
-	pushl	$587
+	pushl	$23
+	pushl	$601
 	pushl	$string_16
 	pushl	%ebx
 	call	Bmatch_failure
 	addl	$16,	%esp
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-	jmp	L157
-# SLABEL ("L237") / 
+	jmp	L156
+# SLABEL ("L236") / 
 
-L237:
+L236:
 
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-# SLABEL ("L235") / 
+# SLABEL ("L234") / 
 
-L235:
+L234:
 
-# SLABEL ("L257") / 
+# SLABEL ("L256") / 
 
-L257:
+L256:
 
-# LABEL ("L231") / 
+# LABEL ("L230") / 
 
-L231:
+L230:
 
 # DUP / 
 
@@ -3375,23 +3399,23 @@ L231:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L255") / 
+# CJMP ("nz", "L254") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L255
-# LABEL ("L256") / 
-
-L256:
-
-# DROP / 
-
-# JMP ("L254") / 
-
-	jmp	L254
+	jnz	L254
 # LABEL ("L255") / 
 
 L255:
+
+# DROP / 
+
+# JMP ("L253") / 
+
+	jmp	L253
+# LABEL ("L254") / 
+
+L254:
 
 # DUP / 
 
@@ -3436,13 +3460,13 @@ L255:
 
 # DROP / 
 
-# SLABEL ("L259") / 
+# SLABEL ("L258") / 
 
-L259:
+L258:
 
-# LINE (297) / 
+# LINE (304) / 
 
-	.stabn 68,0,297,.L37-Llambda_0_11
+	.stabn 68,0,304,.L37-Llambda_0_11
 
 .L37:
 
@@ -3468,9 +3492,9 @@ L259:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L268") / 
+# SLABEL ("L267") / 
 
-L268:
+L267:
 
 # DUP / 
 
@@ -3487,23 +3511,23 @@ L268:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L266") / 
+# CJMP ("nz", "L265") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L266
-# LABEL ("L267") / 
-
-L267:
-
-# DROP / 
-
-# JMP ("L261") / 
-
-	jmp	L261
+	jnz	L265
 # LABEL ("L266") / 
 
 L266:
+
+# DROP / 
+
+# JMP ("L260") / 
+
+	jmp	L260
+# LABEL ("L265") / 
+
+L265:
 
 # DUP / 
 
@@ -3587,13 +3611,13 @@ L266:
 
 # DROP / 
 
-# SLABEL ("L270") / 
+# SLABEL ("L269") / 
 
-L270:
+L269:
 
-# LINE (298) / 
+# LINE (305) / 
 
-	.stabn 68,0,298,.L38-Llambda_0_11
+	.stabn 68,0,305,.L38-Llambda_0_11
 
 .L38:
 
@@ -3651,49 +3675,49 @@ L270:
 	call	Barray
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L271") / 
+# SLABEL ("L270") / 
 
-L271:
+L270:
 
-# SLABEL ("L269") / 
+# SLABEL ("L268") / 
 
-L269:
+L268:
 
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-	jmp	L157
-# LABEL ("L261") / 
+	jmp	L156
+# LABEL ("L260") / 
 
-L261:
+L260:
 
-# FAIL ((297, 15), true) / 
+# FAIL ((304, 11), true) / 
 
-	pushl	$31
-	pushl	$595
+	pushl	$23
+	pushl	$609
 	pushl	$string_16
 	pushl	%ebx
 	call	Bmatch_failure
 	addl	$16,	%esp
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-	jmp	L157
-# SLABEL ("L260") / 
+	jmp	L156
+# SLABEL ("L259") / 
 
-L260:
+L259:
 
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-# SLABEL ("L258") / 
+# SLABEL ("L257") / 
 
-L258:
+L257:
 
-# SLABEL ("L283") / 
+# SLABEL ("L282") / 
 
-L283:
+L282:
 
-# LABEL ("L254") / 
+# LABEL ("L253") / 
 
-L254:
+L253:
 
 # DUP / 
 
@@ -3715,23 +3739,23 @@ L254:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L281") / 
+# CJMP ("nz", "L280") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L281
-# LABEL ("L282") / 
-
-L282:
-
-# DROP / 
-
-# JMP ("L280") / 
-
-	jmp	L280
+	jnz	L280
 # LABEL ("L281") / 
 
 L281:
+
+# DROP / 
+
+# JMP ("L279") / 
+
+	jmp	L279
+# LABEL ("L280") / 
+
+L280:
 
 # DUP / 
 
@@ -3776,13 +3800,13 @@ L281:
 
 # DROP / 
 
-# SLABEL ("L285") / 
+# SLABEL ("L284") / 
 
-L285:
+L284:
 
-# LINE (301) / 
+# LINE (308) / 
 
-	.stabn 68,0,301,.L39-Llambda_0_11
+	.stabn 68,0,308,.L39-Llambda_0_11
 
 .L39:
 
@@ -3808,9 +3832,9 @@ L285:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L294") / 
+# SLABEL ("L293") / 
 
-L294:
+L293:
 
 # DUP / 
 
@@ -3827,23 +3851,23 @@ L294:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L292") / 
+# CJMP ("nz", "L291") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L292
-# LABEL ("L293") / 
-
-L293:
-
-# DROP / 
-
-# JMP ("L287") / 
-
-	jmp	L287
+	jnz	L291
 # LABEL ("L292") / 
 
 L292:
+
+# DROP / 
+
+# JMP ("L286") / 
+
+	jmp	L286
+# LABEL ("L291") / 
+
+L291:
 
 # DUP / 
 
@@ -3927,13 +3951,13 @@ L292:
 
 # DROP / 
 
-# SLABEL ("L296") / 
+# SLABEL ("L295") / 
 
-L296:
+L295:
 
-# LINE (302) / 
+# LINE (309) / 
 
-	.stabn 68,0,302,.L40-Llambda_0_11
+	.stabn 68,0,309,.L40-Llambda_0_11
 
 .L40:
 
@@ -3994,49 +4018,49 @@ L296:
 	call	Barray
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L297") / 
+# SLABEL ("L296") / 
 
-L297:
+L296:
 
-# SLABEL ("L295") / 
+# SLABEL ("L294") / 
 
-L295:
+L294:
 
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-	jmp	L157
-# LABEL ("L287") / 
+	jmp	L156
+# LABEL ("L286") / 
 
-L287:
+L286:
 
-# FAIL ((301, 15), true) / 
+# FAIL ((308, 11), true) / 
 
-	pushl	$31
-	pushl	$603
+	pushl	$23
+	pushl	$617
 	pushl	$string_16
 	pushl	%ebx
 	call	Bmatch_failure
 	addl	$16,	%esp
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-	jmp	L157
-# SLABEL ("L286") / 
+	jmp	L156
+# SLABEL ("L285") / 
 
-L286:
+L285:
 
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-# SLABEL ("L284") / 
+# SLABEL ("L283") / 
 
-L284:
+L283:
 
-# SLABEL ("L309") / 
+# SLABEL ("L308") / 
 
-L309:
+L308:
 
-# LABEL ("L280") / 
+# LABEL ("L279") / 
 
-L280:
+L279:
 
 # DUP / 
 
@@ -4058,23 +4082,23 @@ L280:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L307") / 
+# CJMP ("nz", "L306") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L307
-# LABEL ("L308") / 
-
-L308:
-
-# DROP / 
-
-# JMP ("L306") / 
-
-	jmp	L306
+	jnz	L306
 # LABEL ("L307") / 
 
 L307:
+
+# DROP / 
+
+# JMP ("L305") / 
+
+	jmp	L305
+# LABEL ("L306") / 
+
+L306:
 
 # DUP / 
 
@@ -4119,13 +4143,13 @@ L307:
 
 # DROP / 
 
-# SLABEL ("L311") / 
+# SLABEL ("L310") / 
 
-L311:
+L310:
 
-# LINE (305) / 
+# LINE (312) / 
 
-	.stabn 68,0,305,.L41-Llambda_0_11
+	.stabn 68,0,312,.L41-Llambda_0_11
 
 .L41:
 
@@ -4141,9 +4165,9 @@ L311:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L318") / 
+# SLABEL ("L317") / 
 
-L318:
+L317:
 
 # DUP / 
 
@@ -4160,23 +4184,23 @@ L318:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L316") / 
+# CJMP ("nz", "L315") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L316
-# LABEL ("L317") / 
-
-L317:
-
-# DROP / 
-
-# JMP ("L313") / 
-
-	jmp	L313
+	jnz	L315
 # LABEL ("L316") / 
 
 L316:
+
+# DROP / 
+
+# JMP ("L312") / 
+
+	jmp	L312
+# LABEL ("L315") / 
+
+L315:
 
 # DUP / 
 
@@ -4299,13 +4323,13 @@ L316:
 
 # DROP / 
 
-# SLABEL ("L320") / 
+# SLABEL ("L319") / 
 
-L320:
+L319:
 
-# LINE (307) / 
+# LINE (314) / 
 
-	.stabn 68,0,307,.L42-Llambda_0_11
+	.stabn 68,0,314,.L42-Llambda_0_11
 
 .L42:
 
@@ -4325,13 +4349,13 @@ L320:
 # LD (Local (2)) / 
 
 	movl	-12(%ebp),	%ecx
-# SLABEL ("L328") / 
+# SLABEL ("L327") / 
 
-L328:
+L327:
 
-# LINE (308) / 
+# LINE (315) / 
 
-	.stabn 68,0,308,.L43-Llambda_0_11
+	.stabn 68,0,315,.L43-Llambda_0_11
 
 .L43:
 
@@ -4341,9 +4365,9 @@ L328:
 # DUP / 
 
 	movl	%esi,	%edi
-# SLABEL ("L333") / 
+# SLABEL ("L332") / 
 
-L333:
+L332:
 
 # STRING ("+") / 
 
@@ -4373,20 +4397,20 @@ L333:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%edi
-# CJMP ("z", "L332") / 
+# CJMP ("z", "L331") / 
 
 	sarl	%edi
 	cmpl	$0,	%edi
-	jz	L332
+	jz	L331
 # DROP / 
 
-# SLABEL ("L335") / 
+# SLABEL ("L334") / 
 
-L335:
+L334:
 
-# LINE (309) / 
+# LINE (316) / 
 
-	.stabn 68,0,309,.L44-Llambda_0_11
+	.stabn 68,0,316,.L44-Llambda_0_11
 
 .L44:
 
@@ -4446,24 +4470,24 @@ L335:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# SLABEL ("L336") / 
+# SLABEL ("L335") / 
 
-L336:
+L335:
 
-# JMP ("L326") / 
+# JMP ("L325") / 
 
-	jmp	L326
-# SLABEL ("L334") / 
+	jmp	L325
+# SLABEL ("L333") / 
 
-L334:
+L333:
 
-# SLABEL ("L345") / 
+# SLABEL ("L344") / 
 
-L345:
+L344:
 
-# LABEL ("L332") / 
+# LABEL ("L331") / 
 
-L332:
+L331:
 
 # DUP / 
 
@@ -4496,20 +4520,20 @@ L332:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%edi
-# CJMP ("z", "L344") / 
+# CJMP ("z", "L343") / 
 
 	sarl	%edi
 	cmpl	$0,	%edi
-	jz	L344
+	jz	L343
 # DROP / 
 
-# SLABEL ("L347") / 
+# SLABEL ("L346") / 
 
-L347:
+L346:
 
-# LINE (310) / 
+# LINE (317) / 
 
-	.stabn 68,0,310,.L45-Llambda_0_11
+	.stabn 68,0,317,.L45-Llambda_0_11
 
 .L45:
 
@@ -4569,24 +4593,24 @@ L347:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# SLABEL ("L348") / 
+# SLABEL ("L347") / 
 
-L348:
+L347:
 
-# JMP ("L326") / 
+# JMP ("L325") / 
 
-	jmp	L326
-# SLABEL ("L346") / 
+	jmp	L325
+# SLABEL ("L345") / 
 
-L346:
+L345:
 
-# SLABEL ("L357") / 
+# SLABEL ("L356") / 
 
-L357:
+L356:
 
-# LABEL ("L344") / 
+# LABEL ("L343") / 
 
-L344:
+L343:
 
 # DUP / 
 
@@ -4619,20 +4643,20 @@ L344:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%edi
-# CJMP ("z", "L356") / 
+# CJMP ("z", "L355") / 
 
 	sarl	%edi
 	cmpl	$0,	%edi
-	jz	L356
+	jz	L355
 # DROP / 
 
-# SLABEL ("L359") / 
+# SLABEL ("L358") / 
 
-L359:
+L358:
 
-# LINE (311) / 
+# LINE (318) / 
 
-	.stabn 68,0,311,.L46-Llambda_0_11
+	.stabn 68,0,318,.L46-Llambda_0_11
 
 .L46:
 
@@ -4723,24 +4747,24 @@ L359:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# SLABEL ("L360") / 
+# SLABEL ("L359") / 
 
-L360:
+L359:
 
-# JMP ("L326") / 
+# JMP ("L325") / 
 
-	jmp	L326
-# SLABEL ("L358") / 
+	jmp	L325
+# SLABEL ("L357") / 
 
-L358:
+L357:
 
-# SLABEL ("L373") / 
+# SLABEL ("L372") / 
 
-L373:
+L372:
 
-# LABEL ("L356") / 
+# LABEL ("L355") / 
 
-L356:
+L355:
 
 # DUP / 
 
@@ -4773,20 +4797,20 @@ L356:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%edi
-# CJMP ("z", "L372") / 
+# CJMP ("z", "L371") / 
 
 	sarl	%edi
 	cmpl	$0,	%edi
-	jz	L372
+	jz	L371
 # DROP / 
 
-# SLABEL ("L375") / 
+# SLABEL ("L374") / 
 
-L375:
+L374:
 
-# LINE (312) / 
+# LINE (319) / 
 
-	.stabn 68,0,312,.L47-Llambda_0_11
+	.stabn 68,0,319,.L47-Llambda_0_11
 
 .L47:
 
@@ -4892,24 +4916,24 @@ L375:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# SLABEL ("L376") / 
+# SLABEL ("L375") / 
 
-L376:
+L375:
 
-# JMP ("L326") / 
+# JMP ("L325") / 
 
-	jmp	L326
-# SLABEL ("L374") / 
+	jmp	L325
+# SLABEL ("L373") / 
 
-L374:
+L373:
 
-# SLABEL ("L390") / 
+# SLABEL ("L389") / 
 
-L390:
+L389:
 
-# LABEL ("L372") / 
+# LABEL ("L371") / 
 
-L372:
+L371:
 
 # DUP / 
 
@@ -4942,20 +4966,20 @@ L372:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%edi
-# CJMP ("z", "L389") / 
+# CJMP ("z", "L388") / 
 
 	sarl	%edi
 	cmpl	$0,	%edi
-	jz	L389
+	jz	L388
 # DROP / 
 
-# SLABEL ("L392") / 
+# SLABEL ("L391") / 
 
-L392:
+L391:
 
-# LINE (313) / 
+# LINE (320) / 
 
-	.stabn 68,0,313,.L48-Llambda_0_11
+	.stabn 68,0,320,.L48-Llambda_0_11
 
 .L48:
 
@@ -5061,24 +5085,24 @@ L392:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# SLABEL ("L393") / 
+# SLABEL ("L392") / 
 
-L393:
+L392:
 
-# JMP ("L326") / 
+# JMP ("L325") / 
 
-	jmp	L326
-# SLABEL ("L391") / 
+	jmp	L325
+# SLABEL ("L390") / 
 
-L391:
+L390:
 
-# SLABEL ("L407") / 
+# SLABEL ("L406") / 
 
-L407:
+L406:
 
-# LABEL ("L389") / 
+# LABEL ("L388") / 
 
-L389:
+L388:
 
 # DUP / 
 
@@ -5111,20 +5135,20 @@ L389:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%edi
-# CJMP ("z", "L406") / 
+# CJMP ("z", "L405") / 
 
 	sarl	%edi
 	cmpl	$0,	%edi
-	jz	L406
+	jz	L405
 # DROP / 
 
-# SLABEL ("L409") / 
+# SLABEL ("L408") / 
 
-L409:
+L408:
 
-# LINE (314) / 
+# LINE (321) / 
 
-	.stabn 68,0,314,.L49-Llambda_0_11
+	.stabn 68,0,321,.L49-Llambda_0_11
 
 .L49:
 
@@ -5328,24 +5352,24 @@ L409:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# SLABEL ("L410") / 
+# SLABEL ("L409") / 
 
-L410:
+L409:
 
-# JMP ("L326") / 
+# JMP ("L325") / 
 
-	jmp	L326
-# SLABEL ("L408") / 
+	jmp	L325
+# SLABEL ("L407") / 
 
-L408:
+L407:
 
-# SLABEL ("L433") / 
+# SLABEL ("L432") / 
 
-L433:
+L432:
 
-# LABEL ("L406") / 
+# LABEL ("L405") / 
 
-L406:
+L405:
 
 # DUP / 
 
@@ -5378,20 +5402,20 @@ L406:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%edi
-# CJMP ("z", "L432") / 
+# CJMP ("z", "L431") / 
 
 	sarl	%edi
 	cmpl	$0,	%edi
-	jz	L432
+	jz	L431
 # DROP / 
 
-# SLABEL ("L435") / 
+# SLABEL ("L434") / 
 
-L435:
+L434:
 
-# LINE (315) / 
+# LINE (322) / 
 
-	.stabn 68,0,315,.L50-Llambda_0_11
+	.stabn 68,0,322,.L50-Llambda_0_11
 
 .L50:
 
@@ -5595,24 +5619,24 @@ L435:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# SLABEL ("L436") / 
+# SLABEL ("L435") / 
 
-L436:
+L435:
 
-# JMP ("L326") / 
+# JMP ("L325") / 
 
-	jmp	L326
-# SLABEL ("L434") / 
+	jmp	L325
+# SLABEL ("L433") / 
 
-L434:
+L433:
 
-# SLABEL ("L459") / 
+# SLABEL ("L458") / 
 
-L459:
+L458:
 
-# LABEL ("L432") / 
+# LABEL ("L431") / 
 
-L432:
+L431:
 
 # DUP / 
 
@@ -5645,20 +5669,20 @@ L432:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%edi
-# CJMP ("z", "L458") / 
+# CJMP ("z", "L457") / 
 
 	sarl	%edi
 	cmpl	$0,	%edi
-	jz	L458
+	jz	L457
 # DROP / 
 
-# SLABEL ("L461") / 
+# SLABEL ("L460") / 
 
-L461:
+L460:
 
-# LINE (316) / 
+# LINE (323) / 
 
-	.stabn 68,0,316,.L51-Llambda_0_11
+	.stabn 68,0,323,.L51-Llambda_0_11
 
 .L51:
 
@@ -5862,24 +5886,24 @@ L461:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# SLABEL ("L462") / 
+# SLABEL ("L461") / 
 
-L462:
+L461:
 
-# JMP ("L326") / 
+# JMP ("L325") / 
 
-	jmp	L326
-# SLABEL ("L460") / 
+	jmp	L325
+# SLABEL ("L459") / 
 
-L460:
+L459:
 
-# SLABEL ("L485") / 
+# SLABEL ("L484") / 
 
-L485:
+L484:
 
-# LABEL ("L458") / 
+# LABEL ("L457") / 
 
-L458:
+L457:
 
 # DUP / 
 
@@ -5912,20 +5936,20 @@ L458:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%edi
-# CJMP ("z", "L484") / 
+# CJMP ("z", "L483") / 
 
 	sarl	%edi
 	cmpl	$0,	%edi
-	jz	L484
+	jz	L483
 # DROP / 
 
-# SLABEL ("L487") / 
+# SLABEL ("L486") / 
 
-L487:
+L486:
 
-# LINE (317) / 
+# LINE (324) / 
 
-	.stabn 68,0,317,.L52-Llambda_0_11
+	.stabn 68,0,324,.L52-Llambda_0_11
 
 .L52:
 
@@ -6129,24 +6153,24 @@ L487:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# SLABEL ("L488") / 
+# SLABEL ("L487") / 
 
-L488:
+L487:
 
-# JMP ("L326") / 
+# JMP ("L325") / 
 
-	jmp	L326
-# SLABEL ("L486") / 
+	jmp	L325
+# SLABEL ("L485") / 
 
-L486:
+L485:
 
-# SLABEL ("L511") / 
+# SLABEL ("L510") / 
 
-L511:
+L510:
 
-# LABEL ("L484") / 
+# LABEL ("L483") / 
 
-L484:
+L483:
 
 # DUP / 
 
@@ -6179,20 +6203,20 @@ L484:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%edi
-# CJMP ("z", "L510") / 
+# CJMP ("z", "L509") / 
 
 	sarl	%edi
 	cmpl	$0,	%edi
-	jz	L510
+	jz	L509
 # DROP / 
 
-# SLABEL ("L513") / 
+# SLABEL ("L512") / 
 
-L513:
+L512:
 
-# LINE (318) / 
+# LINE (325) / 
 
-	.stabn 68,0,318,.L53-Llambda_0_11
+	.stabn 68,0,325,.L53-Llambda_0_11
 
 .L53:
 
@@ -6396,24 +6420,24 @@ L513:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# SLABEL ("L514") / 
+# SLABEL ("L513") / 
 
-L514:
+L513:
 
-# JMP ("L326") / 
+# JMP ("L325") / 
 
-	jmp	L326
-# SLABEL ("L512") / 
+	jmp	L325
+# SLABEL ("L511") / 
 
-L512:
+L511:
 
-# SLABEL ("L537") / 
+# SLABEL ("L536") / 
 
-L537:
+L536:
 
-# LABEL ("L510") / 
+# LABEL ("L509") / 
 
-L510:
+L509:
 
 # DUP / 
 
@@ -6446,20 +6470,20 @@ L510:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%edi
-# CJMP ("z", "L536") / 
+# CJMP ("z", "L535") / 
 
 	sarl	%edi
 	cmpl	$0,	%edi
-	jz	L536
+	jz	L535
 # DROP / 
 
-# SLABEL ("L539") / 
+# SLABEL ("L538") / 
 
-L539:
+L538:
 
-# LINE (319) / 
+# LINE (326) / 
 
-	.stabn 68,0,319,.L54-Llambda_0_11
+	.stabn 68,0,326,.L54-Llambda_0_11
 
 .L54:
 
@@ -6663,24 +6687,24 @@ L539:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# SLABEL ("L540") / 
+# SLABEL ("L539") / 
 
-L540:
+L539:
 
-# JMP ("L326") / 
+# JMP ("L325") / 
 
-	jmp	L326
-# SLABEL ("L538") / 
+	jmp	L325
+# SLABEL ("L537") / 
 
-L538:
+L537:
 
-# SLABEL ("L563") / 
+# SLABEL ("L562") / 
 
-L563:
+L562:
 
-# LABEL ("L536") / 
+# LABEL ("L535") / 
 
-L536:
+L535:
 
 # DUP / 
 
@@ -6713,20 +6737,20 @@ L536:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%edi
-# CJMP ("z", "L562") / 
+# CJMP ("z", "L561") / 
 
 	sarl	%edi
 	cmpl	$0,	%edi
-	jz	L562
+	jz	L561
 # DROP / 
 
-# SLABEL ("L565") / 
+# SLABEL ("L564") / 
 
-L565:
+L564:
 
-# LINE (320) / 
+# LINE (327) / 
 
-	.stabn 68,0,320,.L55-Llambda_0_11
+	.stabn 68,0,327,.L55-Llambda_0_11
 
 .L55:
 
@@ -7139,24 +7163,24 @@ L565:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# SLABEL ("L566") / 
+# SLABEL ("L565") / 
 
-L566:
+L565:
 
-# JMP ("L326") / 
+# JMP ("L325") / 
 
-	jmp	L326
-# SLABEL ("L564") / 
+	jmp	L325
+# SLABEL ("L563") / 
 
-L564:
+L563:
 
-# SLABEL ("L608") / 
+# SLABEL ("L607") / 
 
-L608:
+L607:
 
-# LABEL ("L562") / 
+# LABEL ("L561") / 
 
-L562:
+L561:
 
 # DUP / 
 
@@ -7189,20 +7213,20 @@ L562:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%edi
-# CJMP ("z", "L330") / 
+# CJMP ("z", "L329") / 
 
 	sarl	%edi
 	cmpl	$0,	%edi
-	jz	L330
+	jz	L329
 # DROP / 
 
-# SLABEL ("L610") / 
+# SLABEL ("L609") / 
 
-L610:
+L609:
 
-# LINE (321) / 
+# LINE (328) / 
 
-	.stabn 68,0,321,.L56-Llambda_0_11
+	.stabn 68,0,328,.L56-Llambda_0_11
 
 .L56:
 
@@ -7615,39 +7639,39 @@ L610:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# SLABEL ("L611") / 
+# SLABEL ("L610") / 
 
-L611:
+L610:
 
-# SLABEL ("L609") / 
+# SLABEL ("L608") / 
 
-L609:
+L608:
 
-# JMP ("L326") / 
+# JMP ("L325") / 
 
-	jmp	L326
-# LABEL ("L330") / 
+	jmp	L325
+# LABEL ("L329") / 
 
-L330:
+L329:
 
-# FAIL ((308, 17), true) / 
+# FAIL ((315, 16), true) / 
 
-	pushl	$35
-	pushl	$617
+	pushl	$33
+	pushl	$631
 	pushl	$string_16
 	pushl	%esi
 	call	Bmatch_failure
 	addl	$16,	%esp
-# JMP ("L326") / 
+# JMP ("L325") / 
 
-	jmp	L326
-# SLABEL ("L329") / 
+	jmp	L325
+# SLABEL ("L328") / 
 
-L329:
+L328:
 
-# LABEL ("L326") / 
+# LABEL ("L325") / 
 
-L326:
+L325:
 
 # CALL ("Li__Infix_604362", 2, false) / 
 
@@ -7666,135 +7690,802 @@ L326:
 	call	Barray
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L321") / 
+# SLABEL ("L320") / 
 
-L321:
+L320:
 
-# SLABEL ("L319") / 
+# SLABEL ("L318") / 
 
-L319:
+L318:
 
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-	jmp	L157
-# LABEL ("L313") / 
+	jmp	L156
+# LABEL ("L312") / 
 
-L313:
+L312:
 
-# FAIL ((305, 15), true) / 
+# FAIL ((312, 12), true) / 
 
-	pushl	$31
-	pushl	$611
+	pushl	$25
+	pushl	$625
 	pushl	$string_16
 	pushl	%ebx
 	call	Bmatch_failure
 	addl	$16,	%esp
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-	jmp	L157
-# SLABEL ("L312") / 
+	jmp	L156
+# SLABEL ("L311") / 
 
-L312:
+L311:
 
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-# SLABEL ("L310") / 
+# SLABEL ("L309") / 
 
-L310:
-
-# SLABEL ("L653") / 
-
-L653:
-
-# LABEL ("L306") / 
-
-L306:
-
-# DUP / 
-
-	movl	%ebx,	%ecx
-# DROP / 
-
-# DROP / 
+L309:
 
 # SLABEL ("L655") / 
 
 L655:
 
-# LINE (325) / 
+# LABEL ("L305") / 
 
-	.stabn 68,0,325,.L57-Llambda_0_11
+L305:
 
-.L57:
+# DUP / 
 
-# STRING ("codegeneration for instruction %s is not yet implemented\\n") / 
+	movl	%ebx,	%ecx
+# DUP / 
 
-	movl	$string_36,	%ebx
+	movl	%ecx,	%esi
+# TAG ("LABEL", 1) / 
+
+	movl	$1289457613,	%edi
+	movl	$3,	-32(%ebp)
 	pushl	%ebx
-	call	Bstring
-	addl	$4,	%esp
-	movl	%eax,	%ebx
-# LD (Arg (1)) / 
+	pushl	%ecx
+	pushl	-32(%ebp)
+	pushl	%edi
+	pushl	%esi
+	call	Btag
+	addl	$12,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# CJMP ("nz", "L653") / 
 
-	movl	12(%ebp),	%ecx
-# CALL ("Lstring", 1, false) / 
+	sarl	%esi
+	cmpl	$0,	%esi
+	jnz	L653
+# LABEL ("L654") / 
+
+L654:
+
+# DROP / 
+
+# JMP ("L652") / 
+
+	jmp	L652
+# LABEL ("L653") / 
+
+L653:
+
+# DUP / 
+
+	movl	%ecx,	%esi
+# CONST (0) / 
+
+	movl	$1,	%edi
+# CALL (".elem", 2, false) / 
 
 	pushl	%ebx
 	pushl	%ecx
-	call	Lstring
-	addl	$4,	%esp
+	pushl	%edi
+	pushl	%esi
+	call	Belem
+	addl	$8,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# DROP / 
+
+# DROP / 
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# CONST (0) / 
+
+	movl	$1,	%esi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Belem
+	addl	$8,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CALL ("Lfailure", 2, true) / 
+# ST (Local (3)) / 
 
-	movl	%ebx,	8(%ebp)
-	movl	%ecx,	12(%ebp)
-	movl	%ebp,	%esp
-	popl	%ebp
-	jmp	Lfailure
+	movl	%ecx,	-16(%ebp)
+# DROP / 
+
+# DROP / 
+
+# SLABEL ("L657") / 
+
+L657:
+
+# LINE (332) / 
+
+	.stabn 68,0,332,.L57-Llambda_0_11
+
+.L57:
+
+# LD (Local (1)) / 
+
+	movl	-8(%ebp),	%ebx
+# LD (Local (2)) / 
+
+	movl	-12(%ebp),	%ecx
+# LD (Local (3)) / 
+
+	movl	-16(%ebp),	%esi
+# SEXP ("Label", 1) / 
+
+	movl	$1275609753,	%edi
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%edi
+	pushl	%esi
+	pushl	$5
+	call	Bsexp
+	addl	$12,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# CALL ("Li__Infix_6043", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Li__Infix_6043
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CALL (".array", 2, true) / 
+
+	pushl	%ecx
+	pushl	%ebx
+	pushl	$5
+	call	Barray
+	addl	$12,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L658") / 
+
+L658:
+
+# JMP ("L156") / 
+
+	jmp	L156
 # SLABEL ("L656") / 
 
 L656:
 
-# SLABEL ("L654") / 
+# SLABEL ("L667") / 
 
-L654:
+L667:
 
-# JMP ("L157") / 
+# LABEL ("L652") / 
 
-	jmp	L157
-# SLABEL ("L165") / 
+L652:
 
-L165:
+# DUP / 
 
-# SLABEL ("L163") / 
+	movl	%ebx,	%ecx
+# DUP / 
 
-L163:
+	movl	%ecx,	%esi
+# TAG ("JMP", 1) / 
 
-# JMP ("L157") / 
+	movl	$299989,	%edi
+	movl	$3,	-32(%ebp)
+	pushl	%ebx
+	pushl	%ecx
+	pushl	-32(%ebp)
+	pushl	%edi
+	pushl	%esi
+	call	Btag
+	addl	$12,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# CJMP ("nz", "L665") / 
 
-# LABEL ("L158") / 
+	sarl	%esi
+	cmpl	$0,	%esi
+	jnz	L665
+# LABEL ("L666") / 
 
-L158:
+L666:
 
-# FAIL ((280, 10), true) / 
+# DROP / 
 
-	pushl	$21
-	pushl	$561
+# JMP ("L664") / 
+
+	jmp	L664
+# LABEL ("L665") / 
+
+L665:
+
+# DUP / 
+
+	movl	%ecx,	%esi
+# CONST (0) / 
+
+	movl	$1,	%edi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%edi
+	pushl	%esi
+	call	Belem
+	addl	$8,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# DROP / 
+
+# DROP / 
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# CONST (0) / 
+
+	movl	$1,	%esi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Belem
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# ST (Local (3)) / 
+
+	movl	%ecx,	-16(%ebp)
+# DROP / 
+
+# DROP / 
+
+# SLABEL ("L669") / 
+
+L669:
+
+# LINE (333) / 
+
+	.stabn 68,0,333,.L58-Llambda_0_11
+
+.L58:
+
+# LD (Local (1)) / 
+
+	movl	-8(%ebp),	%ebx
+# LD (Local (2)) / 
+
+	movl	-12(%ebp),	%ecx
+# LD (Local (3)) / 
+
+	movl	-16(%ebp),	%esi
+# SEXP ("Jmp", 1) / 
+
+	movl	$296609,	%edi
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%edi
+	pushl	%esi
+	pushl	$5
+	call	Bsexp
+	addl	$12,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# CALL ("Li__Infix_6043", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Li__Infix_6043
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CALL (".array", 2, true) / 
+
+	pushl	%ecx
+	pushl	%ebx
+	pushl	$5
+	call	Barray
+	addl	$12,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L670") / 
+
+L670:
+
+# JMP ("L156") / 
+
+	jmp	L156
+# SLABEL ("L668") / 
+
+L668:
+
+# SLABEL ("L678") / 
+
+L678:
+
+# LABEL ("L664") / 
+
+L664:
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# DUP / 
+
+	movl	%ecx,	%esi
+# TAG ("CJMP", 2) / 
+
+	movl	$15504341,	%edi
+	movl	$5,	-32(%ebp)
+	pushl	%ebx
+	pushl	%ecx
+	pushl	-32(%ebp)
+	pushl	%edi
+	pushl	%esi
+	call	Btag
+	addl	$12,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# CJMP ("nz", "L676") / 
+
+	sarl	%esi
+	cmpl	$0,	%esi
+	jnz	L676
+# LABEL ("L677") / 
+
+L677:
+
+# DROP / 
+
+# JMP ("L176") / 
+
+	jmp	L176
+# LABEL ("L676") / 
+
+L676:
+
+# DUP / 
+
+	movl	%ecx,	%esi
+# CONST (0) / 
+
+	movl	$1,	%edi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%edi
+	pushl	%esi
+	call	Belem
+	addl	$8,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# DROP / 
+
+# DUP / 
+
+	movl	%ecx,	%esi
+# CONST (1) / 
+
+	movl	$3,	%edi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%edi
+	pushl	%esi
+	call	Belem
+	addl	$8,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# DROP / 
+
+# DROP / 
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# CONST (0) / 
+
+	movl	$1,	%esi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Belem
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# ST (Local (4)) / 
+
+	movl	%ecx,	-20(%ebp)
+# DROP / 
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# CONST (1) / 
+
+	movl	$3,	%esi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Belem
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# ST (Local (3)) / 
+
+	movl	%ecx,	-16(%ebp)
+# DROP / 
+
+# DROP / 
+
+# SLABEL ("L680") / 
+
+L680:
+
+# LINE (334) / 
+
+	.stabn 68,0,334,.L59-Llambda_0_11
+
+.L59:
+
+# LD (Local (1)) / 
+
+	movl	-8(%ebp),	%ebx
+# CALL ("Lpop", 1, false) / 
+
+	pushl	%ebx
+	call	Lpop
+	addl	$4,	%esp
+	movl	%eax,	%ebx
+# DUP / 
+
+	movl	%ebx,	%ecx
+# SLABEL ("L687") / 
+
+L687:
+
+# DUP / 
+
+	movl	%ecx,	%esi
+# ARRAY (2) / 
+
+	movl	$5,	%edi
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%edi
+	pushl	%esi
+	call	Barray_patt
+	addl	$8,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# CJMP ("nz", "L685") / 
+
+	sarl	%esi
+	cmpl	$0,	%esi
+	jnz	L685
+# LABEL ("L686") / 
+
+L686:
+
+# DROP / 
+
+# JMP ("L682") / 
+
+	jmp	L682
+# LABEL ("L685") / 
+
+L685:
+
+# DUP / 
+
+	movl	%ecx,	%esi
+# CONST (0) / 
+
+	movl	$1,	%edi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%edi
+	pushl	%esi
+	call	Belem
+	addl	$8,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# DROP / 
+
+# DUP / 
+
+	movl	%ecx,	%esi
+# CONST (1) / 
+
+	movl	$3,	%edi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%edi
+	pushl	%esi
+	call	Belem
+	addl	$8,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# DROP / 
+
+# DROP / 
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# CONST (0) / 
+
+	movl	$1,	%esi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Belem
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# ST (Local (6)) / 
+
+	movl	%ecx,	-28(%ebp)
+# DROP / 
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# CONST (1) / 
+
+	movl	$3,	%esi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Belem
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# ST (Local (5)) / 
+
+	movl	%ecx,	-24(%ebp)
+# DROP / 
+
+# DROP / 
+
+# SLABEL ("L689") / 
+
+L689:
+
+# LINE (335) / 
+
+	.stabn 68,0,335,.L60-Llambda_0_11
+
+.L60:
+
+# LD (Local (5)) / 
+
+	movl	-24(%ebp),	%ebx
+# LD (Local (2)) / 
+
+	movl	-12(%ebp),	%ecx
+# STRING ("cmp") / 
+
+	movl	$string_27,	%esi
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%esi
+	call	Bstring
+	addl	$4,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# CONST (0) / 
+
+	movl	$1,	%edi
+# SEXP ("L", 1) / 
+
+	movl	$77,	-32(%ebp)
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%esi
+	pushl	-32(%ebp)
+	pushl	%edi
+	pushl	$5
+	call	Bsexp
+	addl	$12,	%esp
+	popl	%esi
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%edi
+# LD (Local (6)) / 
+
+	movl	-28(%ebp),	%eax
+	movl	%eax,	-32(%ebp)
+# SEXP ("Binop", 3) / 
+
+	movl	$944359329,	-36(%ebp)
+	pushl	%ebx
+	pushl	%ecx
+	pushl	-36(%ebp)
+	pushl	-32(%ebp)
+	pushl	%edi
+	pushl	%esi
+	pushl	$9
+	call	Bsexp
+	addl	$20,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# CALL ("Li__Infix_6043", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Li__Infix_6043
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# LD (Local (4)) / 
+
+	movl	-20(%ebp),	%esi
+# LD (Local (3)) / 
+
+	movl	-16(%ebp),	%edi
+# SEXP ("CJmp", 2) / 
+
+	movl	$15500961,	-32(%ebp)
+	pushl	%ebx
+	pushl	%ecx
+	pushl	-32(%ebp)
+	pushl	%edi
+	pushl	%esi
+	pushl	$7
+	call	Bsexp
+	addl	$16,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# CALL ("Li__Infix_6043", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Li__Infix_6043
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CALL (".array", 2, true) / 
+
+	pushl	%ecx
+	pushl	%ebx
+	pushl	$5
+	call	Barray
+	addl	$12,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L690") / 
+
+L690:
+
+# SLABEL ("L688") / 
+
+L688:
+
+# JMP ("L156") / 
+
+	jmp	L156
+# LABEL ("L682") / 
+
+L682:
+
+# FAIL ((334, 28), true) / 
+
+	pushl	$57
+	pushl	$669
 	pushl	$string_16
 	pushl	%ebx
 	call	Bmatch_failure
 	addl	$16,	%esp
-# JMP ("L157") / 
+# JMP ("L156") / 
 
-	jmp	L157
+	jmp	L156
+# SLABEL ("L681") / 
+
+L681:
+
+# SLABEL ("L679") / 
+
+L679:
+
+# JMP ("L156") / 
+
+# LABEL ("L176") / 
+
+L176:
+
+# FAIL ((290, 9), true) / 
+
+	pushl	$19
+	pushl	$581
+	pushl	$string_16
+	pushl	%ebx
+	call	Bmatch_failure
+	addl	$16,	%esp
+# JMP ("L156") / 
+
+	jmp	L156
+# SLABEL ("L164") / 
+
+L164:
+
+# SLABEL ("L162") / 
+
+L162:
+
+# JMP ("L156") / 
+
 # LABEL ("L157") / 
 
 L157:
 
-# SLABEL ("L156") / 
+# FAIL ((287, 10), true) / 
+
+	pushl	$21
+	pushl	$575
+	pushl	$string_16
+	pushl	%ebx
+	call	Bmatch_failure
+	addl	$16,	%esp
+# JMP ("L156") / 
+
+	jmp	L156
+# LABEL ("L156") / 
 
 L156:
+
+# SLABEL ("L155") / 
+
+L155:
 
 # END / 
 
@@ -7820,7 +8511,7 @@ LLlambda_0_11_epilogue:
 
 Lsuffix:
 
-# BEGIN ("Lsuffix", 1, 0, [], ["op"], [{ blab="L660"; elab="L661"; names=[]; subs=[{ blab="L663"; elab="L664"; names=[]; subs=[{ blab="L692"; elab="L693"; names=[]; subs=[{ blab="L694"; elab="L695"; names=[]; subs=[]; }]; }; { blab="L688"; elab="L689"; names=[]; subs=[{ blab="L690"; elab="L691"; names=[]; subs=[]; }]; }; { blab="L683"; elab="L684"; names=[]; subs=[{ blab="L685"; elab="L686"; names=[]; subs=[]; }]; }; { blab="L678"; elab="L679"; names=[]; subs=[{ blab="L680"; elab="L681"; names=[]; subs=[]; }]; }; { blab="L673"; elab="L674"; names=[]; subs=[{ blab="L675"; elab="L676"; names=[]; subs=[]; }]; }; { blab="L668"; elab="L669"; names=[]; subs=[{ blab="L670"; elab="L671"; names=[]; subs=[]; }]; }]; }]; }]) / 
+# BEGIN ("Lsuffix", 1, 0, [], ["op"], [{ blab="L703"; elab="L704"; names=[]; subs=[{ blab="L706"; elab="L707"; names=[]; subs=[{ blab="L735"; elab="L736"; names=[]; subs=[{ blab="L737"; elab="L738"; names=[]; subs=[]; }]; }; { blab="L731"; elab="L732"; names=[]; subs=[{ blab="L733"; elab="L734"; names=[]; subs=[]; }]; }; { blab="L726"; elab="L727"; names=[]; subs=[{ blab="L728"; elab="L729"; names=[]; subs=[]; }]; }; { blab="L721"; elab="L722"; names=[]; subs=[{ blab="L723"; elab="L724"; names=[]; subs=[]; }]; }; { blab="L716"; elab="L717"; names=[]; subs=[{ blab="L718"; elab="L719"; names=[]; subs=[]; }]; }; { blab="L711"; elab="L712"; names=[]; subs=[{ blab="L713"; elab="L714"; names=[]; subs=[]; }]; }]; }]; }]) / 
 
 	.type suffix, @function
 
@@ -7843,21 +8534,21 @@ Lsuffix:
 	movl	$filler,	%esi
 	movl	$LSLsuffix_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L660") / 
+# SLABEL ("L703") / 
 
-L660:
+L703:
 
-# SLABEL ("L663") / 
+# SLABEL ("L706") / 
 
-L663:
+L706:
 
-# LINE (267) / 
+# LINE (274) / 
 
-	.stabn 68,0,267,0
+	.stabn 68,0,274,0
 
-	.stabn 68,0,267,.L58-Lsuffix
+	.stabn 68,0,274,.L61-Lsuffix
 
-.L58:
+.L61:
 
 # LD (Arg (0)) / 
 
@@ -7865,9 +8556,9 @@ L663:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L668") / 
+# SLABEL ("L711") / 
 
-L668:
+L711:
 
 # STRING ("<") / 
 
@@ -7889,42 +8580,42 @@ L668:
 	addl	$8,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CJMP ("z", "L667") / 
+# CJMP ("z", "L710") / 
 
 	sarl	%ecx
 	cmpl	$0,	%ecx
-	jz	L667
+	jz	L710
 # DROP / 
 
-# SLABEL ("L670") / 
+# SLABEL ("L713") / 
 
-L670:
+L713:
 
 # STRING ("l") / 
 
-	movl	$string_37,	%ebx
+	movl	$string_36,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L671") / 
+# SLABEL ("L714") / 
 
-L671:
+L714:
 
-# JMP ("L662") / 
+# JMP ("L705") / 
 
-	jmp	L662
-# SLABEL ("L669") / 
+	jmp	L705
+# SLABEL ("L712") / 
 
-L669:
+L712:
 
-# SLABEL ("L673") / 
+# SLABEL ("L716") / 
 
-L673:
+L716:
 
-# LABEL ("L667") / 
+# LABEL ("L710") / 
 
-L667:
+L710:
 
 # DUP / 
 
@@ -7949,42 +8640,42 @@ L667:
 	addl	$8,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CJMP ("z", "L672") / 
+# CJMP ("z", "L715") / 
 
 	sarl	%ecx
 	cmpl	$0,	%ecx
-	jz	L672
+	jz	L715
 # DROP / 
 
-# SLABEL ("L675") / 
+# SLABEL ("L718") / 
 
-L675:
+L718:
 
 # STRING ("le") / 
 
-	movl	$string_38,	%ebx
+	movl	$string_37,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L676") / 
+# SLABEL ("L719") / 
 
-L676:
+L719:
 
-# JMP ("L662") / 
+# JMP ("L705") / 
 
-	jmp	L662
-# SLABEL ("L674") / 
+	jmp	L705
+# SLABEL ("L717") / 
 
-L674:
+L717:
 
-# SLABEL ("L678") / 
+# SLABEL ("L721") / 
 
-L678:
+L721:
 
-# LABEL ("L672") / 
+# LABEL ("L715") / 
 
-L672:
+L715:
 
 # DUP / 
 
@@ -8009,42 +8700,42 @@ L672:
 	addl	$8,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CJMP ("z", "L677") / 
+# CJMP ("z", "L720") / 
 
 	sarl	%ecx
 	cmpl	$0,	%ecx
-	jz	L677
+	jz	L720
 # DROP / 
 
-# SLABEL ("L680") / 
+# SLABEL ("L723") / 
 
-L680:
+L723:
 
 # STRING ("e") / 
 
-	movl	$string_39,	%ebx
+	movl	$string_38,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L681") / 
+# SLABEL ("L724") / 
 
-L681:
+L724:
 
-# JMP ("L662") / 
+# JMP ("L705") / 
 
-	jmp	L662
-# SLABEL ("L679") / 
+	jmp	L705
+# SLABEL ("L722") / 
 
-L679:
+L722:
 
-# SLABEL ("L683") / 
+# SLABEL ("L726") / 
 
-L683:
+L726:
 
-# LABEL ("L677") / 
+# LABEL ("L720") / 
 
-L677:
+L720:
 
 # DUP / 
 
@@ -8069,42 +8760,42 @@ L677:
 	addl	$8,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CJMP ("z", "L682") / 
+# CJMP ("z", "L725") / 
 
 	sarl	%ecx
 	cmpl	$0,	%ecx
-	jz	L682
+	jz	L725
 # DROP / 
 
-# SLABEL ("L685") / 
+# SLABEL ("L728") / 
 
-L685:
+L728:
 
 # STRING ("ne") / 
 
-	movl	$string_40,	%ebx
+	movl	$string_39,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L686") / 
+# SLABEL ("L729") / 
 
-L686:
+L729:
 
-# JMP ("L662") / 
+# JMP ("L705") / 
 
-	jmp	L662
-# SLABEL ("L684") / 
+	jmp	L705
+# SLABEL ("L727") / 
 
-L684:
+L727:
 
-# SLABEL ("L688") / 
+# SLABEL ("L731") / 
 
-L688:
+L731:
 
-# LABEL ("L682") / 
+# LABEL ("L725") / 
 
-L682:
+L725:
 
 # DUP / 
 
@@ -8129,42 +8820,42 @@ L682:
 	addl	$8,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CJMP ("z", "L687") / 
+# CJMP ("z", "L730") / 
 
 	sarl	%ecx
 	cmpl	$0,	%ecx
-	jz	L687
+	jz	L730
 # DROP / 
 
-# SLABEL ("L690") / 
+# SLABEL ("L733") / 
 
-L690:
+L733:
 
 # STRING ("ge") / 
 
-	movl	$string_41,	%ebx
+	movl	$string_40,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L691") / 
+# SLABEL ("L734") / 
 
-L691:
+L734:
 
-# JMP ("L662") / 
+# JMP ("L705") / 
 
-	jmp	L662
-# SLABEL ("L689") / 
+	jmp	L705
+# SLABEL ("L732") / 
 
-L689:
+L732:
 
-# SLABEL ("L692") / 
+# SLABEL ("L735") / 
 
-L692:
+L735:
 
-# LABEL ("L687") / 
+# LABEL ("L730") / 
 
-L687:
+L730:
 
 # DUP / 
 
@@ -8189,61 +8880,61 @@ L687:
 	addl	$8,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CJMP ("z", "L665") / 
+# CJMP ("z", "L708") / 
 
 	sarl	%ecx
 	cmpl	$0,	%ecx
-	jz	L665
+	jz	L708
 # DROP / 
 
-# SLABEL ("L694") / 
+# SLABEL ("L737") / 
 
-L694:
+L737:
 
 # STRING ("g") / 
 
-	movl	$string_42,	%ebx
+	movl	$string_41,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L695") / 
+# SLABEL ("L738") / 
 
-L695:
+L738:
 
-# SLABEL ("L693") / 
+# SLABEL ("L736") / 
 
-L693:
+L736:
 
-# JMP ("L662") / 
+# JMP ("L705") / 
 
-	jmp	L662
-# LABEL ("L665") / 
+	jmp	L705
+# LABEL ("L708") / 
 
-L665:
+L708:
 
-# FAIL ((267, 7), true) / 
+# FAIL ((274, 7), true) / 
 
 	pushl	$15
-	pushl	$535
+	pushl	$549
 	pushl	$string_16
 	pushl	%ebx
 	call	Bmatch_failure
 	addl	$16,	%esp
-# JMP ("L662") / 
+# JMP ("L705") / 
 
-	jmp	L662
-# SLABEL ("L664") / 
+	jmp	L705
+# SLABEL ("L707") / 
 
-L664:
+L707:
 
-# LABEL ("L662") / 
+# LABEL ("L705") / 
 
-L662:
+L705:
 
-# SLABEL ("L661") / 
+# SLABEL ("L704") / 
 
-L661:
+L704:
 
 # END / 
 
@@ -8269,7 +8960,7 @@ LLsuffix_epilogue:
 
 Lmove:
 
-# BEGIN ("Lmove", 2, 0, [], ["from"; "to"], [{ blab="L696"; elab="L697"; names=[]; subs=[{ blab="L699"; elab="L700"; names=[]; subs=[{ blab="L716"; elab="L717"; names=[]; subs=[]; }; { blab="L707"; elab="L708"; names=[]; subs=[]; }]; }]; }]) / 
+# BEGIN ("Lmove", 2, 0, [], ["from"; "to"], [{ blab="L739"; elab="L740"; names=[]; subs=[{ blab="L742"; elab="L743"; names=[]; subs=[{ blab="L759"; elab="L760"; names=[]; subs=[]; }; { blab="L750"; elab="L751"; names=[]; subs=[]; }]; }]; }]) / 
 
 	.type move, @function
 
@@ -8294,21 +8985,21 @@ Lmove:
 	movl	$filler,	%esi
 	movl	$LSLmove_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L696") / 
+# SLABEL ("L739") / 
 
-L696:
+L739:
 
-# SLABEL ("L699") / 
+# SLABEL ("L742") / 
 
-L699:
+L742:
 
-# LINE (258) / 
+# LINE (265) / 
 
-	.stabn 68,0,258,0
+	.stabn 68,0,265,0
 
-	.stabn 68,0,258,.L59-Lmove
+	.stabn 68,0,265,.L62-Lmove
 
-.L59:
+.L62:
 
 # LD (Arg (0)) / 
 
@@ -8347,20 +9038,20 @@ L699:
 	sall	%eax
 	orl	$0x0001,	%eax
 	movl	%eax,	%ebx
-# CJMP ("z", "L702") / 
+# CJMP ("z", "L745") / 
 
 	sarl	%ebx
 	cmpl	$0,	%ebx
-	jz	L702
-# SLABEL ("L707") / 
+	jz	L745
+# SLABEL ("L750") / 
 
-L707:
+L750:
 
-# LINE (259) / 
+# LINE (266) / 
 
-	.stabn 68,0,259,.L60-Lmove
+	.stabn 68,0,266,.L63-Lmove
 
-.L60:
+.L63:
 
 # LD (Arg (0)) / 
 
@@ -8409,26 +9100,26 @@ L707:
 	movl	%ebp,	%esp
 	popl	%ebp
 	jmp	Li__Infix_6043
-# SLABEL ("L708") / 
+# SLABEL ("L751") / 
 
-L708:
+L751:
 
-# JMP ("L698") / 
+# JMP ("L741") / 
 
-	jmp	L698
-# LABEL ("L702") / 
+	jmp	L741
+# LABEL ("L745") / 
 
-L702:
+L745:
 
-# SLABEL ("L716") / 
+# SLABEL ("L759") / 
 
-L716:
+L759:
 
-# LINE (260) / 
+# LINE (267) / 
 
-	.stabn 68,0,260,.L61-Lmove
+	.stabn 68,0,267,.L64-Lmove
 
-.L61:
+.L64:
 
 # LD (Arg (0)) / 
 
@@ -8452,24 +9143,24 @@ L716:
 	call	LsingletonBuffer
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L717") / 
+# SLABEL ("L760") / 
 
-L717:
+L760:
 
-# JMP ("L698") / 
+# JMP ("L741") / 
 
-	jmp	L698
-# SLABEL ("L700") / 
+	jmp	L741
+# SLABEL ("L743") / 
 
-L700:
+L743:
 
-# LABEL ("L698") / 
+# LABEL ("L741") / 
 
-L698:
+L741:
 
-# SLABEL ("L697") / 
+# SLABEL ("L740") / 
 
-L697:
+L740:
 
 # END / 
 
@@ -8495,7 +9186,7 @@ LLmove_epilogue:
 
 LmemOpnd:
 
-# BEGIN ("LmemOpnd", 1, 0, [], ["opnd"], [{ blab="L721"; elab="L722"; names=[]; subs=[{ blab="L724"; elab="L725"; names=[]; subs=[{ blab="L742"; elab="L743"; names=[]; subs=[{ blab="L744"; elab="L745"; names=[]; subs=[]; }]; }; { blab="L738"; elab="L739"; names=[]; subs=[{ blab="L740"; elab="L741"; names=[]; subs=[]; }]; }; { blab="L731"; elab="L732"; names=[]; subs=[{ blab="L733"; elab="L734"; names=[]; subs=[]; }]; }]; }]; }]) / 
+# BEGIN ("LmemOpnd", 1, 0, [], ["opnd"], [{ blab="L764"; elab="L765"; names=[]; subs=[{ blab="L767"; elab="L768"; names=[]; subs=[{ blab="L785"; elab="L786"; names=[]; subs=[{ blab="L787"; elab="L788"; names=[]; subs=[]; }]; }; { blab="L781"; elab="L782"; names=[]; subs=[{ blab="L783"; elab="L784"; names=[]; subs=[]; }]; }; { blab="L774"; elab="L775"; names=[]; subs=[{ blab="L776"; elab="L777"; names=[]; subs=[]; }]; }]; }]; }]) / 
 
 	.type memOpnd, @function
 
@@ -8518,21 +9209,21 @@ LmemOpnd:
 	movl	$filler,	%esi
 	movl	$LSLmemOpnd_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L721") / 
+# SLABEL ("L764") / 
 
-L721:
+L764:
 
-# SLABEL ("L724") / 
+# SLABEL ("L767") / 
 
-L724:
+L767:
 
-# LINE (248) / 
+# LINE (255) / 
 
-	.stabn 68,0,248,0
+	.stabn 68,0,255,0
 
-	.stabn 68,0,248,.L62-LmemOpnd
+	.stabn 68,0,255,.L65-LmemOpnd
 
-.L62:
+.L65:
 
 # LD (Arg (0)) / 
 
@@ -8540,9 +9231,9 @@ L724:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L731") / 
+# SLABEL ("L774") / 
 
-L731:
+L774:
 
 # DUP / 
 
@@ -8561,23 +9252,23 @@ L731:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L729") / 
+# CJMP ("nz", "L772") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L729
-# LABEL ("L730") / 
+	jnz	L772
+# LABEL ("L773") / 
 
-L730:
+L773:
 
 # DROP / 
 
-# JMP ("L728") / 
+# JMP ("L771") / 
 
-	jmp	L728
-# LABEL ("L729") / 
+	jmp	L771
+# LABEL ("L772") / 
 
-L729:
+L772:
 
 # DUP / 
 
@@ -8602,31 +9293,31 @@ L729:
 
 # DROP / 
 
-# SLABEL ("L733") / 
+# SLABEL ("L776") / 
 
-L733:
+L776:
 
 # CONST (1) / 
 
 	movl	$3,	%ebx
-# SLABEL ("L734") / 
+# SLABEL ("L777") / 
 
-L734:
+L777:
 
-# JMP ("L723") / 
+# JMP ("L766") / 
 
-	jmp	L723
-# SLABEL ("L732") / 
+	jmp	L766
+# SLABEL ("L775") / 
 
-L732:
+L775:
 
-# SLABEL ("L738") / 
+# SLABEL ("L781") / 
 
-L738:
+L781:
 
-# LABEL ("L728") / 
+# LABEL ("L771") / 
 
-L728:
+L771:
 
 # DUP / 
 
@@ -8648,23 +9339,23 @@ L728:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L736") / 
+# CJMP ("nz", "L779") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L736
-# LABEL ("L737") / 
+	jnz	L779
+# LABEL ("L780") / 
 
-L737:
+L780:
 
 # DROP / 
 
-# JMP ("L735") / 
+# JMP ("L778") / 
 
-	jmp	L735
-# LABEL ("L736") / 
+	jmp	L778
+# LABEL ("L779") / 
 
-L736:
+L779:
 
 # DUP / 
 
@@ -8689,31 +9380,31 @@ L736:
 
 # DROP / 
 
-# SLABEL ("L740") / 
+# SLABEL ("L783") / 
 
-L740:
+L783:
 
 # CONST (1) / 
 
 	movl	$3,	%ebx
-# SLABEL ("L741") / 
+# SLABEL ("L784") / 
 
-L741:
+L784:
 
-# JMP ("L723") / 
+# JMP ("L766") / 
 
-	jmp	L723
-# SLABEL ("L739") / 
+	jmp	L766
+# SLABEL ("L782") / 
 
-L739:
+L782:
 
-# SLABEL ("L742") / 
+# SLABEL ("L785") / 
 
-L742:
+L785:
 
-# LABEL ("L735") / 
+# LABEL ("L778") / 
 
-L735:
+L778:
 
 # DUP / 
 
@@ -8722,35 +9413,35 @@ L735:
 
 # DROP / 
 
-# SLABEL ("L744") / 
+# SLABEL ("L787") / 
 
-L744:
+L787:
 
 # CONST (0) / 
 
 	movl	$1,	%ebx
-# SLABEL ("L745") / 
+# SLABEL ("L788") / 
 
-L745:
+L788:
 
-# SLABEL ("L743") / 
+# SLABEL ("L786") / 
 
-L743:
+L786:
 
-# JMP ("L723") / 
+# JMP ("L766") / 
 
-	jmp	L723
-# SLABEL ("L725") / 
+	jmp	L766
+# SLABEL ("L768") / 
 
-L725:
+L768:
 
-# LABEL ("L723") / 
+# LABEL ("L766") / 
 
-L723:
+L766:
 
-# SLABEL ("L722") / 
+# SLABEL ("L765") / 
 
-L722:
+L765:
 
 # END / 
 
@@ -8776,7 +9467,7 @@ LLmemOpnd_epilogue:
 
 LstackOpnd:
 
-# BEGIN ("LstackOpnd", 1, 0, [], ["opnd"], [{ blab="L746"; elab="L747"; names=[]; subs=[{ blab="L749"; elab="L750"; names=[]; subs=[{ blab="L760"; elab="L761"; names=[]; subs=[{ blab="L762"; elab="L763"; names=[]; subs=[]; }]; }; { blab="L756"; elab="L757"; names=[]; subs=[{ blab="L758"; elab="L759"; names=[]; subs=[]; }]; }]; }]; }]) / 
+# BEGIN ("LstackOpnd", 1, 0, [], ["opnd"], [{ blab="L789"; elab="L790"; names=[]; subs=[{ blab="L792"; elab="L793"; names=[]; subs=[{ blab="L803"; elab="L804"; names=[]; subs=[{ blab="L805"; elab="L806"; names=[]; subs=[]; }]; }; { blab="L799"; elab="L800"; names=[]; subs=[{ blab="L801"; elab="L802"; names=[]; subs=[]; }]; }]; }]; }]) / 
 
 	.type stackOpnd, @function
 
@@ -8799,21 +9490,21 @@ LstackOpnd:
 	movl	$filler,	%esi
 	movl	$LSLstackOpnd_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L746") / 
+# SLABEL ("L789") / 
 
-L746:
+L789:
 
-# SLABEL ("L749") / 
+# SLABEL ("L792") / 
 
-L749:
+L792:
 
-# LINE (240) / 
+# LINE (247) / 
 
-	.stabn 68,0,240,0
+	.stabn 68,0,247,0
 
-	.stabn 68,0,240,.L63-LstackOpnd
+	.stabn 68,0,247,.L66-LstackOpnd
 
-.L63:
+.L66:
 
 # LD (Arg (0)) / 
 
@@ -8821,9 +9512,9 @@ L749:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L756") / 
+# SLABEL ("L799") / 
 
-L756:
+L799:
 
 # DUP / 
 
@@ -8842,23 +9533,23 @@ L756:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L754") / 
+# CJMP ("nz", "L797") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L754
-# LABEL ("L755") / 
+	jnz	L797
+# LABEL ("L798") / 
 
-L755:
+L798:
 
 # DROP / 
 
-# JMP ("L753") / 
+# JMP ("L796") / 
 
-	jmp	L753
-# LABEL ("L754") / 
+	jmp	L796
+# LABEL ("L797") / 
 
-L754:
+L797:
 
 # DUP / 
 
@@ -8883,31 +9574,31 @@ L754:
 
 # DROP / 
 
-# SLABEL ("L758") / 
+# SLABEL ("L801") / 
 
-L758:
+L801:
 
 # CONST (1) / 
 
 	movl	$3,	%ebx
-# SLABEL ("L759") / 
+# SLABEL ("L802") / 
 
-L759:
+L802:
 
-# JMP ("L748") / 
+# JMP ("L791") / 
 
-	jmp	L748
-# SLABEL ("L757") / 
+	jmp	L791
+# SLABEL ("L800") / 
 
-L757:
+L800:
 
-# SLABEL ("L760") / 
+# SLABEL ("L803") / 
 
-L760:
+L803:
 
-# LABEL ("L753") / 
+# LABEL ("L796") / 
 
-L753:
+L796:
 
 # DUP / 
 
@@ -8916,35 +9607,35 @@ L753:
 
 # DROP / 
 
-# SLABEL ("L762") / 
+# SLABEL ("L805") / 
 
-L762:
+L805:
 
 # CONST (0) / 
 
 	movl	$1,	%ebx
-# SLABEL ("L763") / 
+# SLABEL ("L806") / 
 
-L763:
+L806:
 
-# SLABEL ("L761") / 
+# SLABEL ("L804") / 
 
-L761:
+L804:
 
-# JMP ("L748") / 
+# JMP ("L791") / 
 
-	jmp	L748
-# SLABEL ("L750") / 
+	jmp	L791
+# SLABEL ("L793") / 
 
-L750:
+L793:
 
-# LABEL ("L748") / 
+# LABEL ("L791") / 
 
-L748:
+L791:
 
-# SLABEL ("L747") / 
+# SLABEL ("L790") / 
 
-L747:
+L790:
 
 # END / 
 
@@ -8970,7 +9661,7 @@ LLstackOpnd_epilogue:
 
 Lepilogue:
 
-# BEGIN ("Lepilogue", 0, 0, [], [], [{ blab="L764"; elab="L765"; names=[]; subs=[{ blab="L767"; elab="L768"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Lepilogue", 0, 0, [], [], [{ blab="L807"; elab="L808"; names=[]; subs=[{ blab="L810"; elab="L811"; names=[]; subs=[]; }]; }]) / 
 
 	.type epilogue, @function
 
@@ -8991,27 +9682,27 @@ Lepilogue:
 	movl	$filler,	%esi
 	movl	$LSLepilogue_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L764") / 
+# SLABEL ("L807") / 
 
-L764:
+L807:
 
-# SLABEL ("L767") / 
+# SLABEL ("L810") / 
 
-L767:
+L810:
 
-# LINE (231) / 
+# LINE (238) / 
 
-	.stabn 68,0,231,0
+	.stabn 68,0,238,0
 
-	.stabn 68,0,231,.L64-Lepilogue
+	.stabn 68,0,238,.L67-Lepilogue
 
-.L64:
+.L67:
 
-# LINE (232) / 
+# LINE (239) / 
 
-	.stabn 68,0,232,.L65-Lepilogue
+	.stabn 68,0,239,.L68-Lepilogue
 
-.L65:
+.L68:
 
 # LD (Global ("ebp")) / 
 
@@ -9035,11 +9726,11 @@ L767:
 	call	LsingletonBuffer
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# LINE (233) / 
+# LINE (240) / 
 
-	.stabn 68,0,233,.L66-Lepilogue
+	.stabn 68,0,240,.L69-Lepilogue
 
-.L66:
+.L69:
 
 # LD (Global ("ebp")) / 
 
@@ -9064,18 +9755,18 @@ L767:
 	movl	%eax,	%ebx
 # STRING ("^") / 
 
-	movl	$string_43,	%ecx
+	movl	$string_42,	%ecx
 	pushl	%ebx
 	pushl	%ecx
 	call	Bstring
 	addl	$4,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# LINE (234) / 
+# LINE (241) / 
 
-	.stabn 68,0,234,.L67-Lepilogue
+	.stabn 68,0,241,.L70-Lepilogue
 
-.L67:
+.L70:
 
 # LD (Global ("eax")) / 
 
@@ -9120,17 +9811,17 @@ L767:
 	call	Li__Infix_6043
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L768") / 
+# SLABEL ("L811") / 
 
-L768:
+L811:
 
-# LABEL ("L766") / 
+# LABEL ("L809") / 
 
-L766:
+L809:
 
-# SLABEL ("L765") / 
+# SLABEL ("L808") / 
 
-L765:
+L808:
 
 # END / 
 
@@ -9156,7 +9847,7 @@ LLepilogue_epilogue:
 
 Lprologue:
 
-# BEGIN ("Lprologue", 1, 0, [], ["size"], [{ blab="L783"; elab="L784"; names=[]; subs=[{ blab="L786"; elab="L787"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Lprologue", 1, 0, [], ["size"], [{ blab="L826"; elab="L827"; names=[]; subs=[{ blab="L829"; elab="L830"; names=[]; subs=[]; }]; }]) / 
 
 	.type prologue, @function
 
@@ -9179,27 +9870,27 @@ Lprologue:
 	movl	$filler,	%esi
 	movl	$LSLprologue_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L783") / 
+# SLABEL ("L826") / 
 
-L783:
+L826:
 
-# SLABEL ("L786") / 
+# SLABEL ("L829") / 
 
-L786:
+L829:
 
-# LINE (224) / 
+# LINE (231) / 
 
-	.stabn 68,0,224,0
+	.stabn 68,0,231,0
 
-	.stabn 68,0,224,.L68-Lprologue
+	.stabn 68,0,231,.L71-Lprologue
 
-.L68:
+.L71:
 
-# LINE (225) / 
+# LINE (232) / 
 
-	.stabn 68,0,225,.L69-Lprologue
+	.stabn 68,0,232,.L72-Lprologue
 
-.L69:
+.L72:
 
 # LD (Global ("ebp")) / 
 
@@ -9219,11 +9910,11 @@ L786:
 	call	LsingletonBuffer
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# LINE (226) / 
+# LINE (233) / 
 
-	.stabn 68,0,226,.L70-Lprologue
+	.stabn 68,0,233,.L73-Lprologue
 
-.L70:
+.L73:
 
 # LD (Global ("esp")) / 
 
@@ -9259,11 +9950,11 @@ L786:
 	addl	$4,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# LINE (227) / 
+# LINE (234) / 
 
-	.stabn 68,0,227,.L71-Lprologue
+	.stabn 68,0,234,.L74-Lprologue
 
-.L71:
+.L74:
 
 # LD (Global ("wordSize")) / 
 
@@ -9314,17 +10005,17 @@ L786:
 	call	Li__Infix_6043
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L787") / 
+# SLABEL ("L830") / 
 
-L787:
+L830:
 
-# LABEL ("L785") / 
+# LABEL ("L828") / 
 
-L785:
+L828:
 
-# SLABEL ("L784") / 
+# SLABEL ("L827") / 
 
-L784:
+L827:
 
 # END / 
 
@@ -9350,7 +10041,7 @@ LLprologue_epilogue:
 
 LdataDef:
 
-# BEGIN ("LdataDef", 1, 0, [], ["name"], [{ blab="L802"; elab="L803"; names=[]; subs=[{ blab="L805"; elab="L806"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("LdataDef", 1, 0, [], ["name"], [{ blab="L845"; elab="L846"; names=[]; subs=[{ blab="L848"; elab="L849"; names=[]; subs=[]; }]; }]) / 
 
 	.type dataDef, @function
 
@@ -9373,25 +10064,25 @@ LdataDef:
 	movl	$filler,	%esi
 	movl	$LSLdataDef_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L802") / 
+# SLABEL ("L845") / 
 
-L802:
+L845:
 
-# SLABEL ("L805") / 
+# SLABEL ("L848") / 
 
-L805:
+L848:
 
-# LINE (220) / 
+# LINE (227) / 
 
-	.stabn 68,0,220,0
+	.stabn 68,0,227,0
 
-	.stabn 68,0,220,.L72-LdataDef
+	.stabn 68,0,227,.L75-LdataDef
 
-.L72:
+.L75:
 
 # STRING ("%s:\\t.int\\t0\\n") / 
 
-	movl	$string_44,	%ebx
+	movl	$string_43,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
@@ -9415,17 +10106,17 @@ L805:
 	call	Bsexp
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L806") / 
+# SLABEL ("L849") / 
 
-L806:
+L849:
 
-# LABEL ("L804") / 
+# LABEL ("L847") / 
 
-L804:
+L847:
 
-# SLABEL ("L803") / 
+# SLABEL ("L846") / 
 
-L803:
+L846:
 
 # END / 
 
@@ -9451,7 +10142,7 @@ LLdataDef_epilogue:
 
 LdataSection:
 
-# BEGIN ("LdataSection", 1, 0, [], ["text"], [{ blab="L810"; elab="L811"; names=[]; subs=[{ blab="L813"; elab="L814"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("LdataSection", 1, 0, [], ["text"], [{ blab="L853"; elab="L854"; names=[]; subs=[{ blab="L856"; elab="L857"; names=[]; subs=[]; }]; }]) / 
 
 	.type dataSection, @function
 
@@ -9474,25 +10165,25 @@ LdataSection:
 	movl	$filler,	%esi
 	movl	$LSLdataSection_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L810") / 
+# SLABEL ("L853") / 
 
-L810:
+L853:
 
-# SLABEL ("L813") / 
+# SLABEL ("L856") / 
 
-L813:
+L856:
 
-# LINE (214) / 
+# LINE (221) / 
 
-	.stabn 68,0,214,0
+	.stabn 68,0,221,0
 
-	.stabn 68,0,214,.L73-LdataSection
+	.stabn 68,0,221,.L76-LdataSection
 
-.L73:
+.L76:
 
 # STRING ("\\t.data\\n") / 
 
-	movl	$string_45,	%ebx
+	movl	$string_44,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
@@ -9512,11 +10203,11 @@ L813:
 	call	LsingletonBuffer
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# LINE (215) / 
+# LINE (222) / 
 
-	.stabn 68,0,215,.L74-LdataSection
+	.stabn 68,0,222,.L77-LdataSection
 
-.L74:
+.L77:
 
 # LD (Arg (0)) / 
 
@@ -9528,17 +10219,17 @@ L813:
 	call	Li__Infix_604362
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L814") / 
+# SLABEL ("L857") / 
 
-L814:
+L857:
 
-# LABEL ("L812") / 
+# LABEL ("L855") / 
 
-L812:
+L855:
 
-# SLABEL ("L811") / 
+# SLABEL ("L854") / 
 
-L811:
+L854:
 
 # END / 
 
@@ -9564,7 +10255,7 @@ LLdataSection_epilogue:
 
 LcodeSection:
 
-# BEGIN ("LcodeSection", 1, 0, [], ["text"], [{ blab="L819"; elab="L820"; names=[]; subs=[{ blab="L822"; elab="L823"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("LcodeSection", 1, 0, [], ["text"], [{ blab="L862"; elab="L863"; names=[]; subs=[{ blab="L865"; elab="L866"; names=[]; subs=[]; }]; }]) / 
 
 	.type codeSection, @function
 
@@ -9587,25 +10278,25 @@ LcodeSection:
 	movl	$filler,	%esi
 	movl	$LSLcodeSection_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L819") / 
+# SLABEL ("L862") / 
 
-L819:
+L862:
 
-# SLABEL ("L822") / 
+# SLABEL ("L865") / 
 
-L822:
+L865:
 
-# LINE (209) / 
+# LINE (216) / 
 
-	.stabn 68,0,209,0
+	.stabn 68,0,216,0
 
-	.stabn 68,0,209,.L75-LcodeSection
+	.stabn 68,0,216,.L78-LcodeSection
 
-.L75:
+.L78:
 
 # STRING ("\\t.text\\n") / 
 
-	movl	$string_46,	%ebx
+	movl	$string_45,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
@@ -9625,11 +10316,11 @@ L822:
 	call	LsingletonBuffer
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# LINE (210) / 
+# LINE (217) / 
 
-	.stabn 68,0,210,.L76-LcodeSection
+	.stabn 68,0,217,.L79-LcodeSection
 
-.L76:
+.L79:
 
 # LD (Arg (0)) / 
 
@@ -9641,17 +10332,17 @@ L822:
 	call	Li__Infix_604362
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L823") / 
+# SLABEL ("L866") / 
 
-L823:
+L866:
 
-# LABEL ("L821") / 
+# LABEL ("L864") / 
 
-L821:
+L864:
 
-# SLABEL ("L820") / 
+# SLABEL ("L863") / 
 
-L820:
+L863:
 
 # END / 
 
@@ -9677,7 +10368,7 @@ LLcodeSection_epilogue:
 
 LinitEnv:
 
-# BEGIN ("LinitEnv", 0, 0, [], [], [{ blab="L828"; elab="L829"; names=[]; subs=[{ blab="L831"; elab="L832"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("LinitEnv", 0, 0, [], [], [{ blab="L871"; elab="L872"; names=[]; subs=[{ blab="L874"; elab="L875"; names=[]; subs=[]; }]; }]) / 
 
 	.type initEnv, @function
 
@@ -9698,34 +10389,48 @@ LinitEnv:
 	movl	$filler,	%esi
 	movl	$LSLinitEnv_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L828") / 
+# SLABEL ("L871") / 
 
-L828:
+L871:
 
-# SLABEL ("L831") / 
+# SLABEL ("L874") / 
 
-L831:
+L874:
 
-# LINE (203) / 
+# LINE (210) / 
 
-	.stabn 68,0,203,0
+	.stabn 68,0,210,0
 
-	.stabn 68,0,203,.L77-LinitEnv
+	.stabn 68,0,210,.L80-LinitEnv
 
-.L77:
+.L80:
 
 # CONST (0) / 
 
 	movl	$1,	%ebx
-# CONST (0) / 
+# LINE (211) / 
 
-	movl	$1,	%ecx
-# LINE (204) / 
+	.stabn 68,0,211,.L81-LinitEnv
 
-	.stabn 68,0,204,.L78-LinitEnv
+.L81:
 
-.L78:
+# CLOSURE ("Lcompare", []) / 
 
+	pushl	%ebx
+	pushl	$Lcompare
+	pushl	$1
+	call	Bclosure
+	addl	$8,	%esp
+	movl	%eax,	%ecx
+	popl	%ebx
+# CALL ("LemptySet", 1, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	call	LemptySet
+	addl	$4,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
 # CLOSURE ("Lcompare", []) / 
 
 	pushl	%ebx
@@ -9755,17 +10460,17 @@ L831:
 	call	LmakeEnv
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L832") / 
+# SLABEL ("L875") / 
 
-L832:
+L875:
 
-# LABEL ("L830") / 
+# LABEL ("L873") / 
 
-L830:
+L873:
 
-# SLABEL ("L829") / 
+# SLABEL ("L872") / 
 
-L829:
+L872:
 
 # END / 
 
@@ -9791,7 +10496,7 @@ LLinitEnv_epilogue:
 
 LgetStackSize:
 
-# BEGIN ("LgetStackSize", 1, 0, [], ["env"], [{ blab="L837"; elab="L838"; names=[]; subs=[{ blab="L840"; elab="L841"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("LgetStackSize", 1, 0, [], ["env"], [{ blab="L881"; elab="L882"; names=[]; subs=[{ blab="L884"; elab="L885"; names=[]; subs=[]; }]; }]) / 
 
 	.type getStackSize, @function
 
@@ -9814,21 +10519,21 @@ LgetStackSize:
 	movl	$filler,	%esi
 	movl	$LSLgetStackSize_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L837") / 
+# SLABEL ("L881") / 
 
-L837:
+L881:
 
-# SLABEL ("L840") / 
+# SLABEL ("L884") / 
 
-L840:
+L884:
 
-# LINE (198) / 
+# LINE (205) / 
 
-	.stabn 68,0,198,0
+	.stabn 68,0,205,0
 
-	.stabn 68,0,198,.L79-LgetStackSize
+	.stabn 68,0,205,.L82-LgetStackSize
 
-.L79:
+.L82:
 
 # LD (Arg (0)) / 
 
@@ -9851,17 +10556,17 @@ L840:
 	addl	$0,	%esp
 	popl	%ebx
 	movl	%eax,	%ebx
-# SLABEL ("L841") / 
+# SLABEL ("L885") / 
 
-L841:
+L885:
 
-# LABEL ("L839") / 
+# LABEL ("L883") / 
 
-L839:
+L883:
 
-# SLABEL ("L838") / 
+# SLABEL ("L882") / 
 
-L838:
+L882:
 
 # END / 
 
@@ -9887,7 +10592,7 @@ LLgetStackSize_epilogue:
 
 LgetGlobals:
 
-# BEGIN ("LgetGlobals", 1, 0, [], ["env"], [{ blab="L845"; elab="L846"; names=[]; subs=[{ blab="L848"; elab="L849"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("LgetGlobals", 1, 0, [], ["env"], [{ blab="L889"; elab="L890"; names=[]; subs=[{ blab="L892"; elab="L893"; names=[]; subs=[]; }]; }]) / 
 
 	.type getGlobals, @function
 
@@ -9910,21 +10615,21 @@ LgetGlobals:
 	movl	$filler,	%esi
 	movl	$LSLgetGlobals_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L845") / 
+# SLABEL ("L889") / 
 
-L845:
+L889:
 
-# SLABEL ("L848") / 
+# SLABEL ("L892") / 
 
-L848:
+L892:
 
-# LINE (194) / 
+# LINE (201) / 
 
-	.stabn 68,0,194,0
+	.stabn 68,0,201,0
 
-	.stabn 68,0,194,.L80-LgetGlobals
+	.stabn 68,0,201,.L83-LgetGlobals
 
-.L80:
+.L83:
 
 # LD (Arg (0)) / 
 
@@ -9947,17 +10652,17 @@ L848:
 	addl	$0,	%esp
 	popl	%ebx
 	movl	%eax,	%ebx
-# SLABEL ("L849") / 
+# SLABEL ("L893") / 
 
-L849:
+L893:
 
-# LABEL ("L847") / 
+# LABEL ("L891") / 
 
-L847:
+L891:
 
-# SLABEL ("L846") / 
+# SLABEL ("L890") / 
 
-L846:
+L890:
 
 # END / 
 
@@ -9983,7 +10688,7 @@ LLgetGlobals_epilogue:
 
 Lloc:
 
-# BEGIN ("Lloc", 2, 0, [], ["env"; "name"], [{ blab="L853"; elab="L854"; names=[]; subs=[{ blab="L856"; elab="L857"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Lloc", 2, 0, [], ["env"; "name"], [{ blab="L897"; elab="L898"; names=[]; subs=[{ blab="L900"; elab="L901"; names=[]; subs=[]; }]; }]) / 
 
 	.type loc, @function
 
@@ -10008,21 +10713,21 @@ Lloc:
 	movl	$filler,	%esi
 	movl	$LSLloc_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L853") / 
+# SLABEL ("L897") / 
 
-L853:
+L897:
 
-# SLABEL ("L856") / 
+# SLABEL ("L900") / 
 
-L856:
+L900:
 
-# LINE (190) / 
+# LINE (197) / 
 
-	.stabn 68,0,190,0
+	.stabn 68,0,197,0
 
-	.stabn 68,0,190,.L81-Lloc
+	.stabn 68,0,197,.L84-Lloc
 
-.L81:
+.L84:
 
 # LD (Arg (0)) / 
 
@@ -10037,11 +10742,11 @@ L856:
 	call	Belem
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# LINE (191) / 
+# LINE (198) / 
 
-	.stabn 68,0,191,.L82-Lloc
+	.stabn 68,0,198,.L85-Lloc
 
-.L82:
+.L85:
 
 # LD (Arg (1)) / 
 
@@ -10055,17 +10760,17 @@ L856:
 	addl	$4,	%esp
 	popl	%ebx
 	movl	%eax,	%ebx
-# SLABEL ("L857") / 
+# SLABEL ("L901") / 
 
-L857:
+L901:
 
-# LABEL ("L855") / 
+# LABEL ("L899") / 
 
-L855:
+L899:
 
-# SLABEL ("L854") / 
+# SLABEL ("L898") / 
 
-L854:
+L898:
 
 # END / 
 
@@ -10091,7 +10796,7 @@ LLloc_epilogue:
 
 LaddGlobal:
 
-# BEGIN ("LaddGlobal", 2, 0, [], ["env"; "name"], [{ blab="L862"; elab="L863"; names=[]; subs=[{ blab="L865"; elab="L866"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("LaddGlobal", 2, 0, [], ["env"; "name"], [{ blab="L906"; elab="L907"; names=[]; subs=[{ blab="L909"; elab="L910"; names=[]; subs=[]; }]; }]) / 
 
 	.type addGlobal, @function
 
@@ -10116,21 +10821,21 @@ LaddGlobal:
 	movl	$filler,	%esi
 	movl	$LSLaddGlobal_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L862") / 
+# SLABEL ("L906") / 
 
-L862:
+L906:
 
-# SLABEL ("L865") / 
+# SLABEL ("L909") / 
 
-L865:
+L909:
 
-# LINE (186) / 
+# LINE (193) / 
 
-	.stabn 68,0,186,0
+	.stabn 68,0,193,0
 
-	.stabn 68,0,186,.L83-LaddGlobal
+	.stabn 68,0,193,.L86-LaddGlobal
 
-.L83:
+.L86:
 
 # LD (Arg (0)) / 
 
@@ -10145,11 +10850,11 @@ L865:
 	call	Belem
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# LINE (187) / 
+# LINE (194) / 
 
-	.stabn 68,0,187,.L84-LaddGlobal
+	.stabn 68,0,194,.L87-LaddGlobal
 
-.L84:
+.L87:
 
 # LD (Arg (1)) / 
 
@@ -10163,17 +10868,17 @@ L865:
 	addl	$4,	%esp
 	popl	%ebx
 	movl	%eax,	%ebx
-# SLABEL ("L866") / 
+# SLABEL ("L910") / 
 
-L866:
+L910:
 
-# LABEL ("L864") / 
+# LABEL ("L908") / 
 
-L864:
+L908:
 
-# SLABEL ("L863") / 
+# SLABEL ("L907") / 
 
-L863:
+L907:
 
 # END / 
 
@@ -10199,7 +10904,7 @@ LLaddGlobal_epilogue:
 
 Lpop2:
 
-# BEGIN ("Lpop2", 1, 0, [], ["env"], [{ blab="L871"; elab="L872"; names=[]; subs=[{ blab="L874"; elab="L875"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Lpop2", 1, 0, [], ["env"], [{ blab="L915"; elab="L916"; names=[]; subs=[{ blab="L918"; elab="L919"; names=[]; subs=[]; }]; }]) / 
 
 	.type pop2, @function
 
@@ -10222,21 +10927,21 @@ Lpop2:
 	movl	$filler,	%esi
 	movl	$LSLpop2_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L871") / 
+# SLABEL ("L915") / 
 
-L871:
+L915:
 
-# SLABEL ("L874") / 
+# SLABEL ("L918") / 
 
-L874:
+L918:
 
-# LINE (182) / 
+# LINE (189) / 
 
-	.stabn 68,0,182,0
+	.stabn 68,0,189,0
 
-	.stabn 68,0,182,.L85-Lpop2
+	.stabn 68,0,189,.L88-Lpop2
 
-.L85:
+.L88:
 
 # LD (Arg (0)) / 
 
@@ -10259,17 +10964,17 @@ L874:
 	addl	$0,	%esp
 	popl	%ebx
 	movl	%eax,	%ebx
-# SLABEL ("L875") / 
+# SLABEL ("L919") / 
 
-L875:
+L919:
 
-# LABEL ("L873") / 
+# LABEL ("L917") / 
 
-L873:
+L917:
 
-# SLABEL ("L872") / 
+# SLABEL ("L916") / 
 
-L872:
+L916:
 
 # END / 
 
@@ -10295,7 +11000,7 @@ LLpop2_epilogue:
 
 Lpop:
 
-# BEGIN ("Lpop", 1, 0, [], ["env"], [{ blab="L879"; elab="L880"; names=[]; subs=[{ blab="L882"; elab="L883"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Lpop", 1, 0, [], ["env"], [{ blab="L923"; elab="L924"; names=[]; subs=[{ blab="L926"; elab="L927"; names=[]; subs=[]; }]; }]) / 
 
 	.type pop, @function
 
@@ -10318,21 +11023,21 @@ Lpop:
 	movl	$filler,	%esi
 	movl	$LSLpop_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L879") / 
+# SLABEL ("L923") / 
 
-L879:
+L923:
 
-# SLABEL ("L882") / 
+# SLABEL ("L926") / 
 
-L882:
+L926:
 
-# LINE (178) / 
+# LINE (185) / 
 
-	.stabn 68,0,178,0
+	.stabn 68,0,185,0
 
-	.stabn 68,0,178,.L86-Lpop
+	.stabn 68,0,185,.L89-Lpop
 
-.L86:
+.L89:
 
 # LD (Arg (0)) / 
 
@@ -10355,17 +11060,17 @@ L882:
 	addl	$0,	%esp
 	popl	%ebx
 	movl	%eax,	%ebx
-# SLABEL ("L883") / 
+# SLABEL ("L927") / 
 
-L883:
+L927:
 
-# LABEL ("L881") / 
+# LABEL ("L925") / 
 
-L881:
+L925:
 
-# SLABEL ("L880") / 
+# SLABEL ("L924") / 
 
-L880:
+L924:
 
 # END / 
 
@@ -10391,7 +11096,7 @@ LLpop_epilogue:
 
 Lpush:
 
-# BEGIN ("Lpush", 2, 0, [], ["env"; "x"], [{ blab="L887"; elab="L888"; names=[]; subs=[{ blab="L890"; elab="L891"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Lpush", 2, 0, [], ["env"; "x"], [{ blab="L931"; elab="L932"; names=[]; subs=[{ blab="L934"; elab="L935"; names=[]; subs=[]; }]; }]) / 
 
 	.type push, @function
 
@@ -10416,21 +11121,21 @@ Lpush:
 	movl	$filler,	%esi
 	movl	$LSLpush_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L887") / 
+# SLABEL ("L931") / 
 
-L887:
+L931:
 
-# SLABEL ("L890") / 
+# SLABEL ("L934") / 
 
-L890:
+L934:
 
-# LINE (174) / 
+# LINE (181) / 
 
-	.stabn 68,0,174,0
+	.stabn 68,0,181,0
 
-	.stabn 68,0,174,.L87-Lpush
+	.stabn 68,0,181,.L90-Lpush
 
-.L87:
+.L90:
 
 # LD (Arg (0)) / 
 
@@ -10445,11 +11150,11 @@ L890:
 	call	Belem
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# LINE (175) / 
+# LINE (182) / 
 
-	.stabn 68,0,175,.L88-Lpush
+	.stabn 68,0,182,.L91-Lpush
 
-.L88:
+.L91:
 
 # LD (Arg (1)) / 
 
@@ -10463,17 +11168,17 @@ L890:
 	addl	$4,	%esp
 	popl	%ebx
 	movl	%eax,	%ebx
-# SLABEL ("L891") / 
+# SLABEL ("L935") / 
 
-L891:
+L935:
 
-# LABEL ("L889") / 
+# LABEL ("L933") / 
 
-L889:
+L933:
 
-# SLABEL ("L888") / 
+# SLABEL ("L932") / 
 
-L888:
+L932:
 
 # END / 
 
@@ -10499,7 +11204,7 @@ LLpush_epilogue:
 
 Lallocate:
 
-# BEGIN ("Lallocate", 1, 0, [], ["env"], [{ blab="L896"; elab="L897"; names=[]; subs=[{ blab="L899"; elab="L900"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Lallocate", 1, 0, [], ["env"], [{ blab="L940"; elab="L941"; names=[]; subs=[{ blab="L943"; elab="L944"; names=[]; subs=[]; }]; }]) / 
 
 	.type allocate, @function
 
@@ -10522,21 +11227,21 @@ Lallocate:
 	movl	$filler,	%esi
 	movl	$LSLallocate_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L896") / 
+# SLABEL ("L940") / 
 
-L896:
+L940:
 
-# SLABEL ("L899") / 
+# SLABEL ("L943") / 
 
-L899:
+L943:
 
-# LINE (170) / 
+# LINE (177) / 
 
-	.stabn 68,0,170,0
+	.stabn 68,0,177,0
 
-	.stabn 68,0,170,.L89-Lallocate
+	.stabn 68,0,177,.L92-Lallocate
 
-.L89:
+.L92:
 
 # LD (Arg (0)) / 
 
@@ -10559,17 +11264,17 @@ L899:
 	addl	$0,	%esp
 	popl	%ebx
 	movl	%eax,	%ebx
-# SLABEL ("L900") / 
+# SLABEL ("L944") / 
 
-L900:
+L944:
 
-# LABEL ("L898") / 
+# LABEL ("L942") / 
 
-L898:
+L942:
 
-# SLABEL ("L897") / 
+# SLABEL ("L941") / 
 
-L897:
+L941:
 
 # END / 
 
@@ -10595,7 +11300,7 @@ LLallocate_epilogue:
 
 LenvString:
 
-# BEGIN ("LenvString", 1, 0, [], ["env"], [{ blab="L904"; elab="L905"; names=[]; subs=[{ blab="L907"; elab="L908"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("LenvString", 1, 0, [], ["env"], [{ blab="L948"; elab="L949"; names=[]; subs=[{ blab="L951"; elab="L952"; names=[]; subs=[]; }]; }]) / 
 
 	.type envString, @function
 
@@ -10618,21 +11323,21 @@ LenvString:
 	movl	$filler,	%esi
 	movl	$LSLenvString_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L904") / 
+# SLABEL ("L948") / 
 
-L904:
+L948:
 
-# SLABEL ("L907") / 
+# SLABEL ("L951") / 
 
-L907:
+L951:
 
-# LINE (166) / 
+# LINE (173) / 
 
-	.stabn 68,0,166,0
+	.stabn 68,0,173,0
 
-	.stabn 68,0,166,.L90-LenvString
+	.stabn 68,0,173,.L93-LenvString
 
-.L90:
+.L93:
 
 # LD (Arg (0)) / 
 
@@ -10655,17 +11360,17 @@ L907:
 	addl	$0,	%esp
 	popl	%ebx
 	movl	%eax,	%ebx
-# SLABEL ("L908") / 
+# SLABEL ("L952") / 
 
-L908:
+L952:
 
-# LABEL ("L906") / 
+# LABEL ("L950") / 
 
-L906:
+L950:
 
-# SLABEL ("L905") / 
+# SLABEL ("L949") / 
 
-L905:
+L949:
 
 # END / 
 
@@ -10691,7 +11396,7 @@ LLenvString_epilogue:
 
 LmakeEnv:
 
-# BEGIN ("LmakeEnv", 3, 0, [], ["stack"; "stackSlots"; "globals"], [{ blab="L912"; elab="L913"; names=[]; subs=[{ blab="L915"; elab="L916"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("LmakeEnv", 3, 0, [], ["stack"; "stackSlots"; "globals"], [{ blab="L956"; elab="L957"; names=[]; subs=[{ blab="L959"; elab="L960"; names=[]; subs=[]; }]; }]) / 
 
 	.type makeEnv, @function
 
@@ -10718,59 +11423,59 @@ LmakeEnv:
 	movl	$filler,	%esi
 	movl	$LSLmakeEnv_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L912") / 
+# SLABEL ("L956") / 
 
-L912:
+L956:
 
-# SLABEL ("L915") / 
+# SLABEL ("L959") / 
 
-L915:
+L959:
 
-# LINE (162) / 
+# LINE (169) / 
 
-	.stabn 68,0,162,0
+	.stabn 68,0,169,0
 
-	.stabn 68,0,162,.L91-LmakeEnv
+	.stabn 68,0,169,.L94-LmakeEnv
 
-.L91:
+.L94:
 
-# CLOSURE ("LenvString_131", [Arg (0); Arg (1); Arg (2)]) / 
+# CLOSURE ("LenvString_137", [Arg (0); Arg (1); Arg (2)]) / 
 
 	pushl	16(%ebp)
 	pushl	12(%ebp)
 	pushl	8(%ebp)
-	pushl	$LenvString_131
+	pushl	$LenvString_137
 	pushl	$7
 	call	Bclosure
 	addl	$20,	%esp
 	movl	%eax,	%ebx
-# CLOSURE ("Lallocate_131", [Arg (0); Arg (1); Arg (2)]) / 
+# CLOSURE ("Lallocate_137", [Arg (0); Arg (1); Arg (2)]) / 
 
 	pushl	%ebx
 	pushl	16(%ebp)
 	pushl	12(%ebp)
 	pushl	8(%ebp)
-	pushl	$Lallocate_131
+	pushl	$Lallocate_137
 	pushl	$7
 	call	Bclosure
 	addl	$20,	%esp
 	movl	%eax,	%ecx
 	popl	%ebx
-# CLOSURE ("Lpush_131", [Arg (0); Arg (1); Arg (2)]) / 
+# CLOSURE ("Lpush_137", [Arg (0); Arg (1); Arg (2)]) / 
 
 	pushl	%ebx
 	pushl	%ecx
 	pushl	16(%ebp)
 	pushl	12(%ebp)
 	pushl	8(%ebp)
-	pushl	$Lpush_131
+	pushl	$Lpush_137
 	pushl	$7
 	call	Bclosure
 	addl	$20,	%esp
 	movl	%eax,	%esi
 	popl	%ecx
 	popl	%ebx
-# CLOSURE ("Lpop_131", [Arg (0); Arg (1); Arg (2)]) / 
+# CLOSURE ("Lpop_137", [Arg (0); Arg (1); Arg (2)]) / 
 
 	pushl	%ebx
 	pushl	%ecx
@@ -10778,7 +11483,7 @@ L915:
 	pushl	16(%ebp)
 	pushl	12(%ebp)
 	pushl	8(%ebp)
-	pushl	$Lpop_131
+	pushl	$Lpop_137
 	pushl	$7
 	call	Bclosure
 	addl	$20,	%esp
@@ -10786,7 +11491,7 @@ L915:
 	popl	%esi
 	popl	%ecx
 	popl	%ebx
-# CLOSURE ("Lpop2_131", [Arg (0); Arg (1); Arg (2)]) / 
+# CLOSURE ("Lpop2_137", [Arg (0); Arg (1); Arg (2)]) / 
 
 	pushl	%ebx
 	pushl	%ecx
@@ -10795,7 +11500,7 @@ L915:
 	pushl	16(%ebp)
 	pushl	12(%ebp)
 	pushl	8(%ebp)
-	pushl	$Lpop2_131
+	pushl	$Lpop2_137
 	pushl	$7
 	call	Bclosure
 	addl	$20,	%esp
@@ -10804,7 +11509,7 @@ L915:
 	popl	%esi
 	popl	%ecx
 	popl	%ebx
-# CLOSURE ("LaddGlobal_131", [Arg (0); Arg (1); Arg (2)]) / 
+# CLOSURE ("LaddGlobal_137", [Arg (0); Arg (1); Arg (2)]) / 
 
 	pushl	%ebx
 	pushl	%ecx
@@ -10813,7 +11518,7 @@ L915:
 	pushl	16(%ebp)
 	pushl	12(%ebp)
 	pushl	8(%ebp)
-	pushl	$LaddGlobal_131
+	pushl	$LaddGlobal_137
 	pushl	$7
 	call	Bclosure
 	addl	$20,	%esp
@@ -10822,13 +11527,13 @@ L915:
 	popl	%esi
 	popl	%ecx
 	popl	%ebx
-# CLOSURE ("Lloc_131", []) / 
+# CLOSURE ("Lloc_137", []) / 
 
 	pushl	%ebx
 	pushl	%ecx
 	pushl	%esi
 	pushl	%edi
-	pushl	$Lloc_131
+	pushl	$Lloc_137
 	pushl	$1
 	call	Bclosure
 	addl	$8,	%esp
@@ -10837,14 +11542,14 @@ L915:
 	popl	%esi
 	popl	%ecx
 	popl	%ebx
-# CLOSURE ("LgetGlobals_131", [Arg (2)]) / 
+# CLOSURE ("LgetGlobals_137", [Arg (2)]) / 
 
 	pushl	%ebx
 	pushl	%ecx
 	pushl	%esi
 	pushl	%edi
 	pushl	16(%ebp)
-	pushl	$LgetGlobals_131
+	pushl	$LgetGlobals_137
 	pushl	$3
 	call	Bclosure
 	addl	$12,	%esp
@@ -10853,14 +11558,14 @@ L915:
 	popl	%esi
 	popl	%ecx
 	popl	%ebx
-# CLOSURE ("LgetStackSize_131", [Arg (1)]) / 
+# CLOSURE ("LgetStackSize_137", [Arg (1)]) / 
 
 	pushl	%ebx
 	pushl	%ecx
 	pushl	%esi
 	pushl	%edi
 	pushl	12(%ebp)
-	pushl	$LgetStackSize_131
+	pushl	$LgetStackSize_137
 	pushl	$3
 	call	Bclosure
 	addl	$12,	%esp
@@ -10884,17 +11589,17 @@ L915:
 	call	Barray
 	addl	$40,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L916") / 
+# SLABEL ("L960") / 
 
-L916:
+L960:
 
-# LABEL ("L914") / 
+# LABEL ("L958") / 
 
-L914:
+L958:
 
-# SLABEL ("L913") / 
+# SLABEL ("L957") / 
 
-L913:
+L957:
 
 # END / 
 
@@ -10916,15 +11621,15 @@ LLmakeEnv_epilogue:
 
 	.size LmakeEnv, .-LmakeEnv
 
-# LABEL ("LgetStackSize_131") / 
+# LABEL ("LgetStackSize_137") / 
 
-LgetStackSize_131:
+LgetStackSize_137:
 
-# BEGIN ("LgetStackSize_131", 0, 0, [Arg (1)], [], [{ blab="L926"; elab="L927"; names=[]; subs=[{ blab="L929"; elab="L930"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("LgetStackSize_137", 0, 0, [Arg (1)], [], [{ blab="L970"; elab="L971"; names=[]; subs=[{ blab="L973"; elab="L974"; names=[]; subs=[]; }]; }]) / 
 
-	.type getStackSize_131, @function
+	.type getStackSize_137, @function
 
-	.stabs "getStackSize_131:F1",36,0,0,LgetStackSize_131
+	.stabs "getStackSize_137:F1",36,0,0,LgetStackSize_137
 
 	.cfi_startproc
 
@@ -10937,46 +11642,46 @@ LgetStackSize_131:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLgetStackSize_131_SIZE,	%esp
+	subl	$LLgetStackSize_137_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLgetStackSize_131_SIZE,	%ecx
+	movl	$LSLgetStackSize_137_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L926") / 
+# SLABEL ("L970") / 
 
-L926:
+L970:
 
-# SLABEL ("L929") / 
+# SLABEL ("L973") / 
 
-L929:
+L973:
 
-# LINE (158) / 
+# LINE (165) / 
 
-	.stabn 68,0,158,0
+	.stabn 68,0,165,0
 
-	.stabn 68,0,158,.L92-LgetStackSize_131
+	.stabn 68,0,165,.L95-LgetStackSize_137
 
-.L92:
+.L95:
 
 # LD (Access (0)) / 
 
 	movl	4(%edx),	%ebx
-# SLABEL ("L930") / 
+# SLABEL ("L974") / 
 
-L930:
+L974:
 
-# LABEL ("L928") / 
+# LABEL ("L972") / 
 
-L928:
+L972:
 
-# SLABEL ("L927") / 
+# SLABEL ("L971") / 
 
-L927:
+L971:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLgetStackSize_131_epilogue:
+LLgetStackSize_137_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -10988,21 +11693,21 @@ LLgetStackSize_131_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLgetStackSize_131_SIZE,	0
+	.set	LLgetStackSize_137_SIZE,	0
 
-	.set	LSLgetStackSize_131_SIZE,	0
+	.set	LSLgetStackSize_137_SIZE,	0
 
-	.size LgetStackSize_131, .-LgetStackSize_131
+	.size LgetStackSize_137, .-LgetStackSize_137
 
-# LABEL ("LgetGlobals_131") / 
+# LABEL ("LgetGlobals_137") / 
 
-LgetGlobals_131:
+LgetGlobals_137:
 
-# BEGIN ("LgetGlobals_131", 0, 0, [Arg (2)], [], [{ blab="L931"; elab="L932"; names=[]; subs=[{ blab="L934"; elab="L935"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("LgetGlobals_137", 0, 0, [Arg (2)], [], [{ blab="L975"; elab="L976"; names=[]; subs=[{ blab="L978"; elab="L979"; names=[]; subs=[]; }]; }]) / 
 
-	.type getGlobals_131, @function
+	.type getGlobals_137, @function
 
-	.stabs "getGlobals_131:F1",36,0,0,LgetGlobals_131
+	.stabs "getGlobals_137:F1",36,0,0,LgetGlobals_137
 
 	.cfi_startproc
 
@@ -11015,26 +11720,26 @@ LgetGlobals_131:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLgetGlobals_131_SIZE,	%esp
+	subl	$LLgetGlobals_137_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLgetGlobals_131_SIZE,	%ecx
+	movl	$LSLgetGlobals_137_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L931") / 
+# SLABEL ("L975") / 
 
-L931:
+L975:
 
-# SLABEL ("L934") / 
+# SLABEL ("L978") / 
 
-L934:
+L978:
 
-# LINE (153) / 
+# LINE (160) / 
 
-	.stabn 68,0,153,0
+	.stabn 68,0,160,0
 
-	.stabn 68,0,153,.L93-LgetGlobals_131
+	.stabn 68,0,160,.L96-LgetGlobals_137
 
-.L93:
+.L96:
 
 # LD (Access (0)) / 
 
@@ -11047,22 +11752,22 @@ L934:
 	addl	$4,	%esp
 	popl	%edx
 	movl	%eax,	%ebx
-# SLABEL ("L935") / 
+# SLABEL ("L979") / 
 
-L935:
+L979:
 
-# LABEL ("L933") / 
+# LABEL ("L977") / 
 
-L933:
+L977:
 
-# SLABEL ("L932") / 
+# SLABEL ("L976") / 
 
-L932:
+L976:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLgetGlobals_131_epilogue:
+LLgetGlobals_137_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -11074,21 +11779,21 @@ LLgetGlobals_131_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLgetGlobals_131_SIZE,	0
+	.set	LLgetGlobals_137_SIZE,	0
 
-	.set	LSLgetGlobals_131_SIZE,	0
+	.set	LSLgetGlobals_137_SIZE,	0
 
-	.size LgetGlobals_131, .-LgetGlobals_131
+	.size LgetGlobals_137, .-LgetGlobals_137
 
-# LABEL ("Lloc_131") / 
+# LABEL ("Lloc_137") / 
 
-Lloc_131:
+Lloc_137:
 
-# BEGIN ("Lloc_131", 1, 0, [], ["name"], [{ blab="L937"; elab="L938"; names=[]; subs=[{ blab="L940"; elab="L941"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Lloc_137", 1, 0, [], ["name"], [{ blab="L981"; elab="L982"; names=[]; subs=[{ blab="L984"; elab="L985"; names=[]; subs=[]; }]; }]) / 
 
-	.type loc_131, @function
+	.type loc_137, @function
 
-	.stabs "loc_131:F1",36,0,0,Lloc_131
+	.stabs "loc_137:F1",36,0,0,Lloc_137
 
 	.stabs "name:p1",160,0,0,8
 
@@ -11102,34 +11807,34 @@ Lloc_131:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLloc_131_SIZE,	%esp
+	subl	$LLloc_137_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLloc_131_SIZE,	%ecx
+	movl	$LSLloc_137_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L937") / 
+# SLABEL ("L981") / 
 
-L937:
+L981:
 
-# SLABEL ("L940") / 
+# SLABEL ("L984") / 
 
-L940:
+L984:
 
-# LINE (149) / 
+# LINE (156) / 
 
-	.stabn 68,0,149,0
+	.stabn 68,0,156,0
 
-	.stabn 68,0,149,.L94-Lloc_131
+	.stabn 68,0,156,.L97-Lloc_137
 
-.L94:
+.L97:
 
 # LD (Arg (0)) / 
 
 	movl	8(%ebp),	%ebx
-# CALL ("LglobalName_131", 1, false) / 
+# CALL ("LglobalName_137", 1, false) / 
 
 	pushl	%ebx
-	call	LglobalName_131
+	call	LglobalName_137
 	addl	$4,	%esp
 	movl	%eax,	%ebx
 # SEXP ("M", 1) / 
@@ -11141,22 +11846,22 @@ L940:
 	call	Bsexp
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L941") / 
+# SLABEL ("L985") / 
 
-L941:
+L985:
 
-# LABEL ("L939") / 
+# LABEL ("L983") / 
 
-L939:
+L983:
 
-# SLABEL ("L938") / 
+# SLABEL ("L982") / 
 
-L938:
+L982:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLloc_131_epilogue:
+LLloc_137_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -11167,21 +11872,21 @@ LLloc_131_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLloc_131_SIZE,	0
+	.set	LLloc_137_SIZE,	0
 
-	.set	LSLloc_131_SIZE,	0
+	.set	LSLloc_137_SIZE,	0
 
-	.size Lloc_131, .-Lloc_131
+	.size Lloc_137, .-Lloc_137
 
-# LABEL ("LaddGlobal_131") / 
+# LABEL ("LaddGlobal_137") / 
 
-LaddGlobal_131:
+LaddGlobal_137:
 
-# BEGIN ("LaddGlobal_131", 1, 0, [Arg (0); Arg (1); Arg (2)], ["name"], [{ blab="L944"; elab="L945"; names=[]; subs=[{ blab="L947"; elab="L948"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("LaddGlobal_137", 1, 0, [Arg (0); Arg (1); Arg (2)], ["name"], [{ blab="L988"; elab="L989"; names=[]; subs=[{ blab="L991"; elab="L992"; names=[]; subs=[]; }]; }]) / 
 
-	.type addGlobal_131, @function
+	.type addGlobal_137, @function
 
-	.stabs "addGlobal_131:F1",36,0,0,LaddGlobal_131
+	.stabs "addGlobal_137:F1",36,0,0,LaddGlobal_137
 
 	.stabs "name:p1",160,0,0,8
 
@@ -11196,32 +11901,32 @@ LaddGlobal_131:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLaddGlobal_131_SIZE,	%esp
+	subl	$LLaddGlobal_137_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLaddGlobal_131_SIZE,	%ecx
+	movl	$LSLaddGlobal_137_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L944") / 
+# SLABEL ("L988") / 
 
-L944:
+L988:
 
-# SLABEL ("L947") / 
+# SLABEL ("L991") / 
 
-L947:
+L991:
 
-# LINE (143) / 
+# LINE (150) / 
 
-	.stabn 68,0,143,0
+	.stabn 68,0,150,0
 
-	.stabn 68,0,143,.L95-LaddGlobal_131
+	.stabn 68,0,150,.L98-LaddGlobal_137
 
-.L95:
+.L98:
 
-# LINE (144) / 
+# LINE (151) / 
 
-	.stabn 68,0,144,.L96-LaddGlobal_131
+	.stabn 68,0,151,.L99-LaddGlobal_137
 
-.L96:
+.L99:
 
 # LD (Access (0)) / 
 
@@ -11235,14 +11940,14 @@ L947:
 # LD (Arg (0)) / 
 
 	movl	12(%ebp),	%edi
-# CALL ("LglobalName_131", 1, false) / 
+# CALL ("LglobalName_137", 1, false) / 
 
 	pushl	%edx
 	pushl	%ebx
 	pushl	%ecx
 	pushl	%esi
 	pushl	%edi
-	call	LglobalName_131
+	call	LglobalName_137
 	addl	$4,	%esp
 	popl	%esi
 	popl	%ecx
@@ -11272,22 +11977,22 @@ L947:
 	addl	$12,	%esp
 	popl	%edx
 	movl	%eax,	%ebx
-# SLABEL ("L948") / 
+# SLABEL ("L992") / 
 
-L948:
+L992:
 
-# LABEL ("L946") / 
+# LABEL ("L990") / 
 
-L946:
+L990:
 
-# SLABEL ("L945") / 
+# SLABEL ("L989") / 
 
-L945:
+L989:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLaddGlobal_131_epilogue:
+LLaddGlobal_137_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -11299,21 +12004,21 @@ LLaddGlobal_131_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLaddGlobal_131_SIZE,	0
+	.set	LLaddGlobal_137_SIZE,	0
 
-	.set	LSLaddGlobal_131_SIZE,	0
+	.set	LSLaddGlobal_137_SIZE,	0
 
-	.size LaddGlobal_131, .-LaddGlobal_131
+	.size LaddGlobal_137, .-LaddGlobal_137
 
-# LABEL ("Lpop2_131") / 
+# LABEL ("Lpop2_137") / 
 
-Lpop2_131:
+Lpop2_137:
 
-# BEGIN ("Lpop2_131", 0, 3, [Arg (0); Arg (1); Arg (2)], [], [{ blab="L955"; elab="L956"; names=[]; subs=[{ blab="L958"; elab="L959"; names=[]; subs=[{ blab="L966"; elab="L967"; names=[("x", 2); ("y", 1); ("stack", 0)]; subs=[{ blab="L968"; elab="L969"; names=[]; subs=[]; }]; }]; }]; }]) / 
+# BEGIN ("Lpop2_137", 0, 3, [Arg (0); Arg (1); Arg (2)], [], [{ blab="L999"; elab="L1000"; names=[]; subs=[{ blab="L1002"; elab="L1003"; names=[]; subs=[{ blab="L1010"; elab="L1011"; names=[("x", 2); ("y", 1); ("stack", 0)]; subs=[{ blab="L1012"; elab="L1013"; names=[]; subs=[]; }]; }]; }]; }]) / 
 
-	.type pop2_131, @function
+	.type pop2_137, @function
 
-	.stabs "pop2_131:F1",36,0,0,Lpop2_131
+	.stabs "pop2_137:F1",36,0,0,Lpop2_137
 
 	.stabs "x:1",128,0,0,-12
 
@@ -11321,9 +12026,9 @@ Lpop2_131:
 
 	.stabs "stack:1",128,0,0,-4
 
-	.stabn 192,0,0,L966-Lpop2_131
+	.stabn 192,0,0,L1010-Lpop2_137
 
-	.stabn 224,0,0,L967-Lpop2_131
+	.stabn 224,0,0,L1011-Lpop2_137
 
 	.cfi_startproc
 
@@ -11336,26 +12041,26 @@ Lpop2_131:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLpop2_131_SIZE,	%esp
+	subl	$LLpop2_137_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLpop2_131_SIZE,	%ecx
+	movl	$LSLpop2_137_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L955") / 
+# SLABEL ("L999") / 
 
-L955:
+L999:
 
-# SLABEL ("L958") / 
+# SLABEL ("L1002") / 
 
-L958:
+L1002:
 
-# LINE (137) / 
+# LINE (144) / 
 
-	.stabn 68,0,137,0
+	.stabn 68,0,144,0
 
-	.stabn 68,0,137,.L97-Lpop2_131
+	.stabn 68,0,144,.L100-Lpop2_137
 
-.L97:
+.L100:
 
 # LD (Access (0)) / 
 
@@ -11363,9 +12068,9 @@ L958:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L966") / 
+# SLABEL ("L1010") / 
 
-L966:
+L1010:
 
 # DUP / 
 
@@ -11386,23 +12091,23 @@ L966:
 	popl	%ebx
 	popl	%edx
 	movl	%eax,	%esi
-# CJMP ("nz", "L962") / 
+# CJMP ("nz", "L1006") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L962
-# LABEL ("L963") / 
+	jnz	L1006
+# LABEL ("L1007") / 
 
-L963:
+L1007:
 
 # DROP / 
 
-# JMP ("L960") / 
+# JMP ("L1004") / 
 
-	jmp	L960
-# LABEL ("L962") / 
+	jmp	L1004
+# LABEL ("L1006") / 
 
-L962:
+L1006:
 
 # DUP / 
 
@@ -11465,23 +12170,23 @@ L962:
 	popl	%ebx
 	popl	%edx
 	movl	%eax,	%edi
-# CJMP ("nz", "L964") / 
+# CJMP ("nz", "L1008") / 
 
 	sarl	%edi
 	cmpl	$0,	%edi
-	jnz	L964
-# LABEL ("L965") / 
+	jnz	L1008
+# LABEL ("L1009") / 
 
-L965:
+L1009:
 
 # DROP / 
 
-# JMP ("L963") / 
+# JMP ("L1007") / 
 
-	jmp	L963
-# LABEL ("L964") / 
+	jmp	L1007
+# LABEL ("L1008") / 
 
-L964:
+L1008:
 
 # DUP / 
 
@@ -11629,15 +12334,15 @@ L964:
 
 # DROP / 
 
-# SLABEL ("L968") / 
+# SLABEL ("L1012") / 
 
-L968:
+L1012:
 
-# LINE (138) / 
+# LINE (145) / 
 
-	.stabn 68,0,138,.L98-Lpop2_131
+	.stabn 68,0,145,.L101-Lpop2_137
 
-.L98:
+.L101:
 
 # LD (Local (2)) / 
 
@@ -11680,48 +12385,48 @@ L968:
 	addl	$16,	%esp
 	popl	%edx
 	movl	%eax,	%ebx
-# SLABEL ("L969") / 
+# SLABEL ("L1013") / 
 
-L969:
+L1013:
 
-# SLABEL ("L967") / 
+# SLABEL ("L1011") / 
 
-L967:
+L1011:
 
-# JMP ("L957") / 
+# JMP ("L1001") / 
 
-	jmp	L957
-# LABEL ("L960") / 
+	jmp	L1001
+# LABEL ("L1004") / 
 
-L960:
+L1004:
 
-# FAIL ((137, 9), true) / 
+# FAIL ((144, 9), true) / 
 
 	pushl	$19
-	pushl	$275
+	pushl	$289
 	pushl	$string_16
 	pushl	%ebx
 	call	Bmatch_failure
 	addl	$16,	%esp
-# JMP ("L957") / 
+# JMP ("L1001") / 
 
-	jmp	L957
-# SLABEL ("L959") / 
+	jmp	L1001
+# SLABEL ("L1003") / 
 
-L959:
+L1003:
 
-# LABEL ("L957") / 
+# LABEL ("L1001") / 
 
-L957:
+L1001:
 
-# SLABEL ("L956") / 
+# SLABEL ("L1000") / 
 
-L956:
+L1000:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLpop2_131_epilogue:
+LLpop2_137_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -11733,29 +12438,29 @@ LLpop2_131_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLpop2_131_SIZE,	20
+	.set	LLpop2_137_SIZE,	20
 
-	.set	LSLpop2_131_SIZE,	5
+	.set	LSLpop2_137_SIZE,	5
 
-	.size Lpop2_131, .-Lpop2_131
+	.size Lpop2_137, .-Lpop2_137
 
-# LABEL ("Lpop_131") / 
+# LABEL ("Lpop_137") / 
 
-Lpop_131:
+Lpop_137:
 
-# BEGIN ("Lpop_131", 0, 2, [Arg (0); Arg (1); Arg (2)], [], [{ blab="L976"; elab="L977"; names=[]; subs=[{ blab="L979"; elab="L980"; names=[]; subs=[{ blab="L985"; elab="L986"; names=[("x", 1); ("stack", 0)]; subs=[{ blab="L987"; elab="L988"; names=[]; subs=[]; }]; }]; }]; }]) / 
+# BEGIN ("Lpop_137", 0, 2, [Arg (0); Arg (1); Arg (2)], [], [{ blab="L1020"; elab="L1021"; names=[]; subs=[{ blab="L1023"; elab="L1024"; names=[]; subs=[{ blab="L1029"; elab="L1030"; names=[("x", 1); ("stack", 0)]; subs=[{ blab="L1031"; elab="L1032"; names=[]; subs=[]; }]; }]; }]; }]) / 
 
-	.type pop_131, @function
+	.type pop_137, @function
 
-	.stabs "pop_131:F1",36,0,0,Lpop_131
+	.stabs "pop_137:F1",36,0,0,Lpop_137
 
 	.stabs "x:1",128,0,0,-8
 
 	.stabs "stack:1",128,0,0,-4
 
-	.stabn 192,0,0,L985-Lpop_131
+	.stabn 192,0,0,L1029-Lpop_137
 
-	.stabn 224,0,0,L986-Lpop_131
+	.stabn 224,0,0,L1030-Lpop_137
 
 	.cfi_startproc
 
@@ -11768,26 +12473,26 @@ Lpop_131:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLpop_131_SIZE,	%esp
+	subl	$LLpop_137_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLpop_131_SIZE,	%ecx
+	movl	$LSLpop_137_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L976") / 
+# SLABEL ("L1020") / 
 
-L976:
+L1020:
 
-# SLABEL ("L979") / 
+# SLABEL ("L1023") / 
 
-L979:
+L1023:
 
-# LINE (129) / 
+# LINE (136) / 
 
-	.stabn 68,0,129,0
+	.stabn 68,0,136,0
 
-	.stabn 68,0,129,.L99-Lpop_131
+	.stabn 68,0,136,.L102-Lpop_137
 
-.L99:
+.L102:
 
 # LD (Access (0)) / 
 
@@ -11795,9 +12500,9 @@ L979:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L985") / 
+# SLABEL ("L1029") / 
 
-L985:
+L1029:
 
 # DUP / 
 
@@ -11818,23 +12523,23 @@ L985:
 	popl	%ebx
 	popl	%edx
 	movl	%eax,	%esi
-# CJMP ("nz", "L983") / 
+# CJMP ("nz", "L1027") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L983
-# LABEL ("L984") / 
+	jnz	L1027
+# LABEL ("L1028") / 
 
-L984:
+L1028:
 
 # DROP / 
 
-# JMP ("L981") / 
+# JMP ("L1025") / 
 
-	jmp	L981
-# LABEL ("L983") / 
+	jmp	L1025
+# LABEL ("L1027") / 
 
-L983:
+L1027:
 
 # DUP / 
 
@@ -11926,15 +12631,15 @@ L983:
 
 # DROP / 
 
-# SLABEL ("L987") / 
+# SLABEL ("L1031") / 
 
-L987:
+L1031:
 
-# LINE (130) / 
+# LINE (137) / 
 
-	.stabn 68,0,130,.L100-Lpop_131
+	.stabn 68,0,137,.L103-Lpop_137
 
-.L100:
+.L103:
 
 # LD (Local (1)) / 
 
@@ -11970,48 +12675,48 @@ L987:
 	addl	$12,	%esp
 	popl	%edx
 	movl	%eax,	%ebx
-# SLABEL ("L988") / 
+# SLABEL ("L1032") / 
 
-L988:
+L1032:
 
-# SLABEL ("L986") / 
+# SLABEL ("L1030") / 
 
-L986:
+L1030:
 
-# JMP ("L978") / 
+# JMP ("L1022") / 
 
-	jmp	L978
-# LABEL ("L981") / 
+	jmp	L1022
+# LABEL ("L1025") / 
 
-L981:
+L1025:
 
-# FAIL ((129, 9), true) / 
+# FAIL ((136, 9), true) / 
 
 	pushl	$19
-	pushl	$259
+	pushl	$273
 	pushl	$string_16
 	pushl	%ebx
 	call	Bmatch_failure
 	addl	$16,	%esp
-# JMP ("L978") / 
+# JMP ("L1022") / 
 
-	jmp	L978
-# SLABEL ("L980") / 
+	jmp	L1022
+# SLABEL ("L1024") / 
 
-L980:
+L1024:
 
-# LABEL ("L978") / 
+# LABEL ("L1022") / 
 
-L978:
+L1022:
 
-# SLABEL ("L977") / 
+# SLABEL ("L1021") / 
 
-L977:
+L1021:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLpop_131_epilogue:
+LLpop_137_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -12023,21 +12728,21 @@ LLpop_131_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLpop_131_SIZE,	12
+	.set	LLpop_137_SIZE,	12
 
-	.set	LSLpop_131_SIZE,	3
+	.set	LSLpop_137_SIZE,	3
 
-	.size Lpop_131, .-Lpop_131
+	.size Lpop_137, .-Lpop_137
 
-# LABEL ("Lpush_131") / 
+# LABEL ("Lpush_137") / 
 
-Lpush_131:
+Lpush_137:
 
-# BEGIN ("Lpush_131", 1, 0, [Arg (0); Arg (1); Arg (2)], ["y"], [{ blab="L994"; elab="L995"; names=[]; subs=[{ blab="L997"; elab="L998"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Lpush_137", 1, 0, [Arg (0); Arg (1); Arg (2)], ["y"], [{ blab="L1038"; elab="L1039"; names=[]; subs=[{ blab="L1041"; elab="L1042"; names=[]; subs=[]; }]; }]) / 
 
-	.type push_131, @function
+	.type push_137, @function
 
-	.stabs "push_131:F1",36,0,0,Lpush_131
+	.stabs "push_137:F1",36,0,0,Lpush_137
 
 	.stabs "y:p1",160,0,0,8
 
@@ -12052,32 +12757,32 @@ Lpush_131:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLpush_131_SIZE,	%esp
+	subl	$LLpush_137_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLpush_131_SIZE,	%ecx
+	movl	$LSLpush_137_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L994") / 
+# SLABEL ("L1038") / 
 
-L994:
+L1038:
 
-# SLABEL ("L997") / 
+# SLABEL ("L1041") / 
 
-L997:
+L1041:
 
-# LINE (122) / 
+# LINE (129) / 
 
-	.stabn 68,0,122,0
+	.stabn 68,0,129,0
 
-	.stabn 68,0,122,.L101-Lpush_131
+	.stabn 68,0,129,.L104-Lpush_137
 
-.L101:
+.L104:
 
-# LINE (123) / 
+# LINE (130) / 
 
-	.stabn 68,0,123,.L102-Lpush_131
+	.stabn 68,0,130,.L105-Lpush_137
 
-.L102:
+.L105:
 
 # LD (Arg (0)) / 
 
@@ -12113,22 +12818,22 @@ L997:
 	addl	$12,	%esp
 	popl	%edx
 	movl	%eax,	%ebx
-# SLABEL ("L998") / 
+# SLABEL ("L1042") / 
 
-L998:
+L1042:
 
-# LABEL ("L996") / 
+# LABEL ("L1040") / 
 
-L996:
+L1040:
 
-# SLABEL ("L995") / 
+# SLABEL ("L1039") / 
 
-L995:
+L1039:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLpush_131_epilogue:
+LLpush_137_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -12140,41 +12845,41 @@ LLpush_131_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLpush_131_SIZE,	0
+	.set	LLpush_137_SIZE,	0
 
-	.set	LSLpush_131_SIZE,	0
+	.set	LSLpush_137_SIZE,	0
 
-	.size Lpush_131, .-Lpush_131
+	.size Lpush_137, .-Lpush_137
 
-# LABEL ("Lallocate_131") / 
+# LABEL ("Lallocate_137") / 
 
-Lallocate_131:
+Lallocate_137:
 
-# BEGIN ("Lallocate_131", 0, 2, [Arg (0); Arg (1); Arg (2)], [], [{ blab="L1004"; elab="L1005"; names=[]; subs=[{ blab="L1007"; elab="L1008"; names=[]; subs=[{ blab="L1070"; elab="L1071"; names=[("x", 1); ("n", 0)]; subs=[{ blab="L1072"; elab="L1073"; names=[]; subs=[{ blab="L1087"; elab="L1088"; names=[]; subs=[]; }; { blab="L1085"; elab="L1086"; names=[]; subs=[]; }]; }]; }; { blab="L1061"; elab="L1062"; names=[]; subs=[{ blab="L1063"; elab="L1064"; names=[]; subs=[]; }]; }; { blab="L1041"; elab="L1042"; names=[("n", 0)]; subs=[{ blab="L1043"; elab="L1044"; names=[]; subs=[{ blab="L1056"; elab="L1057"; names=[]; subs=[]; }; { blab="L1049"; elab="L1050"; names=[]; subs=[]; }]; }]; }; { blab="L1025"; elab="L1026"; names=[("n", 0)]; subs=[{ blab="L1027"; elab="L1028"; names=[]; subs=[]; }]; }; { blab="L1014"; elab="L1015"; names=[]; subs=[{ blab="L1016"; elab="L1017"; names=[]; subs=[]; }]; }]; }]; }]) / 
+# BEGIN ("Lallocate_137", 0, 2, [Arg (0); Arg (1); Arg (2)], [], [{ blab="L1048"; elab="L1049"; names=[]; subs=[{ blab="L1051"; elab="L1052"; names=[]; subs=[{ blab="L1114"; elab="L1115"; names=[("x", 1); ("n", 0)]; subs=[{ blab="L1116"; elab="L1117"; names=[]; subs=[{ blab="L1131"; elab="L1132"; names=[]; subs=[]; }; { blab="L1129"; elab="L1130"; names=[]; subs=[]; }]; }]; }; { blab="L1105"; elab="L1106"; names=[]; subs=[{ blab="L1107"; elab="L1108"; names=[]; subs=[]; }]; }; { blab="L1085"; elab="L1086"; names=[("n", 0)]; subs=[{ blab="L1087"; elab="L1088"; names=[]; subs=[{ blab="L1100"; elab="L1101"; names=[]; subs=[]; }; { blab="L1093"; elab="L1094"; names=[]; subs=[]; }]; }]; }; { blab="L1069"; elab="L1070"; names=[("n", 0)]; subs=[{ blab="L1071"; elab="L1072"; names=[]; subs=[]; }]; }; { blab="L1058"; elab="L1059"; names=[]; subs=[{ blab="L1060"; elab="L1061"; names=[]; subs=[]; }]; }]; }]; }]) / 
 
-	.type allocate_131, @function
+	.type allocate_137, @function
 
-	.stabs "allocate_131:F1",36,0,0,Lallocate_131
+	.stabs "allocate_137:F1",36,0,0,Lallocate_137
 
 	.stabs "x:1",128,0,0,-8
 
 	.stabs "n:1",128,0,0,-4
 
-	.stabn 192,0,0,L1070-Lallocate_131
+	.stabn 192,0,0,L1114-Lallocate_137
 
-	.stabn 224,0,0,L1071-Lallocate_131
-
-	.stabs "n:1",128,0,0,-4
-
-	.stabn 192,0,0,L1041-Lallocate_131
-
-	.stabn 224,0,0,L1042-Lallocate_131
+	.stabn 224,0,0,L1115-Lallocate_137
 
 	.stabs "n:1",128,0,0,-4
 
-	.stabn 192,0,0,L1025-Lallocate_131
+	.stabn 192,0,0,L1085-Lallocate_137
 
-	.stabn 224,0,0,L1026-Lallocate_131
+	.stabn 224,0,0,L1086-Lallocate_137
+
+	.stabs "n:1",128,0,0,-4
+
+	.stabn 192,0,0,L1069-Lallocate_137
+
+	.stabn 224,0,0,L1070-Lallocate_137
 
 	.cfi_startproc
 
@@ -12187,26 +12892,26 @@ Lallocate_131:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLallocate_131_SIZE,	%esp
+	subl	$LLallocate_137_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLallocate_131_SIZE,	%ecx
+	movl	$LSLallocate_137_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L1004") / 
+# SLABEL ("L1048") / 
 
-L1004:
+L1048:
 
-# SLABEL ("L1007") / 
+# SLABEL ("L1051") / 
 
-L1007:
+L1051:
 
-# LINE (112) / 
+# LINE (119) / 
 
-	.stabn 68,0,112,0
+	.stabn 68,0,119,0
 
-	.stabn 68,0,112,.L103-Lallocate_131
+	.stabn 68,0,119,.L106-Lallocate_137
 
-.L103:
+.L106:
 
 # LD (Access (0)) / 
 
@@ -12214,9 +12919,9 @@ L1007:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L1014") / 
+# SLABEL ("L1058") / 
 
-L1014:
+L1058:
 
 # CONST (0) / 
 
@@ -12229,22 +12934,22 @@ L1014:
 	sall	%eax
 	orl	$0x0001,	%eax
 	movl	%eax,	%ecx
-# CJMP ("z", "L1013") / 
+# CJMP ("z", "L1057") / 
 
 	sarl	%ecx
 	cmpl	$0,	%ecx
-	jz	L1013
+	jz	L1057
 # DROP / 
 
-# SLABEL ("L1016") / 
+# SLABEL ("L1060") / 
 
-L1016:
+L1060:
 
-# LINE (113) / 
+# LINE (120) / 
 
-	.stabn 68,0,113,.L104-Lallocate_131
+	.stabn 68,0,120,.L107-Lallocate_137
 
-.L104:
+.L107:
 
 # LD (Global ("ebx")) / 
 
@@ -12262,24 +12967,24 @@ L1016:
 	addl	$12,	%esp
 	popl	%edx
 	movl	%eax,	%ebx
-# SLABEL ("L1017") / 
+# SLABEL ("L1061") / 
 
-L1017:
+L1061:
 
-# JMP ("L1010") / 
+# JMP ("L1054") / 
 
-	jmp	L1010
-# SLABEL ("L1015") / 
+	jmp	L1054
+# SLABEL ("L1059") / 
 
-L1015:
+L1059:
 
-# SLABEL ("L1025") / 
+# SLABEL ("L1069") / 
 
-L1025:
+L1069:
 
-# LABEL ("L1013") / 
+# LABEL ("L1057") / 
 
-L1013:
+L1057:
 
 # DUP / 
 
@@ -12303,23 +13008,23 @@ L1013:
 	popl	%ebx
 	popl	%edx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1021") / 
+# CJMP ("nz", "L1065") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1021
-# LABEL ("L1022") / 
+	jnz	L1065
+# LABEL ("L1066") / 
 
-L1022:
+L1066:
 
 # DROP / 
 
-# JMP ("L1020") / 
+# JMP ("L1064") / 
 
-	jmp	L1020
-# LABEL ("L1021") / 
+	jmp	L1064
+# LABEL ("L1065") / 
 
-L1021:
+L1065:
 
 # DUP / 
 
@@ -12361,23 +13066,23 @@ L1021:
 	popl	%ebx
 	popl	%edx
 	movl	%eax,	%edi
-# CJMP ("nz", "L1023") / 
+# CJMP ("nz", "L1067") / 
 
 	sarl	%edi
 	cmpl	$0,	%edi
-	jnz	L1023
-# LABEL ("L1024") / 
+	jnz	L1067
+# LABEL ("L1068") / 
 
-L1024:
+L1068:
 
 # DROP / 
 
-# JMP ("L1022") / 
+# JMP ("L1066") / 
 
-	jmp	L1022
-# LABEL ("L1023") / 
+	jmp	L1066
+# LABEL ("L1067") / 
 
-L1023:
+L1067:
 
 # DUP / 
 
@@ -12465,15 +13170,15 @@ L1023:
 
 # DROP / 
 
-# SLABEL ("L1027") / 
+# SLABEL ("L1071") / 
 
-L1027:
+L1071:
 
-# LINE (114) / 
+# LINE (121) / 
 
-	.stabn 68,0,114,.L105-Lallocate_131
+	.stabn 68,0,121,.L108-Lallocate_137
 
-.L105:
+.L108:
 
 # LD (Local (0)) / 
 
@@ -12516,24 +13221,24 @@ L1027:
 	addl	$12,	%esp
 	popl	%edx
 	movl	%eax,	%ebx
-# SLABEL ("L1028") / 
+# SLABEL ("L1072") / 
 
-L1028:
+L1072:
 
-# JMP ("L1010") / 
+# JMP ("L1054") / 
 
-	jmp	L1010
-# SLABEL ("L1026") / 
+	jmp	L1054
+# SLABEL ("L1070") / 
 
-L1026:
+L1070:
 
-# SLABEL ("L1041") / 
+# SLABEL ("L1085") / 
 
-L1041:
+L1085:
 
-# LABEL ("L1020") / 
+# LABEL ("L1064") / 
 
-L1020:
+L1064:
 
 # DUP / 
 
@@ -12557,23 +13262,23 @@ L1020:
 	popl	%ebx
 	popl	%edx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1037") / 
+# CJMP ("nz", "L1081") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1037
-# LABEL ("L1038") / 
+	jnz	L1081
+# LABEL ("L1082") / 
 
-L1038:
+L1082:
 
 # DROP / 
 
-# JMP ("L1036") / 
+# JMP ("L1080") / 
 
-	jmp	L1036
-# LABEL ("L1037") / 
+	jmp	L1080
+# LABEL ("L1081") / 
 
-L1037:
+L1081:
 
 # DUP / 
 
@@ -12615,23 +13320,23 @@ L1037:
 	popl	%ebx
 	popl	%edx
 	movl	%eax,	%edi
-# CJMP ("nz", "L1039") / 
+# CJMP ("nz", "L1083") / 
 
 	sarl	%edi
 	cmpl	$0,	%edi
-	jnz	L1039
-# LABEL ("L1040") / 
+	jnz	L1083
+# LABEL ("L1084") / 
 
-L1040:
+L1084:
 
 # DROP / 
 
-# JMP ("L1038") / 
+# JMP ("L1082") / 
 
-	jmp	L1038
-# LABEL ("L1039") / 
+	jmp	L1082
+# LABEL ("L1083") / 
 
-L1039:
+L1083:
 
 # DUP / 
 
@@ -12719,15 +13424,15 @@ L1039:
 
 # DROP / 
 
-# SLABEL ("L1043") / 
+# SLABEL ("L1087") / 
 
-L1043:
+L1087:
 
-# LINE (115) / 
+# LINE (122) / 
 
-	.stabn 68,0,115,.L106-Lallocate_131
+	.stabn 68,0,122,.L109-Lallocate_137
 
-.L106:
+.L109:
 
 # LD (Local (0)) / 
 
@@ -12743,14 +13448,14 @@ L1043:
 	sall	%eax
 	orl	$0x0001,	%eax
 	movl	%eax,	%ebx
-# CJMP ("z", "L1046") / 
+# CJMP ("z", "L1090") / 
 
 	sarl	%ebx
 	cmpl	$0,	%ebx
-	jz	L1046
-# SLABEL ("L1049") / 
+	jz	L1090
+# SLABEL ("L1093") / 
 
-L1049:
+L1093:
 
 # LD (Local (0)) / 
 
@@ -12786,83 +13491,20 @@ L1049:
 	addl	$12,	%esp
 	popl	%edx
 	movl	%eax,	%ebx
-# SLABEL ("L1050") / 
+# SLABEL ("L1094") / 
 
-L1050:
+L1094:
 
-# JMP ("L1010") / 
+# JMP ("L1054") / 
 
-	jmp	L1010
-# LABEL ("L1046") / 
+	jmp	L1054
+# LABEL ("L1090") / 
 
-L1046:
+L1090:
 
-# SLABEL ("L1056") / 
+# SLABEL ("L1100") / 
 
-L1056:
-
-# CONST (0) / 
-
-	movl	$1,	%ebx
-# SEXP ("S", 1) / 
-
-	movl	$91,	%ecx
-	pushl	%edx
-	pushl	%ecx
-	pushl	%ebx
-	pushl	$5
-	call	Bsexp
-	addl	$12,	%esp
-	popl	%edx
-	movl	%eax,	%ebx
-# CONST (1) / 
-
-	movl	$3,	%ecx
-# CALL (".array", 2, false) / 
-
-	pushl	%edx
-	pushl	%ecx
-	pushl	%ebx
-	pushl	$5
-	call	Barray
-	addl	$12,	%esp
-	popl	%edx
-	movl	%eax,	%ebx
-# SLABEL ("L1057") / 
-
-L1057:
-
-# JMP ("L1010") / 
-
-	jmp	L1010
-# SLABEL ("L1044") / 
-
-L1044:
-
-# JMP ("L1010") / 
-
-# SLABEL ("L1042") / 
-
-L1042:
-
-# SLABEL ("L1061") / 
-
-L1061:
-
-# LABEL ("L1036") / 
-
-L1036:
-
-# DUP / 
-
-	movl	%ebx,	%ecx
-# DROP / 
-
-# DROP / 
-
-# SLABEL ("L1063") / 
-
-L1063:
+L1100:
 
 # CONST (0) / 
 
@@ -12891,27 +13533,90 @@ L1063:
 	addl	$12,	%esp
 	popl	%edx
 	movl	%eax,	%ebx
-# SLABEL ("L1064") / 
+# SLABEL ("L1101") / 
 
-L1064:
+L1101:
 
-# SLABEL ("L1062") / 
+# JMP ("L1054") / 
 
-L1062:
+	jmp	L1054
+# SLABEL ("L1088") / 
 
-# JMP ("L1010") / 
+L1088:
 
-	jmp	L1010
-# LABEL ("L1010") / 
+# JMP ("L1054") / 
 
-L1010:
+# SLABEL ("L1086") / 
+
+L1086:
+
+# SLABEL ("L1105") / 
+
+L1105:
+
+# LABEL ("L1080") / 
+
+L1080:
 
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L1070") / 
+# DROP / 
 
-L1070:
+# DROP / 
+
+# SLABEL ("L1107") / 
+
+L1107:
+
+# CONST (0) / 
+
+	movl	$1,	%ebx
+# SEXP ("S", 1) / 
+
+	movl	$91,	%ecx
+	pushl	%edx
+	pushl	%ecx
+	pushl	%ebx
+	pushl	$5
+	call	Bsexp
+	addl	$12,	%esp
+	popl	%edx
+	movl	%eax,	%ebx
+# CONST (1) / 
+
+	movl	$3,	%ecx
+# CALL (".array", 2, false) / 
+
+	pushl	%edx
+	pushl	%ecx
+	pushl	%ebx
+	pushl	$5
+	call	Barray
+	addl	$12,	%esp
+	popl	%edx
+	movl	%eax,	%ebx
+# SLABEL ("L1108") / 
+
+L1108:
+
+# SLABEL ("L1106") / 
+
+L1106:
+
+# JMP ("L1054") / 
+
+	jmp	L1054
+# LABEL ("L1054") / 
+
+L1054:
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# SLABEL ("L1114") / 
+
+L1114:
 
 # DUP / 
 
@@ -12930,23 +13635,23 @@ L1070:
 	popl	%ebx
 	popl	%edx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1068") / 
+# CJMP ("nz", "L1112") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1068
-# LABEL ("L1069") / 
+	jnz	L1112
+# LABEL ("L1113") / 
 
-L1069:
+L1113:
 
 # DROP / 
 
-# JMP ("L1009") / 
+# JMP ("L1053") / 
 
-	jmp	L1009
-# LABEL ("L1068") / 
+	jmp	L1053
+# LABEL ("L1112") / 
 
-L1068:
+L1112:
 
 # DUP / 
 
@@ -13038,15 +13743,15 @@ L1068:
 
 # DROP / 
 
-# SLABEL ("L1072") / 
+# SLABEL ("L1116") / 
 
-L1072:
+L1116:
 
-# LINE (118) / 
+# LINE (125) / 
 
-	.stabn 68,0,118,.L107-Lallocate_131
+	.stabn 68,0,125,.L110-Lallocate_137
 
-.L107:
+.L110:
 
 # LD (Local (1)) / 
 
@@ -13085,46 +13790,46 @@ L1072:
 	sall	%eax
 	orl	$0x0001,	%eax
 	movl	%eax,	%esi
-# CJMP ("z", "L1082") / 
+# CJMP ("z", "L1126") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jz	L1082
-# SLABEL ("L1085") / 
+	jz	L1126
+# SLABEL ("L1129") / 
 
-L1085:
+L1129:
 
 # LD (Local (0)) / 
 
 	movl	-4(%ebp),	%esi
-# SLABEL ("L1086") / 
+# SLABEL ("L1130") / 
 
-L1086:
+L1130:
 
-# JMP ("L1080") / 
+# JMP ("L1124") / 
 
-	jmp	L1080
-# LABEL ("L1082") / 
+	jmp	L1124
+# LABEL ("L1126") / 
 
-L1082:
+L1126:
 
-# SLABEL ("L1087") / 
+# SLABEL ("L1131") / 
 
-L1087:
+L1131:
 
 # LD (Access (1)) / 
 
 	movl	8(%edx),	%esi
-# SLABEL ("L1088") / 
+# SLABEL ("L1132") / 
 
-L1088:
+L1132:
 
-# JMP ("L1080") / 
+# JMP ("L1124") / 
 
-	jmp	L1080
-# LABEL ("L1080") / 
+	jmp	L1124
+# LABEL ("L1124") / 
 
-L1080:
+L1124:
 
 # LD (Access (2)) / 
 
@@ -13151,48 +13856,48 @@ L1080:
 	addl	$12,	%esp
 	popl	%edx
 	movl	%eax,	%ebx
-# SLABEL ("L1073") / 
+# SLABEL ("L1117") / 
 
-L1073:
+L1117:
 
-# SLABEL ("L1071") / 
+# SLABEL ("L1115") / 
 
-L1071:
+L1115:
 
-# JMP ("L1006") / 
+# JMP ("L1050") / 
 
-	jmp	L1006
-# LABEL ("L1009") / 
+	jmp	L1050
+# LABEL ("L1053") / 
 
-L1009:
+L1053:
 
-# FAIL ((111, 9), true) / 
+# FAIL ((118, 9), true) / 
 
 	pushl	$19
-	pushl	$223
+	pushl	$237
 	pushl	$string_16
 	pushl	%ebx
 	call	Bmatch_failure
 	addl	$16,	%esp
-# JMP ("L1006") / 
+# JMP ("L1050") / 
 
-	jmp	L1006
-# SLABEL ("L1008") / 
+	jmp	L1050
+# SLABEL ("L1052") / 
 
-L1008:
+L1052:
 
-# LABEL ("L1006") / 
+# LABEL ("L1050") / 
 
-L1006:
+L1050:
 
-# SLABEL ("L1005") / 
+# SLABEL ("L1049") / 
 
-L1005:
+L1049:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLallocate_131_epilogue:
+LLallocate_137_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -13204,21 +13909,21 @@ LLallocate_131_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLallocate_131_SIZE,	16
+	.set	LLallocate_137_SIZE,	16
 
-	.set	LSLallocate_131_SIZE,	4
+	.set	LSLallocate_137_SIZE,	4
 
-	.size Lallocate_131, .-Lallocate_131
+	.size Lallocate_137, .-Lallocate_137
 
-# LABEL ("LenvString_131") / 
+# LABEL ("LenvString_137") / 
 
-LenvString_131:
+LenvString_137:
 
-# BEGIN ("LenvString_131", 0, 0, [Arg (0); Arg (1); Arg (2)], [], [{ blab="L1089"; elab="L1090"; names=[]; subs=[{ blab="L1092"; elab="L1093"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("LenvString_137", 0, 0, [Arg (0); Arg (1); Arg (2)], [], [{ blab="L1133"; elab="L1134"; names=[]; subs=[{ blab="L1136"; elab="L1137"; names=[]; subs=[]; }]; }]) / 
 
-	.type envString_131, @function
+	.type envString_137, @function
 
-	.stabs "envString_131:F1",36,0,0,LenvString_131
+	.stabs "envString_137:F1",36,0,0,LenvString_137
 
 	.cfi_startproc
 
@@ -13231,41 +13936,41 @@ LenvString_131:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLenvString_131_SIZE,	%esp
+	subl	$LLenvString_137_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLenvString_131_SIZE,	%ecx
+	movl	$LSLenvString_137_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L1089") / 
+# SLABEL ("L1133") / 
 
-L1089:
+L1133:
 
-# SLABEL ("L1092") / 
+# SLABEL ("L1136") / 
 
-L1092:
+L1136:
 
-# LINE (103) / 
+# LINE (110) / 
 
-	.stabn 68,0,103,0
+	.stabn 68,0,110,0
 
-	.stabn 68,0,103,.L108-LenvString_131
+	.stabn 68,0,110,.L111-LenvString_137
 
-.L108:
+.L111:
 
 # STRING ("Stack     : %s\\nStackSlots: %d\\nGlobals   : %s\\n") / 
 
-	movl	$string_47,	%ebx
+	movl	$string_46,	%ebx
 	pushl	%edx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	popl	%edx
 	movl	%eax,	%ebx
-# LINE (104) / 
+# LINE (111) / 
 
-	.stabn 68,0,104,.L109-LenvString_131
+	.stabn 68,0,111,.L112-LenvString_137
 
-.L109:
+.L112:
 
 # LD (Access (0)) / 
 
@@ -13325,22 +14030,22 @@ L1092:
 	addl	$16,	%esp
 	popl	%edx
 	movl	%eax,	%ebx
-# SLABEL ("L1093") / 
+# SLABEL ("L1137") / 
 
-L1093:
+L1137:
 
-# LABEL ("L1091") / 
+# LABEL ("L1135") / 
 
-L1091:
+L1135:
 
-# SLABEL ("L1090") / 
+# SLABEL ("L1134") / 
 
-L1090:
+L1134:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLenvString_131_epilogue:
+LLenvString_137_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -13352,21 +14057,21 @@ LLenvString_131_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLenvString_131_SIZE,	0
+	.set	LLenvString_137_SIZE,	0
 
-	.set	LSLenvString_131_SIZE,	0
+	.set	LSLenvString_137_SIZE,	0
 
-	.size LenvString_131, .-LenvString_131
+	.size LenvString_137, .-LenvString_137
 
-# LABEL ("LglobalName_131") / 
+# LABEL ("LglobalName_137") / 
 
-LglobalName_131:
+LglobalName_137:
 
-# BEGIN ("LglobalName_131", 1, 0, [], ["name"], [{ blab="L1101"; elab="L1102"; names=[]; subs=[{ blab="L1104"; elab="L1105"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("LglobalName_137", 1, 0, [], ["name"], [{ blab="L1145"; elab="L1146"; names=[]; subs=[{ blab="L1148"; elab="L1149"; names=[]; subs=[]; }]; }]) / 
 
-	.type globalName_131, @function
+	.type globalName_137, @function
 
-	.stabs "globalName_131:F1",36,0,0,LglobalName_131
+	.stabs "globalName_137:F1",36,0,0,LglobalName_137
 
 	.stabs "name:p1",160,0,0,8
 
@@ -13380,33 +14085,33 @@ LglobalName_131:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLglobalName_131_SIZE,	%esp
+	subl	$LLglobalName_137_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLglobalName_131_SIZE,	%ecx
+	movl	$LSLglobalName_137_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L1101") / 
+# SLABEL ("L1145") / 
 
-L1101:
+L1145:
 
-# SLABEL ("L1104") / 
+# SLABEL ("L1148") / 
 
-L1104:
+L1148:
 
 # STRING ("global_") / 
 
-	movl	$string_48,	%ebx
+	movl	$string_47,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# LINE (99) / 
+# LINE (106) / 
 
-	.stabn 68,0,99,0
+	.stabn 68,0,106,0
 
-	.stabn 68,0,99,.L110-LglobalName_131
+	.stabn 68,0,106,.L113-LglobalName_137
 
-.L110:
+.L113:
 
 # LD (Arg (0)) / 
 
@@ -13418,22 +14123,22 @@ L1104:
 	call	Li__Infix_4343
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1105") / 
+# SLABEL ("L1149") / 
 
-L1105:
+L1149:
 
-# LABEL ("L1103") / 
+# LABEL ("L1147") / 
 
-L1103:
+L1147:
 
-# SLABEL ("L1102") / 
+# SLABEL ("L1146") / 
 
-L1102:
+L1146:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLglobalName_131_epilogue:
+LLglobalName_137_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -13444,17 +14149,17 @@ LLglobalName_131_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLglobalName_131_SIZE,	0
+	.set	LLglobalName_137_SIZE,	0
 
-	.set	LSLglobalName_131_SIZE,	0
+	.set	LSLglobalName_137_SIZE,	0
 
-	.size LglobalName_131, .-LglobalName_131
+	.size LglobalName_137, .-LglobalName_137
 
 # LABEL ("LinsnString") / 
 
 LinsnString:
 
-# BEGIN ("LinsnString", 1, 3, [], ["insn"], [{ blab="L1108"; elab="L1109"; names=[]; subs=[{ blab="L1111"; elab="L1112"; names=[]; subs=[{ blab="L1206"; elab="L1207"; names=[("m", 0)]; subs=[{ blab="L1208"; elab="L1209"; names=[]; subs=[]; }]; }; { blab="L1198"; elab="L1199"; names=[("p", 0)]; subs=[{ blab="L1200"; elab="L1201"; names=[]; subs=[]; }]; }; { blab="L1191"; elab="L1192"; names=[]; subs=[{ blab="L1193"; elab="L1194"; names=[]; subs=[]; }]; }; { blab="L1181"; elab="L1182"; names=[("s", 0)]; subs=[{ blab="L1183"; elab="L1184"; names=[]; subs=[]; }]; }; { blab="L1171"; elab="L1172"; names=[("s", 0)]; subs=[{ blab="L1173"; elab="L1174"; names=[]; subs=[]; }]; }; { blab="L1159"; elab="L1160"; names=[("s1", 1); ("s2", 0)]; subs=[{ blab="L1161"; elab="L1162"; names=[]; subs=[]; }]; }; { blab="L1145"; elab="L1146"; names=[("op", 2); ("s1", 1); ("s2", 0)]; subs=[{ blab="L1147"; elab="L1148"; names=[]; subs=[]; }]; }; { blab="L1135"; elab="L1136"; names=[("s1", 0)]; subs=[{ blab="L1137"; elab="L1138"; names=[]; subs=[]; }]; }; { blab="L1125"; elab="L1126"; names=[("suf", 1); ("s", 0)]; subs=[{ blab="L1127"; elab="L1128"; names=[]; subs=[]; }]; }; { blab="L1118"; elab="L1119"; names=[]; subs=[{ blab="L1120"; elab="L1121"; names=[]; subs=[]; }]; }]; }]; }]) / 
+# BEGIN ("LinsnString", 1, 3, [], ["insn"], [{ blab="L1152"; elab="L1153"; names=[]; subs=[{ blab="L1155"; elab="L1156"; names=[]; subs=[{ blab="L1278"; elab="L1279"; names=[("m", 0)]; subs=[{ blab="L1280"; elab="L1281"; names=[]; subs=[]; }]; }; { blab="L1269"; elab="L1270"; names=[("c", 1); ("l", 0)]; subs=[{ blab="L1271"; elab="L1272"; names=[]; subs=[]; }]; }; { blab="L1260"; elab="L1261"; names=[("l", 0)]; subs=[{ blab="L1262"; elab="L1263"; names=[]; subs=[]; }]; }; { blab="L1251"; elab="L1252"; names=[("l", 0)]; subs=[{ blab="L1253"; elab="L1254"; names=[]; subs=[]; }]; }; { blab="L1242"; elab="L1243"; names=[("p", 0)]; subs=[{ blab="L1244"; elab="L1245"; names=[]; subs=[]; }]; }; { blab="L1235"; elab="L1236"; names=[]; subs=[{ blab="L1237"; elab="L1238"; names=[]; subs=[]; }]; }; { blab="L1225"; elab="L1226"; names=[("s", 0)]; subs=[{ blab="L1227"; elab="L1228"; names=[]; subs=[]; }]; }; { blab="L1215"; elab="L1216"; names=[("s", 0)]; subs=[{ blab="L1217"; elab="L1218"; names=[]; subs=[]; }]; }; { blab="L1203"; elab="L1204"; names=[("s1", 1); ("s2", 0)]; subs=[{ blab="L1205"; elab="L1206"; names=[]; subs=[]; }]; }; { blab="L1189"; elab="L1190"; names=[("op", 2); ("s1", 1); ("s2", 0)]; subs=[{ blab="L1191"; elab="L1192"; names=[]; subs=[]; }]; }; { blab="L1179"; elab="L1180"; names=[("s1", 0)]; subs=[{ blab="L1181"; elab="L1182"; names=[]; subs=[]; }]; }; { blab="L1169"; elab="L1170"; names=[("suf", 1); ("s", 0)]; subs=[{ blab="L1171"; elab="L1172"; names=[]; subs=[]; }]; }; { blab="L1162"; elab="L1163"; names=[]; subs=[{ blab="L1164"; elab="L1165"; names=[]; subs=[]; }]; }]; }]; }]) / 
 
 	.type insnString, @function
 
@@ -13464,35 +14169,55 @@ LinsnString:
 
 	.stabs "m:1",128,0,0,-4
 
-	.stabn 192,0,0,L1206-LinsnString
+	.stabn 192,0,0,L1278-LinsnString
 
-	.stabn 224,0,0,L1207-LinsnString
+	.stabn 224,0,0,L1279-LinsnString
+
+	.stabs "c:1",128,0,0,-8
+
+	.stabs "l:1",128,0,0,-4
+
+	.stabn 192,0,0,L1269-LinsnString
+
+	.stabn 224,0,0,L1270-LinsnString
+
+	.stabs "l:1",128,0,0,-4
+
+	.stabn 192,0,0,L1260-LinsnString
+
+	.stabn 224,0,0,L1261-LinsnString
+
+	.stabs "l:1",128,0,0,-4
+
+	.stabn 192,0,0,L1251-LinsnString
+
+	.stabn 224,0,0,L1252-LinsnString
 
 	.stabs "p:1",128,0,0,-4
 
-	.stabn 192,0,0,L1198-LinsnString
+	.stabn 192,0,0,L1242-LinsnString
 
-	.stabn 224,0,0,L1199-LinsnString
-
-	.stabs "s:1",128,0,0,-4
-
-	.stabn 192,0,0,L1181-LinsnString
-
-	.stabn 224,0,0,L1182-LinsnString
+	.stabn 224,0,0,L1243-LinsnString
 
 	.stabs "s:1",128,0,0,-4
 
-	.stabn 192,0,0,L1171-LinsnString
+	.stabn 192,0,0,L1225-LinsnString
 
-	.stabn 224,0,0,L1172-LinsnString
+	.stabn 224,0,0,L1226-LinsnString
+
+	.stabs "s:1",128,0,0,-4
+
+	.stabn 192,0,0,L1215-LinsnString
+
+	.stabn 224,0,0,L1216-LinsnString
 
 	.stabs "s1:1",128,0,0,-8
 
 	.stabs "s2:1",128,0,0,-4
 
-	.stabn 192,0,0,L1159-LinsnString
+	.stabn 192,0,0,L1203-LinsnString
 
-	.stabn 224,0,0,L1160-LinsnString
+	.stabn 224,0,0,L1204-LinsnString
 
 	.stabs "op:1",128,0,0,-12
 
@@ -13500,23 +14225,23 @@ LinsnString:
 
 	.stabs "s2:1",128,0,0,-4
 
-	.stabn 192,0,0,L1145-LinsnString
+	.stabn 192,0,0,L1189-LinsnString
 
-	.stabn 224,0,0,L1146-LinsnString
+	.stabn 224,0,0,L1190-LinsnString
 
 	.stabs "s1:1",128,0,0,-4
 
-	.stabn 192,0,0,L1135-LinsnString
+	.stabn 192,0,0,L1179-LinsnString
 
-	.stabn 224,0,0,L1136-LinsnString
+	.stabn 224,0,0,L1180-LinsnString
 
 	.stabs "suf:1",128,0,0,-8
 
 	.stabs "s:1",128,0,0,-4
 
-	.stabn 192,0,0,L1125-LinsnString
+	.stabn 192,0,0,L1169-LinsnString
 
-	.stabn 224,0,0,L1126-LinsnString
+	.stabn 224,0,0,L1170-LinsnString
 
 	.cfi_startproc
 
@@ -13533,21 +14258,21 @@ LinsnString:
 	movl	$filler,	%esi
 	movl	$LSLinsnString_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L1108") / 
+# SLABEL ("L1152") / 
 
-L1108:
+L1152:
 
-# SLABEL ("L1111") / 
+# SLABEL ("L1155") / 
 
-L1111:
+L1155:
 
-# LINE (76) / 
+# LINE (80) / 
 
-	.stabn 68,0,76,0
+	.stabn 68,0,80,0
 
-	.stabn 68,0,76,.L111-LinsnString
+	.stabn 68,0,80,.L114-LinsnString
 
-.L111:
+.L114:
 
 # LD (Arg (0)) / 
 
@@ -13555,9 +14280,9 @@ L1111:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L1118") / 
+# SLABEL ("L1162") / 
 
-L1118:
+L1162:
 
 # DUP / 
 
@@ -13576,57 +14301,57 @@ L1118:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1116") / 
+# CJMP ("nz", "L1160") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1116
-# LABEL ("L1117") / 
+	jnz	L1160
+# LABEL ("L1161") / 
 
-L1117:
-
-# DROP / 
-
-# JMP ("L1115") / 
-
-	jmp	L1115
-# LABEL ("L1116") / 
-
-L1116:
+L1161:
 
 # DROP / 
 
+# JMP ("L1159") / 
+
+	jmp	L1159
+# LABEL ("L1160") / 
+
+L1160:
+
 # DROP / 
 
-# SLABEL ("L1120") / 
+# DROP / 
 
-L1120:
+# SLABEL ("L1164") / 
+
+L1164:
 
 # STRING ("\\tcltd\\n") / 
 
-	movl	$string_49,	%ebx
+	movl	$string_48,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1121") / 
+# SLABEL ("L1165") / 
 
-L1121:
+L1165:
 
-# JMP ("L1110") / 
+# JMP ("L1154") / 
 
-	jmp	L1110
-# SLABEL ("L1119") / 
+	jmp	L1154
+# SLABEL ("L1163") / 
 
-L1119:
+L1163:
 
-# SLABEL ("L1125") / 
+# SLABEL ("L1169") / 
 
-L1125:
+L1169:
 
-# LABEL ("L1115") / 
+# LABEL ("L1159") / 
 
-L1115:
+L1159:
 
 # DUP / 
 
@@ -13648,23 +14373,23 @@ L1115:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1123") / 
+# CJMP ("nz", "L1167") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1123
-# LABEL ("L1124") / 
+	jnz	L1167
+# LABEL ("L1168") / 
 
-L1124:
+L1168:
 
 # DROP / 
 
-# JMP ("L1122") / 
+# JMP ("L1166") / 
 
-	jmp	L1122
-# LABEL ("L1123") / 
+	jmp	L1166
+# LABEL ("L1167") / 
 
-L1123:
+L1167:
 
 # DUP / 
 
@@ -13748,19 +14473,19 @@ L1123:
 
 # DROP / 
 
-# SLABEL ("L1127") / 
+# SLABEL ("L1171") / 
 
-L1127:
+L1171:
 
-# LINE (78) / 
+# LINE (82) / 
 
-	.stabn 68,0,78,.L112-LinsnString
+	.stabn 68,0,82,.L115-LinsnString
 
-.L112:
+.L115:
 
 # STRING ("\\tset%s\\t%s\\n") / 
 
-	movl	$string_50,	%ebx
+	movl	$string_49,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
@@ -13779,24 +14504,24 @@ L1127:
 	call	Lsprintf
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1128") / 
+# SLABEL ("L1172") / 
 
-L1128:
+L1172:
 
-# JMP ("L1110") / 
+# JMP ("L1154") / 
 
-	jmp	L1110
-# SLABEL ("L1126") / 
+	jmp	L1154
+# SLABEL ("L1170") / 
 
-L1126:
+L1170:
 
-# SLABEL ("L1135") / 
+# SLABEL ("L1179") / 
 
-L1135:
+L1179:
 
-# LABEL ("L1122") / 
+# LABEL ("L1166") / 
 
-L1122:
+L1166:
 
 # DUP / 
 
@@ -13818,23 +14543,23 @@ L1122:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1133") / 
+# CJMP ("nz", "L1177") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1133
-# LABEL ("L1134") / 
+	jnz	L1177
+# LABEL ("L1178") / 
 
-L1134:
+L1178:
 
 # DROP / 
 
-# JMP ("L1132") / 
+# JMP ("L1176") / 
 
-	jmp	L1132
-# LABEL ("L1133") / 
+	jmp	L1176
+# LABEL ("L1177") / 
 
-L1133:
+L1177:
 
 # DUP / 
 
@@ -13879,19 +14604,19 @@ L1133:
 
 # DROP / 
 
-# SLABEL ("L1137") / 
+# SLABEL ("L1181") / 
 
-L1137:
+L1181:
 
-# LINE (79) / 
+# LINE (83) / 
 
-	.stabn 68,0,79,.L113-LinsnString
+	.stabn 68,0,83,.L116-LinsnString
 
-.L113:
+.L116:
 
 # STRING ("\\tidivl\\t%s\\n") / 
 
-	movl	$string_51,	%ebx
+	movl	$string_50,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
@@ -13899,11 +14624,11 @@ L1137:
 # LD (Local (0)) / 
 
 	movl	-4(%ebp),	%ecx
-# CALL ("LopndString_171", 1, false) / 
+# CALL ("LopndString_177", 1, false) / 
 
 	pushl	%ebx
 	pushl	%ecx
-	call	LopndString_171
+	call	LopndString_177
 	addl	$4,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
@@ -13914,24 +14639,24 @@ L1137:
 	call	Lsprintf
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1138") / 
+# SLABEL ("L1182") / 
 
-L1138:
+L1182:
 
-# JMP ("L1110") / 
+# JMP ("L1154") / 
 
-	jmp	L1110
-# SLABEL ("L1136") / 
+	jmp	L1154
+# SLABEL ("L1180") / 
 
-L1136:
+L1180:
 
-# SLABEL ("L1145") / 
+# SLABEL ("L1189") / 
 
-L1145:
+L1189:
 
-# LABEL ("L1132") / 
+# LABEL ("L1176") / 
 
-L1132:
+L1176:
 
 # DUP / 
 
@@ -13953,23 +14678,23 @@ L1132:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1143") / 
+# CJMP ("nz", "L1187") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1143
-# LABEL ("L1144") / 
+	jnz	L1187
+# LABEL ("L1188") / 
 
-L1144:
+L1188:
 
 # DROP / 
 
-# JMP ("L1142") / 
+# JMP ("L1186") / 
 
-	jmp	L1142
-# LABEL ("L1143") / 
+	jmp	L1186
+# LABEL ("L1187") / 
 
-L1143:
+L1187:
 
 # DUP / 
 
@@ -14092,19 +14817,19 @@ L1143:
 
 # DROP / 
 
-# SLABEL ("L1147") / 
+# SLABEL ("L1191") / 
 
-L1147:
+L1191:
 
-# LINE (80) / 
+# LINE (84) / 
 
-	.stabn 68,0,80,.L114-LinsnString
+	.stabn 68,0,84,.L117-LinsnString
 
-.L114:
+.L117:
 
 # STRING ("\\t%s\\t%s,\\t%s\\n") / 
 
-	movl	$string_52,	%ebx
+	movl	$string_51,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
@@ -14112,23 +14837,23 @@ L1147:
 # LD (Local (2)) / 
 
 	movl	-12(%ebp),	%ecx
-# CALL ("LbinopString_171", 1, false) / 
+# CALL ("LbinopString_177", 1, false) / 
 
 	pushl	%ebx
 	pushl	%ecx
-	call	LbinopString_171
+	call	LbinopString_177
 	addl	$4,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
 # LD (Local (1)) / 
 
 	movl	-8(%ebp),	%esi
-# CALL ("LopndString_171", 1, false) / 
+# CALL ("LopndString_177", 1, false) / 
 
 	pushl	%ebx
 	pushl	%ecx
 	pushl	%esi
-	call	LopndString_171
+	call	LopndString_177
 	addl	$4,	%esp
 	popl	%ecx
 	popl	%ebx
@@ -14136,13 +14861,13 @@ L1147:
 # LD (Local (0)) / 
 
 	movl	-4(%ebp),	%edi
-# CALL ("LopndString_171", 1, false) / 
+# CALL ("LopndString_177", 1, false) / 
 
 	pushl	%ebx
 	pushl	%ecx
 	pushl	%esi
 	pushl	%edi
-	call	LopndString_171
+	call	LopndString_177
 	addl	$4,	%esp
 	popl	%esi
 	popl	%ecx
@@ -14157,24 +14882,24 @@ L1147:
 	call	Lsprintf
 	addl	$16,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1148") / 
+# SLABEL ("L1192") / 
 
-L1148:
+L1192:
 
-# JMP ("L1110") / 
+# JMP ("L1154") / 
 
-	jmp	L1110
-# SLABEL ("L1146") / 
+	jmp	L1154
+# SLABEL ("L1190") / 
 
-L1146:
+L1190:
 
-# SLABEL ("L1159") / 
+# SLABEL ("L1203") / 
 
-L1159:
+L1203:
 
-# LABEL ("L1142") / 
+# LABEL ("L1186") / 
 
-L1142:
+L1186:
 
 # DUP / 
 
@@ -14196,23 +14921,23 @@ L1142:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1157") / 
+# CJMP ("nz", "L1201") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1157
-# LABEL ("L1158") / 
+	jnz	L1201
+# LABEL ("L1202") / 
 
-L1158:
+L1202:
 
 # DROP / 
 
-# JMP ("L1156") / 
+# JMP ("L1200") / 
 
-	jmp	L1156
-# LABEL ("L1157") / 
+	jmp	L1200
+# LABEL ("L1201") / 
 
-L1157:
+L1201:
 
 # DUP / 
 
@@ -14296,19 +15021,19 @@ L1157:
 
 # DROP / 
 
-# SLABEL ("L1161") / 
+# SLABEL ("L1205") / 
 
-L1161:
+L1205:
 
-# LINE (81) / 
+# LINE (85) / 
 
-	.stabn 68,0,81,.L115-LinsnString
+	.stabn 68,0,85,.L118-LinsnString
 
-.L115:
+.L118:
 
 # STRING ("\\tmovl\\t%s,\\t%s\\n") / 
 
-	movl	$string_53,	%ebx
+	movl	$string_52,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
@@ -14316,23 +15041,23 @@ L1161:
 # LD (Local (1)) / 
 
 	movl	-8(%ebp),	%ecx
-# CALL ("LopndString_171", 1, false) / 
+# CALL ("LopndString_177", 1, false) / 
 
 	pushl	%ebx
 	pushl	%ecx
-	call	LopndString_171
+	call	LopndString_177
 	addl	$4,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
 # LD (Local (0)) / 
 
 	movl	-4(%ebp),	%esi
-# CALL ("LopndString_171", 1, false) / 
+# CALL ("LopndString_177", 1, false) / 
 
 	pushl	%ebx
 	pushl	%ecx
 	pushl	%esi
-	call	LopndString_171
+	call	LopndString_177
 	addl	$4,	%esp
 	popl	%ecx
 	popl	%ebx
@@ -14345,24 +15070,24 @@ L1161:
 	call	Lsprintf
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1162") / 
+# SLABEL ("L1206") / 
 
-L1162:
+L1206:
 
-# JMP ("L1110") / 
+# JMP ("L1154") / 
 
-	jmp	L1110
-# SLABEL ("L1160") / 
+	jmp	L1154
+# SLABEL ("L1204") / 
 
-L1160:
+L1204:
 
-# SLABEL ("L1171") / 
+# SLABEL ("L1215") / 
 
-L1171:
+L1215:
 
-# LABEL ("L1156") / 
+# LABEL ("L1200") / 
 
-L1156:
+L1200:
 
 # DUP / 
 
@@ -14384,23 +15109,23 @@ L1156:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1169") / 
+# CJMP ("nz", "L1213") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1169
-# LABEL ("L1170") / 
+	jnz	L1213
+# LABEL ("L1214") / 
 
-L1170:
+L1214:
 
 # DROP / 
 
-# JMP ("L1168") / 
+# JMP ("L1212") / 
 
-	jmp	L1168
-# LABEL ("L1169") / 
+	jmp	L1212
+# LABEL ("L1213") / 
 
-L1169:
+L1213:
 
 # DUP / 
 
@@ -14445,19 +15170,19 @@ L1169:
 
 # DROP / 
 
-# SLABEL ("L1173") / 
+# SLABEL ("L1217") / 
 
-L1173:
+L1217:
 
-# LINE (82) / 
+# LINE (86) / 
 
-	.stabn 68,0,82,.L116-LinsnString
+	.stabn 68,0,86,.L119-LinsnString
 
-.L116:
+.L119:
 
 # STRING ("\\tpushl\\t%s\\n") / 
 
-	movl	$string_54,	%ebx
+	movl	$string_53,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
@@ -14465,11 +15190,11 @@ L1173:
 # LD (Local (0)) / 
 
 	movl	-4(%ebp),	%ecx
-# CALL ("LopndString_171", 1, false) / 
+# CALL ("LopndString_177", 1, false) / 
 
 	pushl	%ebx
 	pushl	%ecx
-	call	LopndString_171
+	call	LopndString_177
 	addl	$4,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
@@ -14480,24 +15205,24 @@ L1173:
 	call	Lsprintf
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1174") / 
+# SLABEL ("L1218") / 
 
-L1174:
+L1218:
 
-# JMP ("L1110") / 
+# JMP ("L1154") / 
 
-	jmp	L1110
-# SLABEL ("L1172") / 
+	jmp	L1154
+# SLABEL ("L1216") / 
 
-L1172:
+L1216:
 
-# SLABEL ("L1181") / 
+# SLABEL ("L1225") / 
 
-L1181:
+L1225:
 
-# LABEL ("L1168") / 
+# LABEL ("L1212") / 
 
-L1168:
+L1212:
 
 # DUP / 
 
@@ -14519,23 +15244,23 @@ L1168:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1179") / 
+# CJMP ("nz", "L1223") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1179
-# LABEL ("L1180") / 
+	jnz	L1223
+# LABEL ("L1224") / 
 
-L1180:
+L1224:
 
 # DROP / 
 
-# JMP ("L1178") / 
+# JMP ("L1222") / 
 
-	jmp	L1178
-# LABEL ("L1179") / 
+	jmp	L1222
+# LABEL ("L1223") / 
 
-L1179:
+L1223:
 
 # DUP / 
 
@@ -14580,19 +15305,19 @@ L1179:
 
 # DROP / 
 
-# SLABEL ("L1183") / 
+# SLABEL ("L1227") / 
 
-L1183:
+L1227:
 
-# LINE (83) / 
+# LINE (87) / 
 
-	.stabn 68,0,83,.L117-LinsnString
+	.stabn 68,0,87,.L120-LinsnString
 
-.L117:
+.L120:
 
 # STRING ("\\tpopl\\t%s\\n") / 
 
-	movl	$string_55,	%ebx
+	movl	$string_54,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
@@ -14600,11 +15325,11 @@ L1183:
 # LD (Local (0)) / 
 
 	movl	-4(%ebp),	%ecx
-# CALL ("LopndString_171", 1, false) / 
+# CALL ("LopndString_177", 1, false) / 
 
 	pushl	%ebx
 	pushl	%ecx
-	call	LopndString_171
+	call	LopndString_177
 	addl	$4,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
@@ -14615,24 +15340,24 @@ L1183:
 	call	Lsprintf
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1184") / 
+# SLABEL ("L1228") / 
 
-L1184:
+L1228:
 
-# JMP ("L1110") / 
+# JMP ("L1154") / 
 
-	jmp	L1110
-# SLABEL ("L1182") / 
+	jmp	L1154
+# SLABEL ("L1226") / 
 
-L1182:
+L1226:
 
-# SLABEL ("L1191") / 
+# SLABEL ("L1235") / 
 
-L1191:
+L1235:
 
-# LABEL ("L1178") / 
+# LABEL ("L1222") / 
 
-L1178:
+L1222:
 
 # DUP / 
 
@@ -14654,57 +15379,57 @@ L1178:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1189") / 
+# CJMP ("nz", "L1233") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1189
-# LABEL ("L1190") / 
+	jnz	L1233
+# LABEL ("L1234") / 
 
-L1190:
-
-# DROP / 
-
-# JMP ("L1188") / 
-
-	jmp	L1188
-# LABEL ("L1189") / 
-
-L1189:
+L1234:
 
 # DROP / 
 
+# JMP ("L1232") / 
+
+	jmp	L1232
+# LABEL ("L1233") / 
+
+L1233:
+
 # DROP / 
 
-# SLABEL ("L1193") / 
+# DROP / 
 
-L1193:
+# SLABEL ("L1237") / 
+
+L1237:
 
 # STRING ("\\tret\\n") / 
 
-	movl	$string_56,	%ebx
+	movl	$string_55,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1194") / 
+# SLABEL ("L1238") / 
 
-L1194:
+L1238:
 
-# JMP ("L1110") / 
+# JMP ("L1154") / 
 
-	jmp	L1110
-# SLABEL ("L1192") / 
+	jmp	L1154
+# SLABEL ("L1236") / 
 
-L1192:
+L1236:
 
-# SLABEL ("L1198") / 
+# SLABEL ("L1242") / 
 
-L1198:
+L1242:
 
-# LABEL ("L1188") / 
+# LABEL ("L1232") / 
 
-L1188:
+L1232:
 
 # DUP / 
 
@@ -14726,23 +15451,23 @@ L1188:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1196") / 
+# CJMP ("nz", "L1240") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1196
-# LABEL ("L1197") / 
+	jnz	L1240
+# LABEL ("L1241") / 
 
-L1197:
+L1241:
 
 # DROP / 
 
-# JMP ("L1195") / 
+# JMP ("L1239") / 
 
-	jmp	L1195
-# LABEL ("L1196") / 
+	jmp	L1239
+# LABEL ("L1240") / 
 
-L1196:
+L1240:
 
 # DUP / 
 
@@ -14787,17 +15512,144 @@ L1196:
 
 # DROP / 
 
-# SLABEL ("L1200") / 
+# SLABEL ("L1244") / 
 
-L1200:
+L1244:
 
-# LINE (85) / 
+# LINE (89) / 
 
-	.stabn 68,0,85,.L118-LinsnString
+	.stabn 68,0,89,.L121-LinsnString
 
-.L118:
+.L121:
 
 # STRING ("\\tcall\\t%s\\n") / 
+
+	movl	$string_56,	%ebx
+	pushl	%ebx
+	call	Bstring
+	addl	$4,	%esp
+	movl	%eax,	%ebx
+# LD (Local (0)) / 
+
+	movl	-4(%ebp),	%ecx
+# CALL ("Lsprintf", 2, true) / 
+
+	pushl	%ecx
+	pushl	%ebx
+	call	Lsprintf
+	addl	$8,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L1245") / 
+
+L1245:
+
+# JMP ("L1154") / 
+
+	jmp	L1154
+# SLABEL ("L1243") / 
+
+L1243:
+
+# SLABEL ("L1251") / 
+
+L1251:
+
+# LABEL ("L1239") / 
+
+L1239:
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# DUP / 
+
+	movl	%ecx,	%esi
+# TAG ("Label", 1) / 
+
+	movl	$1275609753,	%edi
+	movl	$3,	-16(%ebp)
+	pushl	%ebx
+	pushl	%ecx
+	pushl	-16(%ebp)
+	pushl	%edi
+	pushl	%esi
+	call	Btag
+	addl	$12,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# CJMP ("nz", "L1249") / 
+
+	sarl	%esi
+	cmpl	$0,	%esi
+	jnz	L1249
+# LABEL ("L1250") / 
+
+L1250:
+
+# DROP / 
+
+# JMP ("L1248") / 
+
+	jmp	L1248
+# LABEL ("L1249") / 
+
+L1249:
+
+# DUP / 
+
+	movl	%ecx,	%esi
+# CONST (0) / 
+
+	movl	$1,	%edi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%edi
+	pushl	%esi
+	call	Belem
+	addl	$8,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# DROP / 
+
+# DROP / 
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# CONST (0) / 
+
+	movl	$1,	%esi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Belem
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# ST (Local (0)) / 
+
+	movl	%ecx,	-4(%ebp)
+# DROP / 
+
+# DROP / 
+
+# SLABEL ("L1253") / 
+
+L1253:
+
+# LINE (90) / 
+
+	.stabn 68,0,90,.L122-LinsnString
+
+.L122:
+
+# STRING ("%s:\\n") / 
 
 	movl	$string_57,	%ebx
 	pushl	%ebx
@@ -14814,24 +15666,321 @@ L1200:
 	call	Lsprintf
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1201") / 
+# SLABEL ("L1254") / 
 
-L1201:
+L1254:
 
-# JMP ("L1110") / 
+# JMP ("L1154") / 
 
-	jmp	L1110
-# SLABEL ("L1199") / 
+	jmp	L1154
+# SLABEL ("L1252") / 
 
-L1199:
+L1252:
 
-# SLABEL ("L1206") / 
+# SLABEL ("L1260") / 
 
-L1206:
+L1260:
 
-# LABEL ("L1195") / 
+# LABEL ("L1248") / 
 
-L1195:
+L1248:
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# DUP / 
+
+	movl	%ecx,	%esi
+# TAG ("Jmp", 1) / 
+
+	movl	$296609,	%edi
+	movl	$3,	-16(%ebp)
+	pushl	%ebx
+	pushl	%ecx
+	pushl	-16(%ebp)
+	pushl	%edi
+	pushl	%esi
+	call	Btag
+	addl	$12,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# CJMP ("nz", "L1258") / 
+
+	sarl	%esi
+	cmpl	$0,	%esi
+	jnz	L1258
+# LABEL ("L1259") / 
+
+L1259:
+
+# DROP / 
+
+# JMP ("L1257") / 
+
+	jmp	L1257
+# LABEL ("L1258") / 
+
+L1258:
+
+# DUP / 
+
+	movl	%ecx,	%esi
+# CONST (0) / 
+
+	movl	$1,	%edi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%edi
+	pushl	%esi
+	call	Belem
+	addl	$8,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# DROP / 
+
+# DROP / 
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# CONST (0) / 
+
+	movl	$1,	%esi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Belem
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# ST (Local (0)) / 
+
+	movl	%ecx,	-4(%ebp)
+# DROP / 
+
+# DROP / 
+
+# SLABEL ("L1262") / 
+
+L1262:
+
+# LINE (91) / 
+
+	.stabn 68,0,91,.L123-LinsnString
+
+.L123:
+
+# STRING ("\\tjmp\\t%s\\n") / 
+
+	movl	$string_58,	%ebx
+	pushl	%ebx
+	call	Bstring
+	addl	$4,	%esp
+	movl	%eax,	%ebx
+# LD (Local (0)) / 
+
+	movl	-4(%ebp),	%ecx
+# CALL ("Lsprintf", 2, true) / 
+
+	pushl	%ecx
+	pushl	%ebx
+	call	Lsprintf
+	addl	$8,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L1263") / 
+
+L1263:
+
+# JMP ("L1154") / 
+
+	jmp	L1154
+# SLABEL ("L1261") / 
+
+L1261:
+
+# SLABEL ("L1269") / 
+
+L1269:
+
+# LABEL ("L1257") / 
+
+L1257:
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# DUP / 
+
+	movl	%ecx,	%esi
+# TAG ("CJmp", 2) / 
+
+	movl	$15500961,	%edi
+	movl	$5,	-16(%ebp)
+	pushl	%ebx
+	pushl	%ecx
+	pushl	-16(%ebp)
+	pushl	%edi
+	pushl	%esi
+	call	Btag
+	addl	$12,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# CJMP ("nz", "L1267") / 
+
+	sarl	%esi
+	cmpl	$0,	%esi
+	jnz	L1267
+# LABEL ("L1268") / 
+
+L1268:
+
+# DROP / 
+
+# JMP ("L1266") / 
+
+	jmp	L1266
+# LABEL ("L1267") / 
+
+L1267:
+
+# DUP / 
+
+	movl	%ecx,	%esi
+# CONST (0) / 
+
+	movl	$1,	%edi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%edi
+	pushl	%esi
+	call	Belem
+	addl	$8,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# DROP / 
+
+# DUP / 
+
+	movl	%ecx,	%esi
+# CONST (1) / 
+
+	movl	$3,	%edi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%edi
+	pushl	%esi
+	call	Belem
+	addl	$8,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# DROP / 
+
+# DROP / 
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# CONST (0) / 
+
+	movl	$1,	%esi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Belem
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# ST (Local (1)) / 
+
+	movl	%ecx,	-8(%ebp)
+# DROP / 
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# CONST (1) / 
+
+	movl	$3,	%esi
+# CALL (".elem", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Belem
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# ST (Local (0)) / 
+
+	movl	%ecx,	-4(%ebp)
+# DROP / 
+
+# DROP / 
+
+# SLABEL ("L1271") / 
+
+L1271:
+
+# LINE (92) / 
+
+	.stabn 68,0,92,.L124-LinsnString
+
+.L124:
+
+# STRING ("\\tj%s\\t%s\\n") / 
+
+	movl	$string_59,	%ebx
+	pushl	%ebx
+	call	Bstring
+	addl	$4,	%esp
+	movl	%eax,	%ebx
+# LD (Local (1)) / 
+
+	movl	-8(%ebp),	%ecx
+# LD (Local (0)) / 
+
+	movl	-4(%ebp),	%esi
+# CALL ("Lsprintf", 3, true) / 
+
+	pushl	%esi
+	pushl	%ecx
+	pushl	%ebx
+	call	Lsprintf
+	addl	$12,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L1272") / 
+
+L1272:
+
+# JMP ("L1154") / 
+
+	jmp	L1154
+# SLABEL ("L1270") / 
+
+L1270:
+
+# SLABEL ("L1278") / 
+
+L1278:
+
+# LABEL ("L1266") / 
+
+L1266:
 
 # DUP / 
 
@@ -14853,23 +16002,23 @@ L1195:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1204") / 
+# CJMP ("nz", "L1276") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1204
-# LABEL ("L1205") / 
+	jnz	L1276
+# LABEL ("L1277") / 
 
-L1205:
+L1277:
 
 # DROP / 
 
-# JMP ("L1113") / 
+# JMP ("L1157") / 
 
-	jmp	L1113
-# LABEL ("L1204") / 
+	jmp	L1157
+# LABEL ("L1276") / 
 
-L1204:
+L1276:
 
 # DUP / 
 
@@ -14914,56 +16063,56 @@ L1204:
 
 # DROP / 
 
-# SLABEL ("L1208") / 
+# SLABEL ("L1280") / 
 
-L1208:
+L1280:
 
-# LINE (86) / 
+# LINE (93) / 
 
-	.stabn 68,0,86,.L119-LinsnString
+	.stabn 68,0,93,.L125-LinsnString
 
-.L119:
+.L125:
 
 # LD (Local (0)) / 
 
 	movl	-4(%ebp),	%ebx
-# SLABEL ("L1209") / 
+# SLABEL ("L1281") / 
 
-L1209:
+L1281:
 
-# SLABEL ("L1207") / 
+# SLABEL ("L1279") / 
 
-L1207:
+L1279:
 
-# JMP ("L1110") / 
+# JMP ("L1154") / 
 
-	jmp	L1110
-# LABEL ("L1113") / 
+	jmp	L1154
+# LABEL ("L1157") / 
 
-L1113:
+L1157:
 
-# FAIL ((76, 7), true) / 
+# FAIL ((80, 7), true) / 
 
 	pushl	$15
-	pushl	$153
+	pushl	$161
 	pushl	$string_16
 	pushl	%ebx
 	call	Bmatch_failure
 	addl	$16,	%esp
-# JMP ("L1110") / 
+# JMP ("L1154") / 
 
-	jmp	L1110
-# SLABEL ("L1112") / 
+	jmp	L1154
+# SLABEL ("L1156") / 
 
-L1112:
+L1156:
 
-# LABEL ("L1110") / 
+# LABEL ("L1154") / 
 
-L1110:
+L1154:
 
-# SLABEL ("L1109") / 
+# SLABEL ("L1153") / 
 
-L1109:
+L1153:
 
 # END / 
 
@@ -14985,41 +16134,41 @@ LLinsnString_epilogue:
 
 	.size LinsnString, .-LinsnString
 
-# LABEL ("LopndString_171") / 
+# LABEL ("LopndString_177") / 
 
-LopndString_171:
+LopndString_177:
 
-# BEGIN ("LopndString_171", 1, 1, [], ["opnd"], [{ blab="L1210"; elab="L1211"; names=[]; subs=[{ blab="L1213"; elab="L1214"; names=[]; subs=[{ blab="L1250"; elab="L1251"; names=[("i", 0)]; subs=[{ blab="L1252"; elab="L1253"; names=[]; subs=[]; }]; }; { blab="L1244"; elab="L1245"; names=[("x", 0)]; subs=[{ blab="L1246"; elab="L1247"; names=[]; subs=[]; }]; }; { blab="L1229"; elab="L1230"; names=[("i", 0)]; subs=[{ blab="L1231"; elab="L1232"; names=[]; subs=[{ blab="L1237"; elab="L1238"; names=[]; subs=[]; }]; }]; }; { blab="L1220"; elab="L1221"; names=[("i", 0)]; subs=[{ blab="L1222"; elab="L1223"; names=[]; subs=[]; }]; }]; }]; }]) / 
+# BEGIN ("LopndString_177", 1, 1, [], ["opnd"], [{ blab="L1282"; elab="L1283"; names=[]; subs=[{ blab="L1285"; elab="L1286"; names=[]; subs=[{ blab="L1322"; elab="L1323"; names=[("i", 0)]; subs=[{ blab="L1324"; elab="L1325"; names=[]; subs=[]; }]; }; { blab="L1316"; elab="L1317"; names=[("x", 0)]; subs=[{ blab="L1318"; elab="L1319"; names=[]; subs=[]; }]; }; { blab="L1301"; elab="L1302"; names=[("i", 0)]; subs=[{ blab="L1303"; elab="L1304"; names=[]; subs=[{ blab="L1309"; elab="L1310"; names=[]; subs=[]; }]; }]; }; { blab="L1292"; elab="L1293"; names=[("i", 0)]; subs=[{ blab="L1294"; elab="L1295"; names=[]; subs=[]; }]; }]; }]; }]) / 
 
-	.type opndString_171, @function
+	.type opndString_177, @function
 
-	.stabs "opndString_171:F1",36,0,0,LopndString_171
+	.stabs "opndString_177:F1",36,0,0,LopndString_177
 
 	.stabs "opnd:p1",160,0,0,8
 
 	.stabs "i:1",128,0,0,-4
 
-	.stabn 192,0,0,L1250-LopndString_171
+	.stabn 192,0,0,L1322-LopndString_177
 
-	.stabn 224,0,0,L1251-LopndString_171
+	.stabn 224,0,0,L1323-LopndString_177
 
 	.stabs "x:1",128,0,0,-4
 
-	.stabn 192,0,0,L1244-LopndString_171
+	.stabn 192,0,0,L1316-LopndString_177
 
-	.stabn 224,0,0,L1245-LopndString_171
-
-	.stabs "i:1",128,0,0,-4
-
-	.stabn 192,0,0,L1229-LopndString_171
-
-	.stabn 224,0,0,L1230-LopndString_171
+	.stabn 224,0,0,L1317-LopndString_177
 
 	.stabs "i:1",128,0,0,-4
 
-	.stabn 192,0,0,L1220-LopndString_171
+	.stabn 192,0,0,L1301-LopndString_177
 
-	.stabn 224,0,0,L1221-LopndString_171
+	.stabn 224,0,0,L1302-LopndString_177
+
+	.stabs "i:1",128,0,0,-4
+
+	.stabn 192,0,0,L1292-LopndString_177
+
+	.stabn 224,0,0,L1293-LopndString_177
 
 	.cfi_startproc
 
@@ -15031,26 +16180,26 @@ LopndString_171:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLopndString_171_SIZE,	%esp
+	subl	$LLopndString_177_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLopndString_171_SIZE,	%ecx
+	movl	$LSLopndString_177_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L1210") / 
+# SLABEL ("L1282") / 
 
-L1210:
+L1282:
 
-# SLABEL ("L1213") / 
+# SLABEL ("L1285") / 
 
-L1213:
+L1285:
 
-# LINE (68) / 
+# LINE (72) / 
 
-	.stabn 68,0,68,0
+	.stabn 68,0,72,0
 
-	.stabn 68,0,68,.L120-LopndString_171
+	.stabn 68,0,72,.L126-LopndString_177
 
-.L120:
+.L126:
 
 # LD (Arg (0)) / 
 
@@ -15058,9 +16207,9 @@ L1213:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L1220") / 
+# SLABEL ("L1292") / 
 
-L1220:
+L1292:
 
 # DUP / 
 
@@ -15079,23 +16228,23 @@ L1220:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1218") / 
+# CJMP ("nz", "L1290") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1218
-# LABEL ("L1219") / 
+	jnz	L1290
+# LABEL ("L1291") / 
 
-L1219:
+L1291:
 
 # DROP / 
 
-# JMP ("L1217") / 
+# JMP ("L1289") / 
 
-	jmp	L1217
-# LABEL ("L1218") / 
+	jmp	L1289
+# LABEL ("L1290") / 
 
-L1218:
+L1290:
 
 # DUP / 
 
@@ -15140,15 +16289,15 @@ L1218:
 
 # DROP / 
 
-# SLABEL ("L1222") / 
+# SLABEL ("L1294") / 
 
-L1222:
+L1294:
 
-# LINE (69) / 
+# LINE (73) / 
 
-	.stabn 68,0,69,.L121-LopndString_171
+	.stabn 68,0,73,.L127-LopndString_177
 
-.L121:
+.L127:
 
 # LD (Global ("regs")) / 
 
@@ -15163,24 +16312,24 @@ L1222:
 	call	Belem
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1223") / 
+# SLABEL ("L1295") / 
 
-L1223:
+L1295:
 
-# JMP ("L1212") / 
+# JMP ("L1284") / 
 
-	jmp	L1212
-# SLABEL ("L1221") / 
+	jmp	L1284
+# SLABEL ("L1293") / 
 
-L1221:
+L1293:
 
-# SLABEL ("L1229") / 
+# SLABEL ("L1301") / 
 
-L1229:
+L1301:
 
-# LABEL ("L1217") / 
+# LABEL ("L1289") / 
 
-L1217:
+L1289:
 
 # DUP / 
 
@@ -15202,23 +16351,23 @@ L1217:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1227") / 
+# CJMP ("nz", "L1299") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1227
-# LABEL ("L1228") / 
+	jnz	L1299
+# LABEL ("L1300") / 
 
-L1228:
+L1300:
 
 # DROP / 
 
-# JMP ("L1226") / 
+# JMP ("L1298") / 
 
-	jmp	L1226
-# LABEL ("L1227") / 
+	jmp	L1298
+# LABEL ("L1299") / 
 
-L1227:
+L1299:
 
 # DUP / 
 
@@ -15263,26 +16412,26 @@ L1227:
 
 # DROP / 
 
-# SLABEL ("L1231") / 
+# SLABEL ("L1303") / 
 
-L1231:
+L1303:
 
-# LINE (70) / 
+# LINE (74) / 
 
-	.stabn 68,0,70,.L122-LopndString_171
+	.stabn 68,0,74,.L128-LopndString_177
 
-.L122:
+.L128:
 
 # STRING ("-%d(%%ebp)") / 
 
-	movl	$string_58,	%ebx
+	movl	$string_60,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1237") / 
+# SLABEL ("L1309") / 
 
-L1237:
+L1309:
 
 # LD (Local (0)) / 
 
@@ -15294,9 +16443,9 @@ L1237:
 
 	addl	%esi,	%ecx
 	decl	%ecx
-# SLABEL ("L1238") / 
+# SLABEL ("L1310") / 
 
-L1238:
+L1310:
 
 # LD (Global ("wordSize")) / 
 
@@ -15315,24 +16464,24 @@ L1238:
 	call	Lsprintf
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1232") / 
+# SLABEL ("L1304") / 
 
-L1232:
+L1304:
 
-# JMP ("L1212") / 
+# JMP ("L1284") / 
 
-	jmp	L1212
-# SLABEL ("L1230") / 
+	jmp	L1284
+# SLABEL ("L1302") / 
 
-L1230:
+L1302:
 
-# SLABEL ("L1244") / 
+# SLABEL ("L1316") / 
 
-L1244:
+L1316:
 
-# LABEL ("L1226") / 
+# LABEL ("L1298") / 
 
-L1226:
+L1298:
 
 # DUP / 
 
@@ -15354,23 +16503,23 @@ L1226:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1242") / 
+# CJMP ("nz", "L1314") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1242
-# LABEL ("L1243") / 
+	jnz	L1314
+# LABEL ("L1315") / 
 
-L1243:
+L1315:
 
 # DROP / 
 
-# JMP ("L1241") / 
+# JMP ("L1313") / 
 
-	jmp	L1241
-# LABEL ("L1242") / 
+	jmp	L1313
+# LABEL ("L1314") / 
 
-L1242:
+L1314:
 
 # DUP / 
 
@@ -15415,37 +16564,37 @@ L1242:
 
 # DROP / 
 
-# SLABEL ("L1246") / 
+# SLABEL ("L1318") / 
 
-L1246:
+L1318:
 
-# LINE (71) / 
+# LINE (75) / 
 
-	.stabn 68,0,71,.L123-LopndString_171
+	.stabn 68,0,75,.L129-LopndString_177
 
-.L123:
+.L129:
 
 # LD (Local (0)) / 
 
 	movl	-4(%ebp),	%ebx
-# SLABEL ("L1247") / 
+# SLABEL ("L1319") / 
 
-L1247:
+L1319:
 
-# JMP ("L1212") / 
+# JMP ("L1284") / 
 
-	jmp	L1212
-# SLABEL ("L1245") / 
+	jmp	L1284
+# SLABEL ("L1317") / 
 
-L1245:
+L1317:
 
-# SLABEL ("L1250") / 
+# SLABEL ("L1322") / 
 
-L1250:
+L1322:
 
-# LABEL ("L1241") / 
+# LABEL ("L1313") / 
 
-L1241:
+L1313:
 
 # DUP / 
 
@@ -15467,23 +16616,23 @@ L1241:
 	popl	%ecx
 	popl	%ebx
 	movl	%eax,	%esi
-# CJMP ("nz", "L1248") / 
+# CJMP ("nz", "L1320") / 
 
 	sarl	%esi
 	cmpl	$0,	%esi
-	jnz	L1248
-# LABEL ("L1249") / 
+	jnz	L1320
+# LABEL ("L1321") / 
 
-L1249:
+L1321:
 
 # DROP / 
 
-# JMP ("L1215") / 
+# JMP ("L1287") / 
 
-	jmp	L1215
-# LABEL ("L1248") / 
+	jmp	L1287
+# LABEL ("L1320") / 
 
-L1248:
+L1320:
 
 # DUP / 
 
@@ -15528,19 +16677,19 @@ L1248:
 
 # DROP / 
 
-# SLABEL ("L1252") / 
+# SLABEL ("L1324") / 
 
-L1252:
+L1324:
 
-# LINE (72) / 
+# LINE (76) / 
 
-	.stabn 68,0,72,.L124-LopndString_171
+	.stabn 68,0,76,.L130-LopndString_177
 
-.L124:
+.L130:
 
 # STRING ("$%d") / 
 
-	movl	$string_59,	%ebx
+	movl	$string_61,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
@@ -15555,48 +16704,48 @@ L1252:
 	call	Lsprintf
 	addl	$8,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1253") / 
+# SLABEL ("L1325") / 
 
-L1253:
+L1325:
 
-# SLABEL ("L1251") / 
+# SLABEL ("L1323") / 
 
-L1251:
+L1323:
 
-# JMP ("L1212") / 
+# JMP ("L1284") / 
 
-	jmp	L1212
-# LABEL ("L1215") / 
+	jmp	L1284
+# LABEL ("L1287") / 
 
-L1215:
+L1287:
 
-# FAIL ((68, 9), true) / 
+# FAIL ((72, 9), true) / 
 
 	pushl	$19
-	pushl	$137
+	pushl	$145
 	pushl	$string_16
 	pushl	%ebx
 	call	Bmatch_failure
 	addl	$16,	%esp
-# JMP ("L1212") / 
+# JMP ("L1284") / 
 
-	jmp	L1212
-# SLABEL ("L1214") / 
+	jmp	L1284
+# SLABEL ("L1286") / 
 
-L1214:
+L1286:
 
-# LABEL ("L1212") / 
+# LABEL ("L1284") / 
 
-L1212:
+L1284:
 
-# SLABEL ("L1211") / 
+# SLABEL ("L1283") / 
 
-L1211:
+L1283:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLopndString_171_epilogue:
+LLopndString_177_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -15607,21 +16756,21 @@ LLopndString_171_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLopndString_171_SIZE,	8
+	.set	LLopndString_177_SIZE,	8
 
-	.set	LSLopndString_171_SIZE,	2
+	.set	LSLopndString_177_SIZE,	2
 
-	.size LopndString_171, .-LopndString_171
+	.size LopndString_177, .-LopndString_177
 
-# LABEL ("LbinopString_171") / 
+# LABEL ("LbinopString_177") / 
 
-LbinopString_171:
+LbinopString_177:
 
-# BEGIN ("LbinopString_171", 1, 0, [], ["op"], [{ blab="L1256"; elab="L1257"; names=[]; subs=[{ blab="L1259"; elab="L1260"; names=[]; subs=[{ blab="L1293"; elab="L1294"; names=[]; subs=[{ blab="L1295"; elab="L1296"; names=[]; subs=[]; }]; }; { blab="L1289"; elab="L1290"; names=[]; subs=[{ blab="L1291"; elab="L1292"; names=[]; subs=[]; }]; }; { blab="L1284"; elab="L1285"; names=[]; subs=[{ blab="L1286"; elab="L1287"; names=[]; subs=[]; }]; }; { blab="L1279"; elab="L1280"; names=[]; subs=[{ blab="L1281"; elab="L1282"; names=[]; subs=[]; }]; }; { blab="L1274"; elab="L1275"; names=[]; subs=[{ blab="L1276"; elab="L1277"; names=[]; subs=[]; }]; }; { blab="L1269"; elab="L1270"; names=[]; subs=[{ blab="L1271"; elab="L1272"; names=[]; subs=[]; }]; }; { blab="L1264"; elab="L1265"; names=[]; subs=[{ blab="L1266"; elab="L1267"; names=[]; subs=[]; }]; }]; }]; }]) / 
+# BEGIN ("LbinopString_177", 1, 0, [], ["op"], [{ blab="L1328"; elab="L1329"; names=[]; subs=[{ blab="L1331"; elab="L1332"; names=[]; subs=[{ blab="L1365"; elab="L1366"; names=[]; subs=[{ blab="L1367"; elab="L1368"; names=[]; subs=[]; }]; }; { blab="L1361"; elab="L1362"; names=[]; subs=[{ blab="L1363"; elab="L1364"; names=[]; subs=[]; }]; }; { blab="L1356"; elab="L1357"; names=[]; subs=[{ blab="L1358"; elab="L1359"; names=[]; subs=[]; }]; }; { blab="L1351"; elab="L1352"; names=[]; subs=[{ blab="L1353"; elab="L1354"; names=[]; subs=[]; }]; }; { blab="L1346"; elab="L1347"; names=[]; subs=[{ blab="L1348"; elab="L1349"; names=[]; subs=[]; }]; }; { blab="L1341"; elab="L1342"; names=[]; subs=[{ blab="L1343"; elab="L1344"; names=[]; subs=[]; }]; }; { blab="L1336"; elab="L1337"; names=[]; subs=[{ blab="L1338"; elab="L1339"; names=[]; subs=[]; }]; }]; }]; }]) / 
 
-	.type binopString_171, @function
+	.type binopString_177, @function
 
-	.stabs "binopString_171:F1",36,0,0,LbinopString_171
+	.stabs "binopString_177:F1",36,0,0,LbinopString_177
 
 	.stabs "op:p1",160,0,0,8
 
@@ -15635,26 +16784,26 @@ LbinopString_171:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLbinopString_171_SIZE,	%esp
+	subl	$LLbinopString_177_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLbinopString_171_SIZE,	%ecx
+	movl	$LSLbinopString_177_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L1256") / 
+# SLABEL ("L1328") / 
 
-L1256:
+L1328:
 
-# SLABEL ("L1259") / 
+# SLABEL ("L1331") / 
 
-L1259:
+L1331:
 
-# LINE (56) / 
+# LINE (60) / 
 
-	.stabn 68,0,56,0
+	.stabn 68,0,60,0
 
-	.stabn 68,0,56,.L125-LbinopString_171
+	.stabn 68,0,60,.L131-LbinopString_177
 
-.L125:
+.L131:
 
 # LD (Arg (0)) / 
 
@@ -15662,9 +16811,9 @@ L1259:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L1264") / 
+# SLABEL ("L1336") / 
 
-L1264:
+L1336:
 
 # STRING ("+") / 
 
@@ -15686,42 +16835,42 @@ L1264:
 	addl	$8,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CJMP ("z", "L1263") / 
+# CJMP ("z", "L1335") / 
 
 	sarl	%ecx
 	cmpl	$0,	%ecx
-	jz	L1263
+	jz	L1335
 # DROP / 
 
-# SLABEL ("L1266") / 
+# SLABEL ("L1338") / 
 
-L1266:
+L1338:
 
 # STRING ("addl") / 
 
-	movl	$string_60,	%ebx
+	movl	$string_62,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1267") / 
+# SLABEL ("L1339") / 
 
-L1267:
+L1339:
 
-# JMP ("L1258") / 
+# JMP ("L1330") / 
 
-	jmp	L1258
-# SLABEL ("L1265") / 
+	jmp	L1330
+# SLABEL ("L1337") / 
 
-L1265:
+L1337:
 
-# SLABEL ("L1269") / 
+# SLABEL ("L1341") / 
 
-L1269:
+L1341:
 
-# LABEL ("L1263") / 
+# LABEL ("L1335") / 
 
-L1263:
+L1335:
 
 # DUP / 
 
@@ -15746,42 +16895,42 @@ L1263:
 	addl	$8,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CJMP ("z", "L1268") / 
+# CJMP ("z", "L1340") / 
 
 	sarl	%ecx
 	cmpl	$0,	%ecx
-	jz	L1268
+	jz	L1340
 # DROP / 
 
-# SLABEL ("L1271") / 
+# SLABEL ("L1343") / 
 
-L1271:
+L1343:
 
 # STRING ("subl") / 
 
-	movl	$string_61,	%ebx
+	movl	$string_63,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1272") / 
+# SLABEL ("L1344") / 
 
-L1272:
+L1344:
 
-# JMP ("L1258") / 
+# JMP ("L1330") / 
 
-	jmp	L1258
-# SLABEL ("L1270") / 
+	jmp	L1330
+# SLABEL ("L1342") / 
 
-L1270:
+L1342:
 
-# SLABEL ("L1274") / 
+# SLABEL ("L1346") / 
 
-L1274:
+L1346:
 
-# LABEL ("L1268") / 
+# LABEL ("L1340") / 
 
-L1268:
+L1340:
 
 # DUP / 
 
@@ -15806,42 +16955,42 @@ L1268:
 	addl	$8,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CJMP ("z", "L1273") / 
+# CJMP ("z", "L1345") / 
 
 	sarl	%ecx
 	cmpl	$0,	%ecx
-	jz	L1273
+	jz	L1345
 # DROP / 
 
-# SLABEL ("L1276") / 
+# SLABEL ("L1348") / 
 
-L1276:
+L1348:
 
 # STRING ("imull") / 
 
-	movl	$string_62,	%ebx
+	movl	$string_64,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1277") / 
+# SLABEL ("L1349") / 
 
-L1277:
+L1349:
 
-# JMP ("L1258") / 
+# JMP ("L1330") / 
 
-	jmp	L1258
-# SLABEL ("L1275") / 
+	jmp	L1330
+# SLABEL ("L1347") / 
 
-L1275:
+L1347:
 
-# SLABEL ("L1279") / 
+# SLABEL ("L1351") / 
 
-L1279:
+L1351:
 
-# LABEL ("L1273") / 
+# LABEL ("L1345") / 
 
-L1273:
+L1345:
 
 # DUP / 
 
@@ -15866,42 +17015,42 @@ L1273:
 	addl	$8,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CJMP ("z", "L1278") / 
+# CJMP ("z", "L1350") / 
 
 	sarl	%ecx
 	cmpl	$0,	%ecx
-	jz	L1278
+	jz	L1350
 # DROP / 
 
-# SLABEL ("L1281") / 
+# SLABEL ("L1353") / 
 
-L1281:
+L1353:
 
 # STRING ("andl") / 
 
-	movl	$string_63,	%ebx
+	movl	$string_65,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1282") / 
+# SLABEL ("L1354") / 
 
-L1282:
+L1354:
 
-# JMP ("L1258") / 
+# JMP ("L1330") / 
 
-	jmp	L1258
-# SLABEL ("L1280") / 
+	jmp	L1330
+# SLABEL ("L1352") / 
 
-L1280:
+L1352:
 
-# SLABEL ("L1284") / 
+# SLABEL ("L1356") / 
 
-L1284:
+L1356:
 
-# LABEL ("L1278") / 
+# LABEL ("L1350") / 
 
-L1278:
+L1350:
 
 # DUP / 
 
@@ -15926,49 +17075,49 @@ L1278:
 	addl	$8,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CJMP ("z", "L1283") / 
+# CJMP ("z", "L1355") / 
 
 	sarl	%ecx
 	cmpl	$0,	%ecx
-	jz	L1283
+	jz	L1355
 # DROP / 
 
-# SLABEL ("L1286") / 
+# SLABEL ("L1358") / 
 
-L1286:
+L1358:
 
 # STRING ("orl") / 
 
-	movl	$string_64,	%ebx
+	movl	$string_66,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1287") / 
+# SLABEL ("L1359") / 
 
-L1287:
+L1359:
 
-# JMP ("L1258") / 
+# JMP ("L1330") / 
 
-	jmp	L1258
-# SLABEL ("L1285") / 
+	jmp	L1330
+# SLABEL ("L1357") / 
 
-L1285:
+L1357:
 
-# SLABEL ("L1289") / 
+# SLABEL ("L1361") / 
 
-L1289:
+L1361:
 
-# LABEL ("L1283") / 
+# LABEL ("L1355") / 
 
-L1283:
+L1355:
 
 # DUP / 
 
 	movl	%ebx,	%ecx
 # STRING ("^") / 
 
-	movl	$string_43,	%esi
+	movl	$string_42,	%esi
 	pushl	%ebx
 	pushl	%ecx
 	pushl	%esi
@@ -15986,42 +17135,42 @@ L1283:
 	addl	$8,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CJMP ("z", "L1288") / 
+# CJMP ("z", "L1360") / 
 
 	sarl	%ecx
 	cmpl	$0,	%ecx
-	jz	L1288
+	jz	L1360
 # DROP / 
 
-# SLABEL ("L1291") / 
+# SLABEL ("L1363") / 
 
-L1291:
+L1363:
 
 # STRING ("xorl") / 
 
-	movl	$string_65,	%ebx
+	movl	$string_67,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1292") / 
+# SLABEL ("L1364") / 
 
-L1292:
+L1364:
 
-# JMP ("L1258") / 
+# JMP ("L1330") / 
 
-	jmp	L1258
-# SLABEL ("L1290") / 
+	jmp	L1330
+# SLABEL ("L1362") / 
 
-L1290:
+L1362:
 
-# SLABEL ("L1293") / 
+# SLABEL ("L1365") / 
 
-L1293:
+L1365:
 
-# LABEL ("L1288") / 
+# LABEL ("L1360") / 
 
-L1288:
+L1360:
 
 # DUP / 
 
@@ -16046,66 +17195,66 @@ L1288:
 	addl	$8,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CJMP ("z", "L1261") / 
+# CJMP ("z", "L1333") / 
 
 	sarl	%ecx
 	cmpl	$0,	%ecx
-	jz	L1261
+	jz	L1333
 # DROP / 
 
-# SLABEL ("L1295") / 
+# SLABEL ("L1367") / 
 
-L1295:
+L1367:
 
 # STRING ("cmpl") / 
 
-	movl	$string_66,	%ebx
+	movl	$string_68,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L1296") / 
+# SLABEL ("L1368") / 
 
-L1296:
+L1368:
 
-# SLABEL ("L1294") / 
+# SLABEL ("L1366") / 
 
-L1294:
+L1366:
 
-# JMP ("L1258") / 
+# JMP ("L1330") / 
 
-	jmp	L1258
-# LABEL ("L1261") / 
+	jmp	L1330
+# LABEL ("L1333") / 
 
-L1261:
+L1333:
 
-# FAIL ((56, 9), true) / 
+# FAIL ((60, 9), true) / 
 
 	pushl	$19
-	pushl	$113
+	pushl	$121
 	pushl	$string_16
 	pushl	%ebx
 	call	Bmatch_failure
 	addl	$16,	%esp
-# JMP ("L1258") / 
+# JMP ("L1330") / 
 
-	jmp	L1258
-# SLABEL ("L1260") / 
+	jmp	L1330
+# SLABEL ("L1332") / 
 
-L1260:
+L1332:
 
-# LABEL ("L1258") / 
+# LABEL ("L1330") / 
 
-L1258:
+L1330:
 
-# SLABEL ("L1257") / 
+# SLABEL ("L1329") / 
 
-L1257:
+L1329:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLbinopString_171_epilogue:
+LLbinopString_177_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -16116,9 +17265,9 @@ LLbinopString_171_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLbinopString_171_SIZE,	0
+	.set	LLbinopString_177_SIZE,	0
 
-	.set	LSLbinopString_171_SIZE,	0
+	.set	LSLbinopString_177_SIZE,	0
 
-	.size LbinopString_171, .-LbinopString_171
+	.size LbinopString_177, .-LbinopString_177
 

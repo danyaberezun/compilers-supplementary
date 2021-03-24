@@ -2,6 +2,8 @@
 
 	.stabs "/home/alhasan/.opam/lama/Lama/HW/compilers-2021-spring/src/Manifest.lama",100,0,0,.Ltext
 
+	.globl	LdumpSM
+
 	.globl	LgetBaseName
 
 	.globl	LgetInFile
@@ -13,6 +15,8 @@
 	.data
 
 string_0:	.string	".lama"
+
+string_1:	.string	".sm"
 
 _init:	.int 0
 
@@ -32,7 +36,21 @@ filler:	.fill	1, 4, 1
 
 # PUBLIC ("LgetInFile") / 
 
+# PUBLIC ("LdumpSM") / 
+
 # PUBLIC ("LgetBaseName") / 
+
+# EXTERN ("Lfix") / 
+
+# EXTERN ("Li__Infix_35") / 
+
+# EXTERN ("Li__Infix_36") / 
+
+# EXTERN ("Lid") / 
+
+# EXTERN ("Lforce") / 
+
+# EXTERN ("LmakeLazy") / 
 
 # EXTERN ("LtagHash") / 
 
@@ -186,6 +204,8 @@ _continue:
 	rep movsl	
 	call	initLazy
 	call	initLazy
+	call	initLazy
+	call	initFun
 # SLABEL ("L1") / 
 
 L1:
@@ -252,11 +272,11 @@ L4:
 
 L7:
 
-# LINE (11) / 
+# LINE (19) / 
 
-	.stabn 68,0,11,0
+	.stabn 68,0,19,0
 
-	.stabn 68,0,11,.L0-LgetBaseName
+	.stabn 68,0,19,.L0-LgetBaseName
 
 .L0:
 
@@ -367,11 +387,11 @@ L16:
 	addl	$4,	%esp
 	popl	%edx
 	movl	%eax,	%ebx
-# LINE (12) / 
+# LINE (20) / 
 
-	.stabn 68,0,12,0
+	.stabn 68,0,20,0
 
-	.stabn 68,0,12,.L1-Llambda_0_3
+	.stabn 68,0,20,.L1-Llambda_0_3
 
 .L1:
 
@@ -384,9 +404,9 @@ L16:
 
 L24:
 
-# LINE (13) / 
+# LINE (21) / 
 
-	.stabn 68,0,13,.L2-Llambda_0_3
+	.stabn 68,0,21,.L2-Llambda_0_3
 
 .L2:
 
@@ -449,9 +469,9 @@ L25:
 
 L32:
 
-# LINE (14) / 
+# LINE (22) / 
 
-	.stabn 68,0,14,.L3-Llambda_0_3
+	.stabn 68,0,22,.L3-Llambda_0_3
 
 .L3:
 
@@ -508,9 +528,9 @@ L23:
 
 L40:
 
-# LINE (15) / 
+# LINE (23) / 
 
-	.stabn 68,0,15,.L4-Llambda_0_3
+	.stabn 68,0,23,.L4-Llambda_0_3
 
 .L4:
 
@@ -561,11 +581,194 @@ LLlambda_0_3_epilogue:
 
 	.size Llambda_0_3, .-Llambda_0_3
 
+# LABEL ("LdumpSM") / 
+
+LdumpSM:
+
+# BEGIN ("LdumpSM", 2, 0, [], ["args"; "smCode"], [{ blab="L42"; elab="L43"; names=[]; subs=[{ blab="L45"; elab="L46"; names=[]; subs=[{ blab="L52"; elab="L53"; names=[]; subs=[]; }]; }]; }]) / 
+
+	.type dumpSM, @function
+
+	.stabs "dumpSM:F1",36,0,0,LdumpSM
+
+	.stabs "args:p1",160,0,0,8
+
+	.stabs "smCode:p1",160,0,0,12
+
+	.cfi_startproc
+
+	pushl	%ebp
+	.cfi_def_cfa_offset	8
+
+	.cfi_offset 5, -8
+
+	movl	%esp,	%ebp
+	.cfi_def_cfa_register	5
+
+	subl	$LLdumpSM_SIZE,	%esp
+	movl	%esp,	%edi
+	movl	$filler,	%esi
+	movl	$LSLdumpSM_SIZE,	%ecx
+	rep movsl	
+# SLABEL ("L42") / 
+
+L42:
+
+# SLABEL ("L45") / 
+
+L45:
+
+# LINE (14) / 
+
+	.stabn 68,0,14,0
+
+	.stabn 68,0,14,.L5-LdumpSM
+
+.L5:
+
+# LD (Arg (0)) / 
+
+	movl	8(%ebp),	%ebx
+# CONST (2) / 
+
+	movl	$5,	%ecx
+# CALL (".elem", 2, false) / 
+
+	pushl	%ecx
+	pushl	%ebx
+	call	Belem
+	addl	$8,	%esp
+	movl	%eax,	%ebx
+# CALLC (0, false) / 
+
+	pushl	%ebx
+	movl	%ebx,	%edx
+	call	*(%ebx)
+	addl	$0,	%esp
+	popl	%ebx
+	movl	%eax,	%ebx
+# CJMP ("z", "L48") / 
+
+	sarl	%ebx
+	cmpl	$0,	%ebx
+	jz	L48
+# SLABEL ("L52") / 
+
+L52:
+
+# LINE (15) / 
+
+	.stabn 68,0,15,.L6-LdumpSM
+
+.L6:
+
+# LD (Arg (0)) / 
+
+	movl	8(%ebp),	%ebx
+# CALL ("LgetBaseName", 1, false) / 
+
+	pushl	%ebx
+	call	LgetBaseName
+	addl	$4,	%esp
+	movl	%eax,	%ebx
+# STRING (".sm") / 
+
+	movl	$string_1,	%ecx
+	pushl	%ebx
+	pushl	%ecx
+	call	Bstring
+	addl	$4,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CALL ("Li__Infix_4343", 2, false) / 
+
+	pushl	%ecx
+	pushl	%ebx
+	call	Li__Infix_4343
+	addl	$8,	%esp
+	movl	%eax,	%ebx
+# CLOSURE ("Lforce", []) / 
+
+	pushl	%ebx
+	pushl	$Lforce
+	pushl	$1
+	call	Bclosure
+	addl	$8,	%esp
+	movl	%eax,	%ecx
+	popl	%ebx
+# LD (Arg (1)) / 
+
+	movl	12(%ebp),	%esi
+# CALL ("Li__Infix_36", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Li__Infix_36
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CALL ("Lfwrite", 2, true) / 
+
+	movl	%ebx,	8(%ebp)
+	movl	%ecx,	12(%ebp)
+	movl	%ebp,	%esp
+	popl	%ebp
+	jmp	Lfwrite
+# SLABEL ("L53") / 
+
+L53:
+
+# JMP ("L44") / 
+
+	jmp	L44
+# LABEL ("L48") / 
+
+L48:
+
+# CONST (0) / 
+
+	movl	$1,	%ebx
+# JMP ("L44") / 
+
+	jmp	L44
+# SLABEL ("L46") / 
+
+L46:
+
+# LABEL ("L44") / 
+
+L44:
+
+# SLABEL ("L43") / 
+
+L43:
+
+# END / 
+
+	movl	%ebx,	%eax
+LLdumpSM_epilogue:
+
+	movl	%ebp,	%esp
+	popl	%ebp
+	.cfi_restore	5
+
+	.cfi_def_cfa	4, 4
+
+	ret
+	.cfi_endproc
+
+	.set	LLdumpSM_SIZE,	0
+
+	.set	LSLdumpSM_SIZE,	0
+
+	.size LdumpSM, .-LdumpSM
+
 # LABEL ("LgetInFile") / 
 
 LgetInFile:
 
-# BEGIN ("LgetInFile", 1, 0, [], ["args"], [{ blab="L42"; elab="L43"; names=[]; subs=[{ blab="L45"; elab="L46"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("LgetInFile", 1, 0, [], ["args"], [{ blab="L62"; elab="L63"; names=[]; subs=[{ blab="L65"; elab="L66"; names=[]; subs=[]; }]; }]) / 
 
 	.type getInFile, @function
 
@@ -588,21 +791,21 @@ LgetInFile:
 	movl	$filler,	%esi
 	movl	$LSLgetInFile_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L42") / 
+# SLABEL ("L62") / 
 
-L42:
+L62:
 
-# SLABEL ("L45") / 
+# SLABEL ("L65") / 
 
-L45:
+L65:
 
-# LINE (7) / 
+# LINE (9) / 
 
-	.stabn 68,0,7,0
+	.stabn 68,0,9,0
 
-	.stabn 68,0,7,.L5-LgetInFile
+	.stabn 68,0,9,.L7-LgetInFile
 
-.L5:
+.L7:
 
 # LD (Arg (0)) / 
 
@@ -625,17 +828,17 @@ L45:
 	addl	$0,	%esp
 	popl	%ebx
 	movl	%eax,	%ebx
-# SLABEL ("L46") / 
+# SLABEL ("L66") / 
 
-L46:
+L66:
 
-# LABEL ("L44") / 
+# LABEL ("L64") / 
 
-L44:
+L64:
 
-# SLABEL ("L43") / 
+# SLABEL ("L63") / 
 
-L43:
+L63:
 
 # END / 
 
@@ -661,7 +864,7 @@ LLgetInFile_epilogue:
 
 LgetMode:
 
-# BEGIN ("LgetMode", 1, 0, [], ["args"], [{ blab="L50"; elab="L51"; names=[]; subs=[{ blab="L53"; elab="L54"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("LgetMode", 1, 0, [], ["args"], [{ blab="L70"; elab="L71"; names=[]; subs=[{ blab="L73"; elab="L74"; names=[]; subs=[]; }]; }]) / 
 
 	.type getMode, @function
 
@@ -684,21 +887,21 @@ LgetMode:
 	movl	$filler,	%esi
 	movl	$LSLgetMode_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L50") / 
+# SLABEL ("L70") / 
 
-L50:
+L70:
 
-# SLABEL ("L53") / 
+# SLABEL ("L73") / 
 
-L53:
+L73:
 
-# LINE (3) / 
+# LINE (5) / 
 
-	.stabn 68,0,3,0
+	.stabn 68,0,5,0
 
-	.stabn 68,0,3,.L6-LgetMode
+	.stabn 68,0,5,.L8-LgetMode
 
-.L6:
+.L8:
 
 # LD (Arg (0)) / 
 
@@ -721,17 +924,17 @@ L53:
 	addl	$0,	%esp
 	popl	%ebx
 	movl	%eax,	%ebx
-# SLABEL ("L54") / 
+# SLABEL ("L74") / 
 
-L54:
+L74:
 
-# LABEL ("L52") / 
+# LABEL ("L72") / 
 
-L52:
+L72:
 
-# SLABEL ("L51") / 
+# SLABEL ("L71") / 
 
-L51:
+L71:
 
 # END / 
 

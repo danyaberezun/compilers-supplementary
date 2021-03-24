@@ -1,10 +1,12 @@
 I,Std;
+I,Array;
 I,List;
+I,Fun;
+I,Collection;
 I,World;
 I,State;
 I,Expr;
 I,Buffer;
-I,Fun;
 F,showSMInsn;
 F,showSM;
 F,evalSM;
