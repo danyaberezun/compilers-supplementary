@@ -59,9 +59,16 @@ public fun getStackTop(stack, opName) {
   esac
 }
 
+public fun log (msg) {
+  var fileName = "log.txt";
+  var file = fopen (fileName, "a");
+  fprintf (file, msg);
+  fclose (file)
+}
+
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
-fun eval (c, insns) {
+fun eval (env, c, insns) {
   var curStack = c[0];
   var curState = c[1];
   var curWorld = c[2];
@@ -73,15 +80,15 @@ fun eval (c, insns) {
           var newVarValue = readRes.fst;
           var newWorld = readRes.snd;
 
-          eval ([newVarValue : curStack, curState, newWorld], rest)
+          eval (env, [newVarValue : curStack, curState, newWorld], rest)
           )
         | WRITE -> (
           var pair = getStackTop(curStack, "write");
           var newVarValue = pair.fst;
           var newStack = pair.snd;
-
+          
           var newWorld = writeWorld (newVarValue, curWorld);
-          eval ([newStack, curState, newWorld], rest)
+          eval (env, [newStack, curState, newWorld], rest)
           )  
         | BINOP (s) -> (
           var pair = getStackTop (curStack, "bin");
@@ -89,25 +96,43 @@ fun eval (c, insns) {
           var pairNew = getStackTop (pair.snd, "bin");
           var left = pairNew.fst;
           var newStack = pairNew.snd;
-
+          
           var newVarValue = getBinop (s) (left, right);
-          eval ([newVarValue : newStack, curState, curWorld], rest)
+          eval (env, [newVarValue : newStack, curState, curWorld], rest)
           )
-        | LD (s) -> eval ([curState (s) : curStack, curState, curWorld], rest)
+        | LD (s) -> eval (env, [curState (s) : curStack, curState, curWorld], rest)
         | ST (s) -> (
           var pair = getStackTop (curStack, "store");
           var newVarValue = pair.fst;
           var newStack = pair.snd;
-
+          
           var newState = curState <- [s, newVarValue];
-          eval ([newStack, newState, curWorld], rest)
+          eval (env, [newStack, newState, curWorld], rest)
           )
-        | CONST (integer) -> eval ([integer : curStack, curState, curWorld], rest)
+        | CONST (integer) -> eval (env, [integer : curStack, curState, curWorld], rest)
+        | LABEL (place) -> eval (env, c, rest)
+        | JMP (place) -> eval (env, c, fromLabel(env, place))
+        | CJMP (condition, place) -> (
+            var pair = getStackTop (curStack, "condition jump");
+            var conditionValue = pair.fst,
+                newStack = pair.snd;
+
+            var jumped = fromLabel (env, place);
+            
+            if compare (condition, "z") == 0 && conditionValue != 0 then 
+              jumped := rest
+            fi;
+
+            if compare (condition, "nz") == 0 && conditionValue == 0 then
+              jumped := rest
+            fi;
+
+            eval (env, [newStack, curState, curWorld], jumped)
+          ) 
         | _ -> failure("No such instruction for stack machine.")
       esac
     | {} -> c
   esac
->>>>>>> a28e3d156da119e7216a424308060ce0f34a4f4d
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -168,14 +193,55 @@ fun compileExpr (expr) {
 --        Skip                      |
 --        Read   (string)           |
 --        Write  (expr)             |
-public fun compileSMUsingBuffer(stmt) {
+public fun compileSMUsingBuffer(stmt, env) {
   case stmt of
-    Assn (s, expr) -> compileExprUsingBuffer (expr) <+ ST (s)
-    | Seq (stmtLeft, stmtRight) -> compileSMUsingBuffer (stmtLeft) <+> compileSMUsingBuffer (stmtRight)
-    | Skip -> emptyBuffer ()
-    | Read (s) -> listBuffer ({READ, ST (s)})
-    | Write (expr) -> compileExprUsingBuffer (expr) <+ WRITE
-    | _ -> failure("No such statement.")
+    Assn (s, expr) -> [compileExprUsingBuffer (expr) <+ ST (s), env]
+    | Seq (stmtLeft, stmtRight) -> (
+        var left = compileSMUsingBuffer (stmtLeft, env);
+        var right = compileSMUsingBuffer (stmtRight, left.snd);
+        
+        [left.fst <+> right.fst, right.snd]
+      )
+    | Skip -> [emptyBuffer (), env]
+    | Read (s) -> [listBuffer ({READ, ST (s)}), env]
+    | Write (expr) -> [compileExprUsingBuffer (expr) <+ WRITE, env]
+    | If (condition, ifInner, elseInner) -> (
+        var conditionExpr = compileExprUsingBuffer (condition);
+
+        var newLabels = genLabels (env, 2);
+        var falseLabel = newLabels[0],
+            exitLabel = newLabels[1],
+            initEnv = newLabels[2];
+
+        var ifInnerComp = compileSMUsingBuffer (ifInner, initEnv),
+            elseInnerComp = compileSMUsingBuffer (elseInner, ifInnerComp.snd);
+
+        [conditionExpr <+ CJMP ("z", falseLabel) <+> ifInnerComp.fst <+ JMP (exitLabel) <+ LABEL (falseLabel) <+> elseInnerComp.fst <+ LABEL (exitLabel), elseInnerComp.snd]
+      )
+    | While (condition, inner) -> (
+        var conditionExpr = compileExprUsingBuffer (condition);
+
+        var newLabels = genLabels (env, 2);
+        var restartLabel = newLabels[0],
+            exitLabel = newLabels[1],
+            initEnv = newLabels[2];
+
+        var innerComp = compileSMUsingBuffer (inner, initEnv);
+
+        [singletonBuffer (LABEL (restartLabel)) <+> conditionExpr <+ CJMP ("z", exitLabel) <+> innerComp.fst <+ JMP (restartLabel) <+ LABEL (exitLabel), innerComp.snd]
+      )
+    | DoWhile (inner, condition) -> (
+        var conditionExpr = compileExprUsingBuffer (condition);
+
+        var newLabels = genLabels (env, 1);
+        var restartLabel = newLabels[0],
+            initEnv = newLabels[1];
+
+        var innerComp = compileSMUsingBuffer (inner, initEnv);
+
+        [singletonBuffer (LABEL (restartLabel)) <+> innerComp.fst <+> conditionExpr <+ CJMP ("nz", restartLabel), innerComp.snd]
+      )
+    | _ -> failure("No such statement that can be converted to stack machine command.")
   esac
 }
 
@@ -183,7 +249,7 @@ public fun compileSMUsingBuffer(stmt) {
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  getBuffer (compileSMUsingBuffer(stmt))
+  getBuffer ((compileSMUsingBuffer (stmt, initCompEnv ())).fst)
 }
 
 
