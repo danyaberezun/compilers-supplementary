@@ -121,26 +121,39 @@ fun eval (env, w, insns) {
   fun eval (c@[st, cst, s, w], insns) {
     case insns of
       BINOP (bp):tl -> 
-      fun (y:x:s){
-          eval ([ binop(bp, x,y):s, c[1], c[2]], tl)
-        }(c[0])
+        fun (y:x:s){
+            eval ([ binop(bp, x,y):s, c[1], c[2]], tl)
+          }(c[0])
     | CONST (n):tl -> 
-        eval([ n:c[0], c[1], c[2]], tl)
+        eval(env, [ n:c[0], c[1], c[2]], tl)
     | READ:tl  ->  
         var n;
         n := readWorld (c[2]);
-        eval ([n[0]:c[0], c[1], n[1]], tl)
+        eval (env, [n[0]:c[0], c[1], n[1]], tl)
     | WRITE:tl -> 
-        fun (z:s){
-          eval([s, c[1], writeWorld(z, c[2])], tl)
-        }(c[0])
-    | LD (x):tl -> 
-       eval ([c[1](x):c[0], c[1], c[2]], tl)
+        case c[0] of
+          z:s -> eval(env, [s, c[1], writeWorld(z, c[2])], tl)
+        esac
+    | LD (x):tl -> eval (env, [c[1](x):c[0], c[1], c[2]], tl)
+    | LDA (x): tl -> eval (env, [x:c[0], c[1], c[2]], tl)
     | ST (x):tl -> 
-        fun (z:s){
-          eval ([ s, c[1] <- [x, z], c[2]], tl)
-        }(c[0])
+        case c[0] of
+          z:s -> eval (env, [ s, c[1] <- [x, z], c[2]], tl)
+        esac
+    | STI :tl ->
+        case c[0] of
+          v:x:s -> eval (env, [v:s, c[1] <- [x,v], c[2]], tl)
+        esac
     | 0 -> c
+
+    | DUP :tl ->
+        case c[0] of
+          z:s -> eval (env, [ z:c[0], c[1], c[2]], tl)
+        esac
+    | DROP :tl ->
+        case c[0] of
+          z:s -> eval (env, [s, c[1], c[2]], tl)
+        esac
 
     | LABEL (s) :tl ->
         eval (env, c, tl)
@@ -384,31 +397,89 @@ fun addVars (env, names) {
 public fun compileSM (expr) {
   getBuffer (cmpSM (expr))
 }
-fun cmpSM(stmt){
-  case stmt of
-    Assn  (s, expr) -> [env, compileExpr(expr) <+ ST (s)]
-  | Read  (x)       -> [env, listBuffer ( {READ, ST (x)} )]
-  | Write (expr)    -> [env, compileExpr(expr) <+ WRITE]
-  | Seq   (s1, s2)  -> 
-      var p1 = cmpSM(env, s1);
-      var p2 = cmpSM(p1[0], s2);
 
-      [p2[0], p1[1] <+> p2[1] ]
+fun cmpIf(env, e, s1, s2){
+  case s2 of
+    Skip ->
+      var ls = genLabels(env, 1);
+      var p = cmpSM (ls[1], s1);
 
-  | Skip            -> [env, emptyBuffer() ]
-  | While (expr, s) ->
-      var ls = genLabels(env, 2);
-      var p = cmpSM (ls[2], s);
-
-      [p[0], emptyBuffer() 
-        <+  JMP (ls[0]) 
-        <+  LABEL (ls[1]) 
+      [p[0], cmpSM(p[0], e)[1]
+        <+  CJMP ("z", ls[0])
         <+> p[1]
         <+  LABEL (ls[0])
-        <+> compileExpr(expr)
+      ]
+  | _ ->
+      var ls = genLabels(env, 2);
+      var p2 = cmpSM(ls[2], s2);
+      var p1 = cmpSM(p2[0], s1);
+
+      [p1[0], cmpSM(p1[0], e)[1]
+        <+  CJMP ("nz", ls[0])
+        <+> p2[1]
+        <+  JMP (ls[1])
+        <+  LABEL (ls[0])
+        <+> p1[1]
+        <+  LABEL (ls[1])
+      ]
+  esac
+}
+
+fun cmpSM(env, stmt){
+  case stmt of
+    Assn (s, e) -> case s of 
+        Ref (s) -> [env, cmpSM(env, e)[1] <+ DUP <+ ST(s)]
+      | _ -> 
+          var s1 = cmpSM(env, s);
+          var e1 = cmpSM(s1[0], e);
+          [s1[0], s1[1] <+> e1[1] <+ STI]
+      esac
+
+
+
+  | Seq (e1,e2) ->
+      var p1 = cmpSM(env, e1);
+      var p2 = cmpSM(p1[0], e2);
+      [p2[0], p1[1] <+> p2[1] ]
+
+  | Skip -> [env, emptyBuffer()]
+  | Read (x) -> case x of
+        Ref(x) -> [env, listBuffer ({READ, ST(x)})]
+      | _ -> failure("Read - Not Ref IN\n")
+      esac    
+  | Write (e) -> [env, cmpSM(env, e)[1] <+ WRITE]
+
+
+
+  | Var (x) -> [env, singletonBuffer(LD (x))]
+  | Const (n) -> [env, singletonBuffer(CONST (n))]
+  | Ref (x) -> [env, singletonBuffer(LDA (x))]
+
+  | Binop (op, e1, e2) -> 
+      var p1 = cmpSM(env, e1);
+      var p2 = cmpSM(p1[0], e2);
+      [p2[0], p1[1] <+> p2[1] <+ BINOP (op)]
+  
+  | Ignor (x) -> 
+      var p = cmpSM (env, x);
+      [p[0], p[1] <+ DROP]
+      
+
+  | While (e1, e2) -> 
+      var ls = genLabels(env, 2);
+      var p = cmpSM (ls[2], e2);
+      
+      [p[0], emptyBuffer()
+        <+  JMP (ls[0])
+        <+  LABEL (ls[1])
+        <+> p[1]
+        <+  LABEL (ls[0])
+        <+> cmpSM (p[0], e1)[1]
         <+  CJMP ("nz", ls[1])
-      ] 
-  | If (expr, s1, s2) -> compileIf (env, expr, s1, s2)
+      ]
+  | If (e, s1, s2) -> cmpIf (env, e, s1, s2)
+
+  | _ -> failure("\n\nFTF:  %s\n\n", stmt.string)
 
   esac
 }
