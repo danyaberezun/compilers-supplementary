@@ -104,6 +104,7 @@ fun evalCJump ([value:stack, state, world], CJMP (c, l))
     case c of
         "z"  -> if value == 0 then [[stack, state, world], Next(l)] else [[stack, state, world], Next] fi 
       | "nz" -> if value != 0 then [[stack, state, world], Next(l)] else [[stack, state, world], Next] fi
+    esac
 }
 
 fun evalSingleIns(conf, i) {
@@ -117,7 +118,7 @@ fun evalSingleIns(conf, i) {
     | LABEL (s)    -> [conf, Next]
     | JMP   (l)    -> evalJump     (conf, i)
     | CJMP  (c, l) -> evalCJump    (conf, i)
-    | _         -> failure      ("Invalid instruction!")
+    | _            -> failure      ("Invalid instruction!")
     esac
 }
 -- Stack machine interpreter. Takes an SM-configuration and a program,
@@ -126,12 +127,13 @@ fun eval (env, c, insns) {
   case insns of
     {}       -> c
   | i:tail -> (
-      var result = evalSingleIns (conf, i);
-      newC = result.fst
+      var result = evalSingleIns (c, i);
       case result.snd of
-          Next         -> eval (env, newC, tail)
-        | Next (label) -> eval (env, newC, fromLabel (env, label))
+          Next         -> eval (env, result.fst, tail)
+        | Next (label) -> eval (env, result.fst, fromLabel (env, label))
+      esac
     )
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -169,9 +171,6 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
-
 fun compileExprVar (Var (variable)) {
   singletonBuffer(LD (variable))
 }
@@ -193,63 +192,62 @@ fun compileExpr (expr) {
   esac
 }
 
-fun compileStmtAssn (Assn (variable, expr)) {
-  compileExpr (expr) <+ ST (variable)
+fun compileStmtAssn (Assn (variable, expr), lbState) {
+  [compileExpr (expr) <+ ST (variable), lbState]
 }
 
-fun compileStmtSeq (Seq (stmt1, stmt2)) {
-  compileSMBuffer(stmt1) <+> compileSMBuffer(stmt2)
+fun compileStmtSeq (Seq (stmt1, stmt2), lbState) {
+  var leftCompiled = compileSMBuffer(stmt1, lbState);
+  var rightCompiled = compileSMBuffer(stmt2, leftCompiled.snd);
+  [leftCompiled.fst <+> rightCompiled.fst, rightCompiled.snd]
 }
 
-fun compileStmtRead (Read (variable)) {
-  listBuffer({READ, ST (variable)})
+fun compileStmtRead (Read (variable), lbState) {
+  [listBuffer({READ, ST (variable)}), lbState]
 }
 
-fun compileStmtWrite (Write (expr)) {
-  compileExpr (expr) <+ WRITE
+fun compileStmtWrite (Write (expr), lbState) {
+  [compileExpr (expr) <+ WRITE, lbState]
 }
 
-fun compileIf (If (cond, thenStmt, elseStmt)) {
-  var lab = addLabel ();
-  compileExpr (cond) <+ CJMP ("z", lab) <+> compileSMBuffer (thenStmt) <+ LABEL (lab) <+> compileSMBuffer (elseStmt) 
+fun compileIf (If (cond, thenStmt, elseStmt), lbState) {
+  var elseLab = genLabel (lbState);
+  var endLab = genLabel (elseLab.snd);
+  var thenCompiled = compileSMBuffer (thenStmt, endLab.snd);
+  var elseCompiled = compileSMBuffer (elseStmt, thenCompiled.snd);
+  [compileExpr (cond) <+ CJMP ("z", elseLab.fst) <+> thenCompiled.fst <+ JMP(endLab.fst) <+ LABEL (elseLab.fst) <+> elseCompiled.fst <+ LABEL (endLab.fst), elseCompiled.snd] 
 }
 
-fun compileWhile (While (cond, stmt)) {
-  var beginLab = addLabel();
-  var endLab = addLabel();
-  singletonBuffer (LABEL (beginLab)) <+> compileExpr (cond) <+ CJMP ("z", endLab) <+> compileSMBuffer (stmt) <+ JMP (beginLab) <+ LABEL (loopLab)
+fun compileWhile (While (cond, stmt), lbState) {
+  var beginLab = genLabel (lbState);
+  var endLab = genLabel (beginLab.snd);
+  var bodyCompiled = compileSMBuffer (stmt, endLab.snd);
+  [singletonBuffer (LABEL (beginLab.fst)) <+> compileExpr (cond) <+ CJMP ("z", endLab.fst) <+> bodyCompiled.fst <+ JMP (beginLab.fst) <+ LABEL (endLab.fst), bodyCompiled.snd]
 }
 
-fun compileDoWhile (While (cond, stmt)) {
-  var beginLab = addLabel();
-  singletonBuffer (LABEL (beginLab)) <+> compileSMBuffer (stmt) <+> compileExpr (cond) <+ CJMP ("nz", beginLab)
+fun compileDoWhile (DoWhile (stmt, cond), lbState) {
+  var beginLab = genLabel (lbState);
+  var bodyCompiled = compileSMBuffer (stmt, beginLab.snd);
+  [singletonBuffer (LABEL (beginLab.fst)) <+> bodyCompiled.fst <+> compileExpr (cond) <+ CJMP ("nz", beginLab.fst), bodyCompiled.snd]
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  getBuffer (compileSMBuffer (stmt, emptyLabels())[0])
-}
-
--- Empty label state
-var labelState = 0;
-
-fun addLabel {
-  labelState := labelState + 1;
-  string(labelState)
+  getBuffer (compileSMBuffer (stmt, initCompEnv ()).fst)
 }
 
 public fun compileSMBuffer (stmt, lbState) {
   case stmt of
-    Assn  (_, _)      -> compileStmtAssn  (stmt)
-  | Seq   (_, _)      -> compileStmtSeq   (stmt)
-  | Skip              -> emptyBuffer ()
-  | Read  (_)         -> compileStmtRead  (stmt)
-  | Write (_)         -> compileStmtWrite (stmt)
-  | If      (_, _, _) -> compileIf        (stmt)
-  | While   (_, _)    -> compileWhile     (stmt)
-  | DoWhile (_, _)    -> compileDoWhile   (stmt)
-  | _            -> failure          ("Invalid compiling statement!")
+    Assn  (_, _)      -> compileStmtAssn  (stmt, lbState)
+  | Seq   (_, _)      -> compileStmtSeq   (stmt, lbState)
+  | Skip              -> [emptyBuffer (), lbState]
+  | Read  (_)         -> compileStmtRead  (stmt, lbState)
+  | Write (_)         -> compileStmtWrite (stmt, lbState)
+  | If      (_, _, _) -> compileIf        (stmt, lbState)
+  | While   (_, _)    -> compileWhile     (stmt, lbState)
+  | DoWhile (_, _)    -> compileDoWhile   (stmt, lbState)
+  | _                 -> failure          ("Invalid compiling statement!")
   esac
 }
