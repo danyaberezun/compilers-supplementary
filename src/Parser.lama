@@ -1,0 +1,148 @@
+-- Parser
+
+import Ostap;
+import Lexer;
+import List;
+import Fun;
+import Matcher;
+import Ref;
+import Collection;
+
+-- Signals an error; takes an error message and location info
+fun error (msg, loc) {
+  failure ("%s at %d:%d\n", msg, loc.fst, loc.snd)
+}
+
+-- An attribute-processing functions
+-- Attributes are:
+--   Val  --- a plain value (aka "rvalue")
+--   Ref  --- a reference to a mutable cell (aka "lvalue")
+--   Void --- no value (aka "void"/"unit")
+
+-- Checks if a plain value "val" can be used in the context described by
+-- the attribute "atr".
+fun assertValue (atr, v, loc) {
+  case atr of
+    Ref  -> error ("reference expected", loc)
+  | Void -> Ignore (v)
+  | Val  -> v
+  esac
+}
+
+fun assertVoid (atr, v, loc) {
+  case atr of
+    Void -> v
+  | Val  -> error ("value expected", loc)
+  | Ref  -> error ("reference expected", loc)
+  esac
+}
+
+-- A parser of "something" in brackets; l, r are left and right
+-- brackets as parsers, p --- a parser of "something"
+fun inbr (l, p, r) {
+  syntax (-l p -r)
+}
+
+-- Public top-level parser
+-- public parse = stmtSeq;
+--=======
+fun binop (op) {
+  [syntax (pos -s[op]), fun (l, loc, r) {
+                          fun (a) {
+                            assertValue (a, Binop (op, l (Val), r (Val)), loc)
+                          }
+                        }
+  ]
+}
+
+fun funcCond (a, cond, ifBr, elseBr) {
+                                     (case a of
+                                         Ref -> If (cond (Val), ifBr (Ref), elseBr (Ref))
+                                       | Void -> If (cond (Val), ifBr (Void), elseBr (Void))
+                                       | Val ->  If (cond (Val), ifBr (Val), elseBr (Val))
+                                     esac)
+                                   }
+
+fun funcExpr(mode, x, y){
+     case mode of
+     "idn" -> (case x of
+	  Ref  -> Ref (y) |
+	  Void -> Ignore (Var (y)) |
+          _    -> Var (y)
+     	  esac) |
+      "elif" ->	(case x of
+          Ref  -> y (Ref) |
+          Void -> y (Void) |
+          Val  -> y (Val)
+         esac)
+     esac
+}
+
+var point = s(",");
+var rBck = s(")");
+var lBck = s("(");
+var eq = s (":=");
+var scln = s(";");
+
+fun funcVoid(k ,x) {
+     if x
+	then fun (a) { assertVoid (a, k, x) }
+     else
+	fun (a) { assertVoid (a, k) }
+     fi
+}
+
+var primary  = memo $ eta syntax (
+                                  -- decimal constant
+                                 inbr[lBck, exp, rBck]                                                       |
+                                 loc=pos kRead x=inbr[lBck, exp, rBck] {funcVoid (Read (x (Ref)), loc)}                                    |
+                                 loc=pos kWrite x=inbr[lBck, exp, rBck] {funcVoid (Write (x (Val)), loc)}                                   |
+                                  loc=pos x=decimal    {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
+                                  -- identifier
+                                  loc=pos x=lident     {fun (a) {
+                                                          funcExpr("idn", a, x)
+                                                        }}                                                         |
+                                 -- (exp)
+
+                                 loc=pos kSkip { funcVoid(Skip, loc)}                             |
+				 whileSynt		|
+				 ifSynt | 
+                                 kFor init=exp point cond=exp point post=exp loc=pos kDo body=exp kOd {
+                                    funcVoid (Seq (init (Void),
+                                                  While (cond (Val), Seq (body (Void), post (Void)))),
+                                                  loc)
+                                 }),
+    basic    = memo $ eta (expr ({[Right, {[eq,
+                                            fun (l, loc, r) {
+                                              fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
+                                            }]}],
+                                  [Left , map (binop, {"!!"})],
+                                  [Left , map (binop, {"&&"})],
+                                  [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
+                                  [Left , map (binop, {"+", "-"})],
+                                  [Left , map (binop, {"*", "/", "%"})]
+                                 },
+                                 primary)),
+    exp      = memo $ eta syntax (basic | s1=basic scln s2=exp {fun (a) {Seq (s1 (Void), s2 (a))}});
+
+-- Public top-level parser
+public parse = syntax (s=exp {s (Void)});
+var ifSynt = memo $ syntax (loc=pos kIf cond=exp kThen ifBr=exp elseBr=ifChain {
+                                   fun(a){funcCond(a, cond, ifBr, elseBr)}
+                                 } );
+var ifChain  = memo $ eta syntax (loc=pos kFi {funcVoid(Skip, loc)}                               |
+                                  loc=pos kElif cond=exp kThen ifBr=exp elseBr=ifChain {
+                                    fun(a){funcCond(a, cond, ifBr, elseBr)}
+                                  }                                                                              |
+                                  loc=pos kElse elseBr=exp kFi {
+                                    fun (a) {
+                                      funcExpr("elif", a, elseBr)
+                                    }
+                                  });
+
+var  whileSynt = memo $ eta syntax(loc=pos kWhile cond=exp kDo body=exp kOd {
+					funcVoid(While (cond (Val), body (Void)), loc)
+                                 }                                                                                |
+                                 loc=pos kDo body=exp kWhile cond=exp kOd {
+                                        funcVoid (DoWhile (body (Void), cond (Val)))
+                                 });
