@@ -128,8 +128,8 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
       case stack of
         {}        -> [ebx, 0]
       | S (n) : _ -> [S (n+1), n+2]
-      | R (n) : _ -> if n < nRegs then [R (n+1), stackSlots] else [S (0), 1] fi
-      | _         -> [S (0), 1]
+      | R (n) : _ -> if n < nRegs then [R (n+1), stackSlots] else [S (nLocals), nLocals+1] fi
+      | _         -> [S (nLocals), nLocals+1]
       esac
     of [x, n] -> [x, makeEnv (x : stack, if n > stackSlots then n else stackSlots fi, globals, barrier, stackMap, fLabel, nLocals)]esac
   }
@@ -363,7 +363,7 @@ fun epilogue (env) {
   if compare (env.currentFunction, "main") == 0
   then [env, singletonBuffer (Mov (ebp, esp)) <+ Pop (ebp) <+ Binop ("^", eax, eax) <+ Ret <+ metaDef]
   else case env.pop of
-         [y, env] -> [env, singletonBuffer (Mov (ebp, esp)) <+ Pop (ebp) <+ Mov (y, eax) <+ Ret <+ metaDef]
+         [y, env] -> [env, singletonBuffer (Mov (y, eax)) <+ Mov (ebp, esp) <+ Pop (ebp) <+ Ret <+ metaDef]
        esac
   fi
 }
@@ -381,6 +381,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -497,7 +498,7 @@ fun compile (env, code) {
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
 
-        -- printf("x86c %s\n     %s\n", string(i), string(env));
+        -- printf(envString(env));
         -- printf("x86c %s\n", string(i));
 
         case i of
@@ -528,22 +529,23 @@ fun compile (env, code) {
          -- 2. generate epilogue for END instruction.
                
         | BINOP(operation) ->
-            case pop2(env) of
-              [rhs, lhs, env] -> [env.push(rhs), code <+> getX86OpBuffer(operation, lhs, rhs)]
+            case pop2(env) of [rhs, lhs, env] ->
+              -- [env.push(rhs), code <+> getX86OpBuffer(operation, lhs, rhs)]
+              case allocate(env) of [s, env] ->
+                [env, code <+> getX86OpBuffer(operation, lhs, rhs) <+> move(rhs, s)]
+              esac
             esac
         | LD(variableName) -> 
             case allocate(env) of -- .addGlobal(variableName)?
               [s, env] -> [env, code <+> move(loc(env, variableName), s)] -- Does not work with <+ Mov, because memory-memory move is not allowed
             esac
         | LDA(variableName) ->
-            case allocate(env.addGlobal(variableName)) of
+            case allocate(env) of
               [s, env] -> 
                 [env, code <+ Lea(env.loc(variableName), eax) <+ Mov(eax, s)]
             esac
         | ST(variableName) ->
-            case pop(addGlobal(env, variableName)) of
-              [s, env] -> [env, code <+> move(s, loc(env, variableName))]
-            esac
+            [env, code <+> move(peek(env), loc(env, variableName))]
         | STI ->
             case pop2(env) of
               [s, ref, env] -> 
@@ -554,6 +556,8 @@ fun compile (env, code) {
             case allocate(env) of
               [s, env] -> [env, code <+ Mov(L(value), s)]
             esac
+        | GLOBAL(x) ->
+            [addGlobal(env, x), code]
         | LABEL(labelName) ->
             -- [env, code <+ Label(labelName)]
             [if isBarrier(env) then retrieveStack(env, labelName) else env fi, code <+ Label(labelName)]
@@ -564,6 +568,20 @@ fun compile (env, code) {
             case pop(env) of [value, env] ->
               -- [env, code <+ Mov(L(0), eax) <+ Binop("cmp", eax, value) <+ CJmp(condition, labelName)]
               [setStack(env, labelName), code <+ Mov(L(0), eax) <+ Binop("cmp", eax, value) <+ CJmp(condition, labelName)]
+            esac
+        | BEGIN(fLabel, argsN, localsN) -> 
+            [enterFunction(env, fLabel, localsN), code <+> prologue(fLabel)]
+        | CALL (fLabel, argsN) ->
+            case call(env, fLabel, argsN) of [env, funCode] ->
+              [env, code <+> funCode]
+            esac
+        | END ->
+            case epilogue(env) of [newEnv, endCode] ->
+              [newEnv, code <+> endCode]
+            esac
+        | DROP ->
+            case pop(env) of [_, env] ->
+              [env, code]
             esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         (* End *)
