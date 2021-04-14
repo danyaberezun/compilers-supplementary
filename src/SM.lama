@@ -119,51 +119,67 @@ fun eval (env, w, insns) {
   -- Core interpreter: takes a configuration and a program, returns a configuration
   (* Assignment *)
   fun eval (c@[st, cst, s, w], insns) {
-    case insns of
+    case insns of 
       BINOP (bp):tl -> 
-        fun (y:x:s){
-            eval ([ binop(bp, x,y):s, c[1], c[2]], tl)
-          }(c[0])
+  	    case st of
+          y:x:st -> eval ([ binop(bp, x,y):st, cst, s, w], tl)
+        esac
+    | GLOBAL (x):tl ->
+       assign(s, Glb(x), 0);
+       eval(c, tl)
     | CONST (n):tl -> 
-        eval(env, [ n:c[0], c[1], c[2]], tl)
+        eval([n:st, cst, s, w], tl)
     | READ:tl  ->  
-        var n;
-        n := readWorld (c[2]);
-        eval (env, [n[0]:c[0], c[1], n[1]], tl)
+        var n = readWorld (w);
+        eval ([n[0]:st, cst, s, n[1]], tl)
     | WRITE:tl -> 
-        case c[0] of
-          z:s -> eval(env, [s, c[1], writeWorld(z, c[2])], tl)
+        case st of
+          z:st -> eval([st, cst, s, writeWorld(z, w)], tl)
         esac
-    | LD (x):tl -> eval (env, [c[1](x):c[0], c[1], c[2]], tl)
-    | LDA (x): tl -> eval (env, [x:c[0], c[1], c[2]], tl)
+    | LD (x):tl -> eval ([lookup(s, x):st, cst, s, w], tl)
+    | LDA (x): tl -> eval ([x:st, cst, s, w], tl)
     | ST (x):tl -> 
-        case c[0] of
-          z:s -> eval (env, [ s, c[1] <- [x, z], c[2]], tl)
-        esac
+        assign(s, x, st[0]); 
+        eval (c, tl)
     | STI :tl ->
-        case c[0] of
-          v:x:s -> eval (env, [v:s, c[1] <- [x,v], c[2]], tl)
+        case st of
+          v:x:st -> assign(s, x, v); eval ([v:st, cst, s, w], tl)
         esac
-    | 0 -> c
 
     | DUP :tl ->
-        case c[0] of
-          z:s -> eval (env, [ z:c[0], c[1], c[2]], tl)
+        case st of
+          z:_ -> eval ([ z:st, cst, s, w], tl)
         esac
     | DROP :tl ->
-        case c[0] of
-          z:s -> eval (env, [s, c[1], c[2]], tl)
+        case st of
+          z:st -> eval ([st, cst, s, w], tl)
         esac
-
-    | LABEL (s) :tl ->
-        eval (env, c, tl)
+  
+    | LABEL (s) :tl -> eval (c, tl)
     | JMP (l) :tl -> 
-        eval (env, c, fromLabel (env, l) )
+        eval (c, fromLabel (env, l) )
     
     | CJMP (cond, l) :tl ->
-        case c[0] of
-          0:tail -> eval (env, [tail, c[1], c[2]], if compare (cond, "z")==0 then fromLabel (env, l) else tl fi)
-        | _:tail -> eval (env, [tail, c[1], c[2]], if compare (cond,"nz")==0 then fromLabel (env, l) else tl fi)
+        case st of
+          0:tail -> eval ([tail, cst, s, w], if compare (cond, "z")==0 then fromLabel (env, l) else tl fi)
+        | _:tail -> eval ([tail, cst, s, w], if compare (cond,"nz")==0 then fromLabel (env, l) else tl fi)
+        esac
+
+    | CALL (f, l) :tl ->
+        eval ([st, s:tl:cst, s, w], fromLabel(env, f))
+
+
+    | BEGIN (f, a, l) :tl -> 
+        s := makeState (a, l);
+        case take (st, a) of [st, args] ->
+           
+           foldl (fun (i, a) {assign (s, Arg (i), a); i+1}, 0, args);
+           eval ([st, cst, s, w], tl)
+        esac
+    | END :tl ->
+        case cst of 
+          s:ret:cst -> eval ([st, cst, s, w], ret)
+        | 0 -> c
         esac
     esac
   }
@@ -395,7 +411,39 @@ fun addVars (env, names) {
 --    (use env.addArg).
 
 public fun compileSM (expr) {
-  getBuffer (cmpSM (expr))
+  -----
+  fun createFuns([fs, env]){
+    var code = emptyBuffer();
+    while size(fs) >0 do
+      case fs[0] of Fun (l, args, body, st) ->
+        env := beginFun (env, st);
+        
+        case cmpSM(addArgs(beginFun (env, st), args), body) of [env, body] ->
+          code := code
+                <+  LABEL (l)
+                <+  BEGIN (l, size(args), getLocals (env))
+                <+> body
+                <+  END
+          
+        esac
+      esac;
+      fs := fs.tl
+    od;
+    code
+  }
+  -----
+
+
+  getBuffer(
+    case cmpSM (initCompEnv(), expr) of [env, code] ->
+      emptyBuffer()
+        <+  LABEL ("main")
+        <+  BEGIN ("main", 0, getLocals(env))
+        <+> code
+        <+  END
+        <+> createFuns(getFuns(env))
+    esac
+  )
 }
 
 fun cmpIf(env, e, s1, s2){
@@ -428,7 +476,7 @@ fun cmpIf(env, e, s1, s2){
 fun cmpSM(env, stmt){
   case stmt of
     Assn (s, e) -> case s of 
-        Ref (s) -> [env, cmpSM(env, e)[1] <+ DUP <+ ST(s)]
+        Ref (s) -> [env, cmpSM(env, e)[1] <+ DUP <+ ST(lookupVar (env, s))]
       | _ -> 
           var s1 = cmpSM(env, s);
           var e1 = cmpSM(s1[0], e);
@@ -444,16 +492,16 @@ fun cmpSM(env, stmt){
 
   | Skip -> [env, emptyBuffer()]
   | Read (x) -> case x of
-        Ref(x) -> [env, listBuffer ({READ, ST(x), DROP})]
+        Ref(x) -> [env, listBuffer ({READ, ST(lookupVar (env, x)), DROP})]
       | _ -> failure("Read - Not Ref IN\n")
       esac    
   | Write (e) -> [env, cmpSM(env, e)[1] <+ WRITE]
 
 
 
-  | Var (x) -> [env, singletonBuffer(LD (x))]
+  | Var (x) -> [env, singletonBuffer(LD (lookupVar (env, x)))]
   | Const (n) -> [env, singletonBuffer(CONST (n))]
-  | Ref (x) -> [env, singletonBuffer(LDA (x))]
+  | Ref (x) -> [env, singletonBuffer(LDA (lookupVar (env, x)))]
 
   | Binop (op, e1, e2) -> 
       var p1 = cmpSM(env, e1);
@@ -479,6 +527,80 @@ fun cmpSM(env, stmt){
       ]
   | If (e, s1, s2) -> cmpIf (env, e, s1, s2)
 
+
+
+
+  | Scope (defs, expr) ->
+      -------
+      fun initDefs (env, d){
+        var funcs = {};
+        while size(d) > 0 do
+          env := case d[0] of
+                   Var (x) -> addVars(env, x)
+                 | Fun (f, args, body) -> 
+                     case genFunLabel (env, f) of [label, env] ->
+                       funcs := [f, args, body, label]:funcs; 
+                       addFun (env, f, label, size (args))
+                     esac
+                 esac;
+          d := d.tl
+        od;
+        while size (funcs) > 0 do
+          env := case funcs[0] of [f, args, body, label] ->
+                   rememberFun (
+                     env,
+                     label,
+                     args,
+                     body
+                   )
+                 esac;
+          funcs := funcs.tl
+        od;
+        env
+      }
+      -------
+      fun createGlobals (env, d){
+        var code = emptyBuffer();
+        if isGlobal (env) then
+          while size(d) > 0 do
+            case d[0] of
+              Var (x) -> 
+                while size(x) > 0 do
+                  code := code <+ GLOBAL (x[0]);
+                  x := x.tl
+                od
+            | Fun (f, args, body) -> skip
+            esac;
+            d := d.tl
+          od
+        fi;
+        code
+      }
+      -------
+      var codeDefs;
+      env := initDefs (beginScope (env), defs);
+      codeDefs := createGlobals (env, defs);
+      
+      
+      case cmpSM (env, expr) of [env, code] ->
+        [if isGlobal(env) then env else endScope(env) fi, codeDefs <+> code]
+      esac
+
+  | Call (f, args) ->
+      
+      var code = emptyBuffer();
+      while size(args) >0 do
+        var r;
+        r := cmpSM (env, args[0]);
+        env := r[0];
+        code := code <+> r[1];
+        args := args.tl
+      od;
+      
+      case lookupFun(env, f) of Fun (f, l) ->
+        [env, code <+ CALL (f, l)]  
+      esac
+      
   | _ -> failure("\n\nFTF:  %s\n\n", stmt.string)
 
   esac
