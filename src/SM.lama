@@ -146,11 +146,11 @@ fun eval (env, w, insns) {
   }
 
   fun evalInsnLd ([stack, calls, st, w], varName) {
-    [lookup (st, Glb (varName)):stack, calls, st, w]
+    [lookup (st, varName):stack, calls, st, w]
   }
 
   fun evalInsnSt ([value:stack, calls, st, w], varName) {
-    assign (st, Glb (varName), value);
+    assign (st, varName, value);
     [stack, calls, st, w]
   }
 
@@ -159,7 +159,7 @@ fun eval (env, w, insns) {
   }
 
   fun evalInsnSti ([value:Ref (varName):stack, calls, st, w]) {
-    assign (st, Glb(varName), value);
+    assign (st, varName, value);
     [value:stack, calls, st, w]
   }
 
@@ -190,6 +190,11 @@ fun eval (env, w, insns) {
     esac
   }
 
+  fun evalGlobal ([stack, calls, st, w], name) {
+    assign (st, Glb (name), 0);
+    [stack, calls, st, w]
+  }
+
   fun evalBegin ([stack, calls, st, w], args, locals) {
     var funcSt = makeState (args, locals);
 
@@ -208,6 +213,10 @@ fun eval (env, w, insns) {
       {}             -> [[stack, calls, prevSt, w], {}] -- main function
     | retInsns:calls -> [[stack, calls, prevSt, w], retInsns]
     esac
+  }
+
+  fun evalCall ([stack, calls, st, w], retInsns) {
+    [stack, retInsns:calls, st, w]
   }
 
   -- Core interpreter: takes a configuration and a program, returns a configuration
@@ -229,24 +238,17 @@ fun eval (env, w, insns) {
       LABEL (label) : insns              -> eval (c, insns) |
       DROP : insns                       -> eval (evalInsnDrop (c), insns) |
       DUP : insns                        -> eval (evalInsnDup (c), insns)  |
-      GLOBAL (name) : insns              -> eval (c, insns) |
+      GLOBAL (name) : insns              -> eval (evalGlobal (c, name), insns) |
       BEGIN (name, args, locals) : insns -> eval (evalBegin (c, args, locals), insns) |
       END : insns                        -> case evalEnd (c) of
                                               [c, insns] -> eval (c, insns)
                                             esac |
+      CALL (name, args) : insns          -> eval (evalCall (c, insns), fromLabel (env, name)) |
       unknown : insns                    -> failure (sprintf("SM eval not implemented for %s", string(unknown))) |
       {}                                 -> c
     esac
   }
   (* End *)
-
-  (*
-  foldl (fun (_, ins) {
-    printf(string(ins));
-    printf("\n");
-    0
-  }, 0, insns);
-  *)
 
   eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
 }
@@ -308,7 +310,7 @@ fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
 
   -- Get functions and empty functions list
   fun getFuns () {
-    [functions, makeCompEnv (nLabels, scopeDepth, state, nArgs, nLocals, {})]
+    [functions, makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, {})]
   }
 
   -- Lookups a name of a variable
@@ -469,12 +471,13 @@ fun compileExprBinop (Binop (op, expr0, expr1), env) {
 }
 
 fun registerDefs (defs, env) {
-  -- printf ("defs");
-  -- printf (string(defs));
-  -- printf ("\n");
   foldl (fun (env, def) {
     case def of
       Var (names) -> addVars (env, names)
+    | Fun (name, args, body) ->
+      case genLabel (env) of
+        [label, env] -> addFun (env, name, label, size (args))
+      esac
     esac
   }, env, defs)
 }
@@ -491,30 +494,90 @@ fun compileGlobals (defs, env) {
   [insns, env]
 }
 
-fun compileScope (Scope (defs, expr), env) {
-  -- printf (string(defs));
-  -- printf ("\n");
-  case registerDefs (defs, beginScope (env), env) of
-    env ->
-      case compileExpr (expr, env) of
-        [insns, env] ->
-          if isGlobal (env) then
-            case compileGlobals (defs, env) of
-              [scopeInsns, env] -> [scopeInsns <+ LABEL ("main") <+ BEGIN ("main", 0, getLocals (env))
-                                                                 <+> insns <+ END,
-                                    endScope (env)]
-            esac
-          else
-            [insns, endScope (env)]
-          fi
+fun registerFuncs (defs, env) {
+  foldl (fun (env, def) {
+    case def of
+      Var (_) -> env
+    | Fun (name, args, body) ->
+      case lookupFun (env, name) of
+        Fun (label, _) -> rememberFun (env, label, args, body)
       esac
+    esac
+  }, env, defs)
+}
+
+fun compileFunBody (body, env, label, nArgs) {
+  case compileExpr (body, env) of
+    [insns, env] -> [singletonBuffer (LABEL (label)) <+ BEGIN (label, nArgs, getLocals (env)) <+> insns <+ END, env]
+  esac
+}
+
+fun compileEnvFuncs (env) {
+  fun compileRegistered (insns, env) {
+    case
+      case getFuns (env) of
+        [functions, env] ->
+        [foldl (fun ([insns, env], Fun (label, args, body, state)) {
+           case compileFunBody (body, addArgs (beginFun (env, state), args), label, size (args)) of
+             [funInsns, env] -> [insns <+> funInsns, env]
+           esac
+         }, [insns, env], functions), size (functions)]
+      esac of
+      [[insns, env], nFuncs] -> 
+      if nFuncs == 0 then
+        [insns, env]
+      else
+        compileRegistered (insns, env)
+      fi
+    esac
+  }
+
+  compileRegistered (emptyBuffer (), env)
+}
+
+fun compileScope (Scope (defs, expr), env) {
+  case registerFuncs (defs, registerDefs (defs, beginScope (env), env)) of
+    env ->
+      case
+        case compileExpr (expr, env) of
+          [insns, env] ->
+            if isGlobal (env) then
+              case compileGlobals (defs, env) of
+                [scopeInsns, env] -> [scopeInsns <+ LABEL ("main") <+ BEGIN ("main", 0, getLocals (env))
+                                                                   <+> insns <+ END,
+                                      env]
+              esac
+            else
+              [insns, env]
+            fi
+        esac of
+        [insns, env] ->
+        if isGlobal (env) then 
+          case compileEnvFuncs (env) of
+            [funcInsns, env] -> [insns <+> funcInsns, endScope (env)]
+          esac
+        else 
+          [insns, endScope (env)]
+        fi
+     esac
+  esac
+}
+
+fun compileCall (Call (name, args), env) {
+  case foldl (fun ([insns, env], argExpr) {
+         case compileExpr (argExpr, env) of
+           [argInsns, env] -> [insns <+> argInsns, env]
+         esac
+       }, [emptyBuffer (), env], args) of
+    [insns, env] ->
+    case lookupFun (env, name) of
+      Fun (name, args) -> [insns <+ CALL (name, args), env]
+    esac
   esac
 }
 
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr, env) {
-  -- printf (string(expr));
-  -- printf ("\n");
   case expr of
     Var   (_)          -> compileExprVar     (expr, env) |
     Const (_)          -> compileExprConst   (expr, env) |
@@ -531,6 +594,7 @@ fun compileExpr (expr, env) {
     If (_, _, _)       -> compileExprIf      (expr, env) |
     Ignore (_)         -> compileExprIgnore  (expr, env) |
     Scope (_, _)       -> compileScope       (expr, env) |
+    Call (_, _)        -> compileCall        (expr, env) |
     _                  -> failure (sprintf("compileExpr for %s not implemented\n", string(expr)))
   esac
 }
@@ -642,8 +706,6 @@ fun addVars (env, names) {
 -- Takes an expression, returns a list of stack machine
 -- instructions.
 public fun compileSM (expr) {
-  -- printf (string(expr));
-  -- printf ("\n");
   case compileExpr (expr, initCompEnv()) of
     [insns, _] -> getBuffer (insns)
   esac
