@@ -1,27 +1,51 @@
 -- Stack machine.
 
+import Ref;
 import Array;
 import List;
 import Fun;
 import Collection;
 import World;
 import State;
+import Parser;
+import Lexer;
 import Expr;
+import Builtins;
 import Buffer;
 
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
 public fun showSMInsn (i) {
+  -- Shows a location (a reference to function argument, local or global variable)
+  fun showLoc (d) {
+    case d of
+      Arg (i) -> sprintf ("arg[%d]", i)
+    | Loc (i) -> sprintf ("loc[%d]", i)
+    | Glb (x) -> x
+    esac
+  }
+  
   case i of
-    READ         -> sprintf ("READ")
-  | WRITE        -> sprintf ("WRITE")
-  | BINOP (s)    -> sprintf ("BINOP %s", s)
-  | LD    (x)    -> sprintf ("LD %s", x)
-  | ST    (x)    -> sprintf ("ST %s", x)
-  | CONST (n)    -> sprintf ("CONST %d", n)
-  | LABEL (s)    -> sprintf ("LABEL %s", s)
-  | JMP   (l)    -> sprintf ("JMP %s", l)
-  | CJMP  (c, l) -> sprintf ("CJMP %s, %s", c, l)
+    BINOP  (s)       -> sprintf ("BINOP %s", s)
+  | LD     (x)       -> sprintf ("LD %s", showLoc (x))
+  | LDA    (x)       -> sprintf ("LDA %s", showLoc (x))
+  | ST     (x)       -> sprintf ("ST %s", showLoc (x))
+  | STI              -> "STI"
+  | CONST  (n)       -> sprintf ("CONST %d", n)
+  | LABEL  (s)       -> sprintf ("LABEL %s", s)
+  | JMP    (l)       -> sprintf ("JMP %s", l)
+  | CJMP   (c, l)    -> sprintf ("CJMP %s, %s", c, l)
+  | CALL   (f, n)    -> sprintf ("CALL %s, %d", f, n)
+  | BEGIN  (f, a, l) -> sprintf ("BEGIN %s, %d, %d", f, a, l)
+  | GLOBAL (x)       -> sprintf ("GLOBAL %s", x)
+  | END              -> sprintf ("END")
+  | DUP              -> "DUP"
+  | DROP             -> "DROP"
+  | STRING (s)       -> sprintf ("STRING ""%s""", s)
+  | ARRAY  (n)       -> sprintf ("ARRAY %d", n)
+  | STA              -> "STA"
+  | ELEM             -> "ELEM"
+  | BUILTIN (f, n)   -> sprintf ("BUILTIN %s, %d", f, n)
   esac
 }
 
@@ -52,39 +76,238 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
--- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
--- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+-- Stack machine interpreter. Takes an environment, a world and a program,
+-- returns a final output
+fun eval (env, w, insns) {
+  -- Global state maps names of global variables to values
+  var globalState = ref (fun (x) {error (sprintf ("name ""%s"" is undefined", x), getLoc (x))});
+  
+  -- Make a fresh local state: a pair of arrays for arguments and local variables;
+  -- takes the numbers of arguments and local variables respectively
+  fun makeState (a, l) {
+    [initArray (a, fun (_) {0}), initArray (l, fun (_) {0})]
+  }
+
+  -- Lookups a location in local/global states
+  fun lookup ([args, locs], loc) {
+    case loc of
+      Arg (i) -> args[i]
+    | Loc (i) -> locs[i]
+    | Glb (x) -> deref (globalState) (x)
+    esac 
+  }
+
+  -- Assigns a value to a location
+  fun assign ([args, locs], loc, vl) {
+    case loc of
+      Arg (i) -> args[i] := vl
+    | Loc (i) -> locs[i] := vl
+    | Glb (x) -> var g = deref (globalState);
+                 globalState ::= fun (y) {if compare (x, y) == 0 then vl else g (y) fi}
+    esac
+  }
+
+  -- Takes n positions from the list, retursn a pair: the remaining list and the taken
+  -- sublist
+  fun take (list, n) {
+    fun inner (n, acc, list) {
+      if n == 0
+      then [list, acc]
+      else inner (n-1, list.hd : acc, list.tl)
+      fi
+    }
+
+    inner (n, {}, list)
+  }
+
+  -- Core interpreter: takes a configuration and a program, returns a configuration
+  fun eval (c@[st, cst, s, w], insns) {
+    failure ("SM interpreter is not implemented\n")
+  }
+  
+  
+  eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM (input, insns) {
-  eval (initEvalEnv (insns), [{}, emptyState, createWorld (input)], insns)[2].getOutput
+  eval (initEvalEnv (insns), createWorld (input), insns)
 }
 
 -- Compilation environment: generates labels
-fun makeCompEnv (n) {
-  [fun () {
-     [sprintf ("L%d", n), makeCompEnv (n+1)]
-  }]
+fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
+  -- Generates a new label
+  fun genLabel () {
+    [sprintf ("L%d", nLabels), makeCompEnv (nLabels+1, scopeDepth, state, nLocals, nArgs, functions)]
+  }
+
+  -- Adds a new function 
+  fun rememberFun (fLabel, args, body) {
+    makeCompEnv (nLabels,
+                 scopeDepth,
+                 state,
+                 nLocals,
+                 nArgs,
+                 Fun (fLabel, args, body, state) : functions)
+  }
+
+  -- Enters a local scope
+  fun beginScope () {
+    makeCompEnv (nLabels, scopeDepth+1, enterScope (state), nLocals, nArgs, functions)
+  }
+
+  -- Leaves a local scope
+  fun endScope () {
+    makeCompEnv (nLabels, scopeDepth-1, leaveScope (state), nLocals, nArgs, functions)
+  }
+
+  -- Adds an argument for the current function
+  fun addArg (name) {
+    makeCompEnv (nLabels, scopeDepth, addName (state, name, Arg (nArgs)), nLocals, nArgs+1, functions)
+  }
+
+  -- Adds a local variable for the current function
+  fun addVar (name) {
+    if isGlobal ()
+    then makeCompEnv (nLabels, scopeDepth, addName (state, name, Glb (name)), nLocals, nArgs, functions)
+    else makeCompEnv (nLabels, scopeDepth, addName (state, name, Loc (nLocals)), nLocals+1, nArgs, functions)
+    fi
+  }
+
+  -- Adds a binding for a function
+  fun addFun (name, fLabel, nargs) {
+    makeCompEnv (nLabels, scopeDepth, addName (state, name, Fun (fLabel, nargs)), nLocals, nArgs, functions)
+  }
+  
+  -- Enters a function
+  fun beginFun (state) {
+    makeCompEnv (nLabels, 2, enterFunction (state), 0, 0, functions)
+  }
+
+  -- Get functions and empty functions list
+  fun getFuns () {
+    [functions, makeCompEnv (nLabels, scopeDepth, state, nArgs, nLocals, {})]
+  }
+
+  -- Lookups a name of a variable
+  fun lookupVar (name) {
+    case lookup (state, name) of
+      Fun (_, _) -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
+    | x          -> x
+    esac
+  }
+
+  -- Lookups a name of a function
+  fun lookupFun (name) {
+    case lookup (state, name) of
+      x@Fun (_, _) -> x
+    | _            -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
+    esac
+  }
+
+  -- Gets the number of local variables
+  fun getLocals () {
+    nLocals
+  }
+
+  -- Generates an intrinsic function name
+  fun genFunLabel (name) {
+     if isGlobal ()
+     then [sprintf ("L%s", name),             makeCompEnv (nLabels  , scopeDepth, state, nLocals, nArgs, functions)]
+     else [sprintf ("L%s_%d", name, nLabels), makeCompEnv (nLabels+1, scopeDepth, state, nLocals, nArgs, functions)]
+     fi 
+  }
+
+  -- Checks if the current scope is a global
+  fun isGlobal () {
+    scopeDepth == 2
+  }
+  
+  [genLabel,
+   rememberFun,
+   beginScope,
+   endScope,
+   addArg,
+   addVar,
+   beginFun,
+   getFuns,
+   lookupVar,
+   lookupFun,
+   getLocals,
+   genFunLabel,
+   addFun,
+   isGlobal
+  ]
 }
 
+-- Initialize a new compilation environment
 fun initCompEnv () {
-  makeCompEnv (0)
+  makeCompEnv (0, 0, emptyState (), 0, 0, {})
 }
 
--- Accessor function: generates one label
+-- Accessor functions
 fun genLabel (env) {
   env [0] ()
 }
 
--- Utility function: generates n labels
+fun rememberFun (env, name, args, body) {
+  env [1] (name, args, body)
+}
+
+fun beginScope (env) {
+  env [2] ()
+}
+
+fun endScope (env) {
+  env [3] ()
+}
+
+fun addArg (env, name) {
+  env [4] (name)
+}
+
+fun addVar (env, name) {
+  env [5] (name)
+}
+
+fun beginFun (env, state) {
+  env [6] (state)
+}
+
+fun getFuns (env) {
+  env [7] ()
+}
+
+fun lookupVar (env, name) {
+  env [8] (name)
+}
+
+fun lookupFun (env, name) {
+  env [9] (name)
+}
+
+fun getLocals (env) {
+  env [10] ()
+}
+
+fun genFunLabel (env, name) {
+  env [11] (name)
+}
+
+fun addFun (env, name, fLabel, nargs) {
+  env [12] (name, fLabel, nargs)
+}
+
+fun isGlobal (env) {
+  env [13] ()
+}
+
+-- Helper function: generates n labels
 fun genLabels (env, n) {
   fun inner (env, n) {
     if n == 0
     then {env}
-    else case env.genLabel of
+    else case genLabel (env) of
            [lab, env] -> lab : inner (env, n-1)
          esac
     fi
@@ -93,15 +316,40 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
-fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+-- Helper function: adds a bunch of arguments
+fun addArgs (env, names) {
+  foldl (fun (env, name) {addArg (env, name)}, env, names)
 }
 
--- Compiles a statement into a stack machine code.
--- Takes a statement, returns a list of stack machine
+-- Helper function: adds a bunch of locals
+fun addVars (env, names) {
+  foldl (fun (env, name) {addVar (env, name)}, env, names)
+}
+
+-- Compiles an expression into a stack machine code.
+-- Takes an expression, returns a list of stack machine
 -- instructions.
-public fun compileSM (stmt) {
+
+
+-- Some guidelines for compiling functions and scopes.
+--
+-- 1. use env.beginScope/env.endScope properly;
+-- 2. in each scope traverse the definitions twice:
+--    a. first, add all bindings into symbolic state,
+--       using end.addVar/env.addFun;
+--    b. do not forget to generate GLOBAL instructions for
+--       top-level variable declarations;
+--    c. on the secord traversal add functions themselves for
+--       future code generation (use env.rememberFun).
+-- 3. the overall flow for codegeneration:
+--    a. generate the code for thetopmost expression (the progrman itself);
+--    b. take list of nested functions definitions via env.getFuns and
+--       generate the code for each function;
+--    c. repeat b. until no function definitions appear.
+-- 4. when compiling functions, do not forget to create proper
+--    environment (use env.beginFun) and register arguments
+--    (use env.addArg).
+
+public fun compileSM (expr) {
   failure ("compileSM not implemented\n")
 }
