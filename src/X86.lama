@@ -418,6 +418,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -435,7 +436,7 @@ fun move (from, to) {
 
 fun moveAddr (from, to) {
   if memOpnd (from) && memOpnd (to)
-  then singletonBuffer (Lea (from, eax)) <+ Lea (eax, to)
+  then singletonBuffer (Lea (from, eax)) <+> move (eax, to)
   else singletonBuffer (Lea (from, to))
   fi
 }
@@ -505,15 +506,16 @@ fun compile (env, code) {
       [env, code]
     }
 
-    fun call (env, fLabel, nArgs) {
+    fun call (env, fLabel, nArgs, additionalArgs) {
       var regsToSave = liveRegisters (env, nArgs);
       var regsPush = foldl(fun(code, reg) { code <+ Push (reg) }, emptyBuffer(), regsToSave);
       var regsPop = foldr(fun(code, reg) { code <+ Pop (reg) }, emptyBuffer(), regsToSave);
+      var additionalPush = foldl(fun(code, reg) { code <+ Push (reg) }, emptyBuffer(), additionalArgs);
 
       case getArgsFromEnv (env, nArgs) of
         [env, code] -> 
           case allocate (env) of 
-            [s, env] -> [env, singletonBuffer (Meta ("#cSAVE begin\n")) <+> regsPush <+ Meta ("# SAVE end\n") <+> code <+ Call (fLabel) <+ Binop ("+", L (wordSize * nArgs), esp) <+> regsPop <+ Mov (eax, s)] 
+            [s, env] -> [env, regsPush <+> code <+> additionalPush <+ Call (fLabel) <+ Binop ("+", L (wordSize * (nArgs + size (additionalArgs))), esp) <+> regsPop <+ Mov (eax, s)] 
           esac
       esac
     }
@@ -562,8 +564,9 @@ fun compile (env, code) {
         | ST (x) ->[env, code <+> move (peek (env), loc(env, x))]
         | STI ->
             case pop2 (env) of
-              [s, x, env] -> [push (env, s), code <+> move (x, eax) <+ Mov (s, I (0, eax))]
+              [s, x, env] -> [push (env, s), code <+> move (x, eax) <+> move (s, edx) <+ Mov (edx, I (0, eax))]
             esac 
+        | STA -> case call (env, "Bsta", 3, {}) of [env, callCode] -> [env, code <+> callCode] esac
         | BINOP (op) ->
             case pop2 (env) of
               [x, y, env] -> 
@@ -584,10 +587,19 @@ fun compile (env, code) {
             case pop (env) of
               [s, env] -> [setStack(env, l), code <+ Binop("cmp", L(0), s) <+ CJmp (cond, l)]
             esac
-        | CALL (fLabel, nArgs) -> case call (env, fLabel, nArgs) of [env, callCode] -> [env, code <+> callCode] esac
+        | CALL (fLabel, nArgs) -> case call (env, fLabel, nArgs, {}) of [env, callCode] -> [env, code <+> callCode] esac
         | GLOBAL (x) -> [addGlobal (env, x), code]
         | BEGIN (fLabel, _, nLocals) -> [enterFunction(env, fLabel, nLocals), code <+> prologue(fLabel)]
         | END -> case epilogue(env) of [env, endCode] -> [env, code <+> endCode] esac
+        | STRING (s)-> 
+            case addString (env, s) of 
+              [env, name] -> case allocate (env) of
+                [s, env] -> case call (env, "Bstring", 1, {}) of [env, callCode] -> [env, code <+> moveAddr (M (name), s) <+> callCode] esac
+              esac
+            esac
+        | ARRAY  (n)-> case call (env, "Barray", n, { L (n) }) of [env, callCode] -> [env, code <+> callCode] esac
+        | ELEM      -> case call (env, "Belem", 2, {}) of [env, callCode] -> [env, code <+> callCode] esac
+        | BUILTIN (name, nArgs)   -> case call (env, "L" ++ name, nArgs, {}) of [env, callCode] -> [env, code <+> callCode] esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
