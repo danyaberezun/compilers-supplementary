@@ -64,13 +64,13 @@ fun evalOneInsn (c, insn) {
       var readValue = readRes.fst;
       var worldNew = readRes.snd; 
       var stackNew = readValue : stack;
-      [stackNew, state, worldNew]
+      [[stackNew, state, worldNew], STAY]
     )
     | WRITE     -> (
       case stack of
         value : stackNew -> (
           var worldNew = writeWorld (value, world);
-          [stackNew, state, worldNew]
+          [[stackNew, state, worldNew], STAY]
         )
       esac
     )
@@ -79,36 +79,62 @@ fun evalOneInsn (c, insn) {
         y:x:stackNew -> (
           var binopRes = evalBinop (s, x, y);
           var stackNew2 = binopRes : stackNew;
-          [stackNew2, state, world]
+          [[stackNew2, state, world], STAY]
         )
       esac
     )
     | LD    (varName) -> (
       var varValue = state(varName);
       var stackNew = varValue : stack;
-      [stackNew, state, world]
+      [[stackNew, state, world], STAY]
     )
     | ST    (varName) -> (
       case stack of
         varValue : stackNew -> (
           var stateNew = state <- [varName, varValue];
-          [stackNew, stateNew, world]
+          [[stackNew, stateNew, world], STAY]
         )
       esac
     )
     | CONST (n) -> (
       var stackNew = n : stack;
-      [stackNew, state, world]
+      [[stackNew, state, world], STAY]
+    )
+    | LABEL (label) -> (
+      [[stack, state, world], STAY]
+    )
+    | JMP (label) -> (
+      [[stack, state, world], JUMP (label)]
+    )
+    | CJMP (cond, label) -> (
+      case stack of
+        value : stackNew -> (
+          if (value != 0 && compare (cond, "nz") == 0) then 
+           [[stackNew, state, world], JUMP (label)]
+          elif (value == 0 && compare (cond, "z") == 0) then
+           [[stackNew, state, world], JUMP (label)]
+          else
+           [[stackNew, state, world], STAY]
+          fi
+        )
+      esac
     )
   esac
 }
 
-fun eval (c, insns) {
+
+
+fun eval (env, c, insns) {
   case insns of 
     {} -> c
     | insn : other -> (
-      var newc = evalOneInsn (c, insn);
-      eval (newc, other)
+      var resEval = evalOneInsn (c, insn);
+      var newc = resEval[0];
+      var doLabel = resEval[1];
+      case doLabel of
+          STAY -> eval (env, newc, other)
+        | JUMP (label) -> eval (env, newc, fromLabel (env, label)) 
+      esac
     )
   esac
 }
@@ -158,13 +184,83 @@ fun compileExpr (expr) {
   esac
 }
 
-fun compileSMBuff (stmt) {
+fun compileSMBuff (env, stmt) {
   case stmt of
-    Assn (varName, expr) -> compileExpr (expr) <+ ST (varName)
-    |  Seq (stmt1, stmt2) -> compileSMBuff (stmt1) <+> compileSMBuff (stmt2)
-    |  Skip -> emptyBuffer ()
-    |  Read (varName) -> listBuffer ({READ, (ST (varName))})
-    |  Write (expr) -> compileExpr (expr) <+ WRITE
+    Assn (varName, expr) -> [env, compileExpr (expr) <+ ST (varName)]
+    |  Seq (stmt1, stmt2) -> ( 
+       var res1 = compileSMBuff (env, stmt1);
+       case res1 of
+         [env1, buff1] -> (
+           var res2 = compileSMBuff (env1, stmt2);
+           var env2 = res2[0];
+           var buff2 = res2 [1];
+           [env2, buff1 <+> buff2] 
+         )
+       esac
+    )
+    |  Skip -> [env, emptyBuffer ()]
+    |  Read (varName) -> [env, listBuffer ({READ, (ST (varName))})]
+    |  Write (expr) -> [env, compileExpr (expr) <+ WRITE]
+    |  If (ifCond, thenExpr, elseExpr) -> (
+       var newLabels = genLabels(env, 2);
+       case newLabels of
+         [elseLabel, endLabel, env1] -> (
+           var cond =  compileExpr (ifCond);
+           var resThen = compileSMBuff (env1, thenExpr);
+           case resThen of
+             [env2, thenBuff] -> (
+               var resElse = compileSMBuff (env2, elseExpr);
+               case resElse of
+                 [env3, elseBuff] -> (
+                   [env3,
+                          cond <+ CJMP ("z", elseLabel)
+                          <+> thenBuff <+ JMP (endLabel)
+                        <+ LABEL (elseLabel)
+                          <+> elseBuff
+                        <+ LABEL (endLabel)
+                   ]
+                 ) 
+               esac
+             ) 
+           esac  
+         )
+       esac
+    )
+    |  While (whileCond, whileExpr)-> (
+       var newLabels = genLabels(env, 2);
+       case newLabels of
+         [condLabel, endLabel, env1] -> (
+           var cond = compileExpr (whileCond);
+           case (compileSMBuff (env1, whileExpr)) of
+             [env2, whileBuff] -> (
+               var resBuff = singletonBuffer (LABEL(condLabel))
+                         <+> cond  <+ CJMP ("z", endLabel)
+                         <+> whileBuff
+                         <+  JMP (condLabel)
+                      <+ LABLE (endLabel);
+               [env2, resBuff]
+             )
+           esac
+         )
+       esac
+    )
+    |  DoWhile (whileExpr, whileCond)  -> (
+      var newLabels = genLabels(env);
+       case newLabels of
+         [whileLabel, env1] -> (
+           var cond = compileExpr (whileCond);
+           case  (compileSMBuff (env1, whileExpr)) of
+             [env2, whileBuff] -> (
+               [env2, singletonBuffer(LABEL(whileLabel))
+                         <+> whileBuff
+                         <+> cond
+                         <+ CJMP ("nz", whileLabel)
+               ]
+             )
+           esac
+         )
+       esac
+    )
   esac
 }
 
@@ -173,5 +269,5 @@ fun compileSMBuff (stmt) {
 -- instructions.
 
 public fun compileSM (stmt) {
-  getBuffer (compileSMBuff (stmt))
+  getBuffer (compileSMBuff (initCompEnv(), stmt) [1])
 }
