@@ -400,8 +400,8 @@ fun epilogue (env) {
   if compare (env.currentFunction, "main") == 0
   then [env, singletonBuffer (Mov (ebp, esp)) <+ Pop (ebp) <+ Binop ("^", eax, eax) <+ Ret <+ metaDef]
   else case env.pop of
-        --  [y, env] -> [env, singletonBuffer (Mov (ebp, esp)) <+ Pop (ebp) <+ Mov (y, eax) <+ Ret <+ metaDef]
-         [y, env] -> [env, singletonBuffer (Mov (y, eax)) <+ Mov (ebp, esp) <+ Pop (ebp) <+ Ret <+ metaDef]
+         [y, env] -> [env, singletonBuffer (Mov (ebp, esp)) <+ Pop (ebp) <+ Mov (y, eax) <+ Ret <+ metaDef]
+        --  [y, env] -> [env, singletonBuffer (Mov (y, eax)) <+ Mov (ebp, esp) <+ Pop (ebp) <+ Ret <+ metaDef]
        esac
   fi
 }
@@ -496,7 +496,7 @@ fun getX86OpBuffer(operation, lhs, rhs) {
 
 fun call (env, fLabel, argsN) {
   var result = emptyBuffer();
-
+  var registersToSave = liveRegisters(env, argsN);
   -- format: pushRegs pushArgs call popArgs popRegs saveResult
 
   -- Push arguments
@@ -511,11 +511,11 @@ fun call (env, fLabel, argsN) {
   result := result <+ Call(fLabel) <+ Binop("+", L(wordSize * argsN), esp);
 
   -- Registers save/load
-  foldl(fun(buff, reg) {
+  result := foldl(fun(buff, reg) {
     singletonBuffer(Push(reg)) 
       <+> buff
       <+ Pop(reg)
-  }, result, liveRegisters(env, argsN));
+  }, result, registersToSave);
 
   -- Put result on symbolic stack
   case allocate(env) of [s, env] ->
@@ -532,19 +532,17 @@ fun compile (env, code) {
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
 
+        fun callWrapper(callableName, argsN) {
+            case call(env, callableName, argsN) of [env, funCode] ->
+              [env, code <+> funCode]
+            esac
+        }
+
         -- printf(envString(env));
         -- printf("x86c %s\n", string(i));
 
         case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-            esac
-        | BINOP(operation) ->
+          BINOP(operation) ->
             case pop2(env) of [rhs, lhs, env] ->
               -- [env.push(rhs), code <+> getX86OpBuffer(operation, lhs, rhs)]
               case allocate(env) of [s, env] ->
@@ -568,12 +566,32 @@ fun compile (env, code) {
                 -- ref may be located in stack, causing unallowed double addressing (-offset(%ebp)) when translating I(0, ref)
                 [push(env, s), code <+ Mov(ref, eax) <+ Mov(s, edx) <+ Mov(edx, I(0, eax))]
             esac
+        | STA ->
+            case call(env, "Bsta", 3) of [env, funCode] ->
+              [env, code <+> funCode]
+            esac
         | CONST(value) -> 
             case allocate(env) of
               [s, env] -> [env, code <+ Mov(L(value), s)]
             esac
         | GLOBAL(x) ->
             [addGlobal(env, x), code]
+        | STRING(value) ->
+            case addString(env, value) of [env, name] ->
+              case allocate(env) of [s, env] ->
+                case call(env, "Bstring", 1) of [env, funCode] ->
+                  [env, code <+> move(M("$" ++ name), s) <+> funCode]
+                esac
+              esac
+            esac
+        | ARRAY(valuesN) ->
+            -- case allocate(env) of [s, env] ->
+              case call(env, "Barray", valuesN+1) of [env, funCode] ->
+                [env, code <+> funCode]
+              esac
+            -- esac
+        | ELEM ->
+            callWrapper("Belem", 2)
         | LABEL(labelName) ->
             -- [env, code <+ Label(labelName)]
             [if isBarrier(env) then retrieveStack(env, labelName) else env fi, code <+ Label(labelName)]
@@ -588,9 +606,13 @@ fun compile (env, code) {
         | BEGIN(fLabel, argsN, localsN) -> 
             [enterFunction(env, fLabel, localsN), code <+> prologue(fLabel)]
         | CALL (fLabel, argsN) ->
-            case call(env, fLabel, argsN) of [env, funCode] ->
-              [env, code <+> funCode]
-            esac
+            callWrapper(fLabel, argsN)
+        | BUILTIN("read", 0) ->
+            callWrapper("Lread", 0)
+        | BUILTIN("write", 1) ->
+            callWrapper("Lwrite", 1)
+        | BUILTIN("length", 1) ->
+            callWrapper("Llength", 1)
         | END ->
             case epilogue(env) of [newEnv, endCode] ->
               [newEnv, code <+> endCode]

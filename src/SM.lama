@@ -123,20 +123,8 @@ fun eval (env, w, insns) {
   -- Core interpreter: takes a configuration and a program, returns a configuration
   fun eval (configuration@[stack, contrStack, state, world], instructions) {
     fun applyInstruction([stack, contrStack, state, world], instruction) {
-      -- printf("stev %s\n  stck %s\n  stte %s\n  cstk %s\n", instruction.string, stack.string, state.string, contrStack.string);
+      -- printf("stev d%d %s\n  stck %s\n  stte %s\n  cstk %s\n", depth, instruction.string, stack.string, state.string, contrStack.string);
       case instruction of
-        READ ->
-          var value = readWorld(world);
-          world := value.snd;
-          value := value.fst;
-          stack := value : stack |
-        WRITE ->
-          case stack of
-            value:tail ->
-              world := writeWorld(value, world);
-              stack := tail
-          esac |
-
         BINOP(operation) ->
           case stack of
             rhs:lhs:tail ->
@@ -159,15 +147,41 @@ fun eval (env, w, insns) {
               assign(state, variableName, value);
               stack := value : tail
           esac |
+        STA ->
+          case stack of
+            arr : value : index : tail ->
+              arr[index] := value;
+              stack := value : tail
+          esac |
 
         CONST(value) -> 
           stack := (value : stack) |
+        STRING(value) ->
+          stack := value : stack |
+        ARRAY(valuesN) ->
+          case take(stack, valuesN) of
+            [tail, values] ->
+              stack := listArray(values) : tail.tl -- Remove array size from stack by .tl (it is used in x86 to call Barray)
+          esac |
+        ELEM ->
+          case stack of 
+            index : arr : stackTail ->
+              stack := arr[index] : stackTail
+          esac |
         GLOBAL(_) ->
           skip |
         DROP ->
           case stack of
             head : tail ->
               stack := tail
+          esac |
+
+        BUILTIN(name, argsN) ->
+          case take(stack, argsN) of [newStack, vals] ->
+            case evalBuiltin(name, vals, world) of [value, newWorld] ->
+              stack := value : newStack;
+              world := newWorld
+            esac
           esac |
 
         CALL(_, _) -> skip |
@@ -497,21 +511,27 @@ fun compileExpr (expression) {
         singletonBuffer(LD (lookupVar(environment, variableName))) |
       Ref(variableName) ->
         singletonBuffer(LDA(lookupVar(environment, variableName))) |
+      Elem(arrExpr, indexExpr) ->
+        compileExprAux(arrExpr) <+> compileExprAux(indexExpr) <+ ELEM |
+      String(value) ->
+        singletonBuffer(STRING(value)) |
+      Array(valueExprs) ->
+        foldl(fun(buf, expr) { buf <+> compileExprAux(expr) }, singletonBuffer(CONST(size(valueExprs))), valueExprs) 
+          <+ ARRAY(size(valueExprs)) |
 
       -- Expressions parsing
       Seq (subexpression1, subexpression2) -> 
         compileExprAux(subexpression1) <+> compileExprAux(subexpression2) |
-      -- Assn (Ref(variableName), expression) ->
-      --   compileExprAux(expression) <+ ST(variableName) |
+      Assn (Ref(variableName), expression) ->
+        compileExprAux(expression) <+ ST(lookupVar(environment, variableName)) |
+      Assn (ElemRef(arrExpr, arrIndexExpr), valueExpr) ->
+        compileExprAux(arrIndexExpr) <+> compileExprAux(valueExpr)
+          <+> compileExprAux(arrExpr) <+ STA |
       Assn (destination, expression) ->
         compileExprAux(destination) <+> compileExprAux(expression) <+ STI |
       Binop(operation, subexpression1, subexpression2) ->
         compileExprAux(subexpression1) <+> compileExprAux(subexpression2) 
           <+ BINOP(operation) |
-      Read (variableName) -> 
-        singletonBuffer(READ) <+ ST(lookupVar(environment, variableName)) <+ DROP |
-      Write (expression) ->
-        compileExprAux(expression) <+ WRITE |
 
       -- Flow control
       While (condition, body) ->
@@ -545,10 +565,17 @@ fun compileExpr (expression) {
         foldl(fun(insns, argExpr) {
           insns <+> compileExprAux(argExpr)
         }, emptyBuffer(), argExprs)
+          <+
         -- Calling
-          <+  case lookupFun(environment, fName) of Fun(fLabel, argsN) ->
-                CALL(fLabel, argsN)
-              esac |
+        case fName of 
+          "read"   -> BUILTIN(fName, 0) |
+          "write"  -> BUILTIN(fName, 1) |
+          "length" -> BUILTIN(fName, 1) |
+          _ ->
+            case lookupFun(environment, fName) of Fun(fLabel, argsN) ->
+              CALL(fLabel, argsN)
+            esac
+        esac |
 
       Scope(defs, expr) ->
         var result;
@@ -571,7 +598,7 @@ fun compileExpr (expression) {
           <+> bodyInsns
           <+ END |
       Ignore (expression) ->
-        compileExprAux(expression) |
+        compileExprAux(expression) <+ DROP |
       Skip ->
         emptyBuffer() |
       _ -> failure ("Unknown expression in stack machine '" ++ string(expression) ++ "'\n")
@@ -591,30 +618,17 @@ fun compileExpr (expression) {
   }
 
   environment := initCompEnv();
+  -- Add builtin functions
+  environment := foldl(addFun, beginScope(environment), {
+    Fun("read", {}),
+    Fun("write", {"x"}),
+    Fun("length", {"x"})
+  });
 
   getBuffer(wrapInMainFun(compileExprAux(expression)) <+> getFunsInsns(getFuns(environment)))
 }
 
 var environment; -- Can't put it as local variable in the function above:(
-
--- Some guidelines for compiling functions and scopes.
---
--- 1. use env.beginScope/env.endScope properly;
--- 2. in each scope traverse the definitions twice:
---    a. first, add all bindings into symbolic state,
---       using end.addVar/env.addFun;
---    b. do not forget to generate GLOBAL instructions for
---       top-level variable declarations;
---    c. on the secord traversal add functions themselves for
---       future code generation (use env.rememberFun).
--- 3. the overall flow for codegeneration:
---    a. generate the code for thetopmost expression (the progrman itself);
---    b. take list of nested functions definitions via env.getFuns and
---       generate the code for each function;
---    c. repeat b. until no function definitions appear.
--- 4. when compiling functions, do not forget to create proper
---    environment (use env.beginFun) and register arguments
---    (use env.addArg).
 
 public fun compileSM (expr) {
   compileExpr(expr)
