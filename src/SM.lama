@@ -119,7 +119,75 @@ fun eval (env, w, insns) {
   -- Core interpreter: takes a configuration and a program, returns a configuration
   (* Assignment *)
   fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+    fun oldInsnsCheck (c, insn) {
+        -- printf ("%s\n", c[0].string);
+        case insn of
+            Read -> (
+              var newWorld = readWorld(c[3]);
+              [newWorld[0] : c[0], c[1], c[2], newWorld[1]]
+            ) |
+            Write -> [c[0].tl, c[1], c[2], writeWorld (c[0].hd, c[3])] |
+            Binop (s) -> [evalBinop (s, c[0].tl.hd, c[0].hd) : c[0].tl.tl, c[1], c[2], c[3]] |
+            LD (x) -> [c[2] (x) : c[0], c[1], c[2], c[3]] |
+            LDA (x) -> [Ref (x) : c[0], c[1], c[2], c[3]] |
+            ST (x) -> [c[0].tl, c[1], c[2] <- [x, c[0].hd], c[3]] |
+            STI ->
+              case c[0] of
+                hd : Ref(x) : tl -> [hd : tl, c[1], c[2] <- [x, hd], c[3]]
+              esac |
+            Const (n) -> [n : c[0], c[1], c[2], c[3]] |
+            DROP -> [c[0].tl, c[1], c[2], c[3]] |
+            _ -> [c[0], c[1], c[2], c[3]]
+        esac
+      }
+
+      fun newInsnsCheck (c@[stack, cstack, state, world], insns) {
+        case insns.hd of
+          JMP (l) -> [[c[0], c[1], c[2], c[3]], env.fromLabel (l)] |
+          CJMP (cond, l) -> (
+            if (compare("nz", cond) == 0 && c[0].hd != 0 !! compare("z", cond) == 0 && c[0].hd == 0)
+            then [[c[0].tl, c[1], c[2], c[3]], env.fromLabel (l)]
+            else [[c[0].tl, c[1], c[2], c[3]], insns.tl]
+            fi
+          ) |
+          CALL (name, _) -> [[stack, [state, insns.tl] : stack, state, world], env.fromLabel(name)] |
+          BEGIN(label, argsN, localsN) ->
+            case take(c[0], argsN) of [tail, argVals] ->
+              c[0] := tail;
+              c[2] := makeState(argsN, localsN);
+              for var i; i := 0, i < argsN, i := i+1 do
+                assign(c[2], Arg(i), argVals[0]);
+                argVals := argVals[1]
+              od
+            esac;
+           [[c[0], c[1], c[2], c[3]], insns.tl] |
+          END ->
+            var insnsTail = insns.tl;
+            case c[1] of
+              {} -> insnsTail := {} |
+              [prevState, prevInstructions] : tail ->
+                c[1] := tail;
+                c[2] := prevState;
+                insnsTail := prevInstructions
+            esac;
+          [[c[0], c[1], c[2], c[3]], insnsTail] |
+          _ -> [[c[0], c[1], c[2], c[3]], insns.tl]
+        esac
+      }
+
+      printf(1);
+      while size(insns) > 0 do
+        -- printf("%s\n", insns.hd.string);
+        case insns of
+          _ -> (
+            var newData = newInsnsCheck (oldInsnsCheck (c, insns.hd), insns);
+            c := newData[0];
+            insns := newData[1]
+          )
+        esac
+      od;
+      printf(3);
+      c
   }
   (* End *)
 
@@ -356,8 +424,8 @@ public fun compileSM (stmt) {
 
 
 public fun compileAllExpr (stmt, env) {
-  -- printf("2");
-  -- printf("%s\n", stmt.string);
+  printf(4);
+  printf("%s\n", stmt.string);
   case stmt of
     Var (v) -> [singletonBuffer (LD (v)), env] |
     Const (c) -> [singletonBuffer (Const (c)), env] |
@@ -399,7 +467,68 @@ public fun compileAllExpr (stmt, env) {
         var comp3 = compileAllExpr (st2, comp2[1]);
         [comp1[0] <+ CJMP ("z", l1) <+> comp2[0] <+ JMP (l2) <+ LABEL (l1) <+> comp3[0] <+ LABEL (l2), comp3[1]]
       esac |
-      Ignore (e) -> compileAllExpr(e, env)
+    Ignore (e) -> compileAllExpr(e, env) |
+    Call(fName, argExprs) ->
+      foldl(fun(insns, argExpr) {
+        insns <+> compileAllExpr(argExpr, env)
+      }, emptyBuffer(), argExprs)
+        <+  case lookupFun(env, fName) of Fun(fLabel, argsN) ->
+              CALL(fLabel, argsN)
+      esac |
+    Scope(defs, expr) ->
+      var result;
+      if size(defs) == 0 then
+        compileAllExpr(expr)
+      else
+        var globals;
+        var comp;
+        env := beginScope (env);
+        globals := bindSymbols(defs, env);
+        comp := compileAllExpr(expr, globals[1]);
+        [globals[0] <+> comp[0], endScope (comp[1])]
+      fi |
+    Fun(fLabel, args, body, fState) ->
+      var bodyInsns;
+      env := addArgs(beginFun(env, fState), args);
+      bodyInsns := compileAllExpr(body, env);
+      [singletonBuffer(LABEL(fLabel))
+        <+ BEGIN(fLabel, size(args), getLocals(bodyInsns[1]))
+        <+> bodyInsns[0]
+        <+ END, bodyInsns[1]]
   esac
+}
+
+fun bindSymbols(defs, environment) {
+  var globals = emptyBuffer();
+  environment := foldl(fun([env, globals], def) {
+    case def of
+      Var(vars) ->
+        if isGlobal(env) then
+          globals := foldl(fun(buff, variable) { buff <+ GLOBAL(variable) }, globals, vars)
+        fi;
+        [env.addVars(vars), globals] |
+      Fun(name, args, body) ->
+        [case genFunLabel(env, name) of [fLabel, newEnv] ->
+          addFun(newEnv, name, fLabel, size(args))
+        esac, globals] |
+      _ -> failure("Can't bind " ++ def.string ++ "\n")
+    esac
+  }, [environment, globals], defs);
+  globals := environment[1];
+  environment := environment[0];
+
+  -- Traverse again to rememberFun
+  environment := foldl(fun(env, def) {
+    case def of
+      Fun(name, args, body) ->
+        case lookupFun(env, name) of Fun(fLabel, _) ->
+          rememberFun(env, fLabel, args, body)
+        esac |
+      Var(_) -> env |
+      _ -> failure("Can't bind fun symbol " ++ def.string ++ "\n")
+    esac
+  }, environment, defs);
+
+  [globals, environment]
 }
 (* End *)

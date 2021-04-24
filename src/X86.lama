@@ -381,6 +381,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -456,6 +457,7 @@ fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      printf(9);
       case i of
         Read ->
           case env.allocate of
@@ -474,20 +476,20 @@ fun compile (env, code) {
           [s, env] -> [env, code <+> move (env.loc (x), s)]
         esac
       | LDA (x) ->
-        case env.addGlobal (x).allocate of
+        case env.allocate of
           [s, env] -> [env, code <+ Lea (env.loc (x), eax) <+> move (eax, s)]
         esac
       | ST (x) ->
-        case env.addGlobal (x).pop of
-          [s, env] -> [env, code <+> move (s, env.loc (x))]
-        esac
+        [env, code <+> move(peek(env), loc(env, x))]
       | STI ->
         case env.pop2 of
           [s, ref, env] -> [push(env, s), code <+> move (ref, eax) <+> move (s, edx) <+> move (edx, I(0, eax))]
         esac
       | Binop (op) ->
-        case env.pop2 of
-          [e2, e1, env] -> [env.push(e2), code <+> binopCompile(op, e1, e2)]
+        case env.pop2 of [e2, e1, env] ->
+          case env.allocate of [s, env] ->
+            [env, code <+> binopCompile(op, e1, e2) <+> move(e2, s)]
+          esac
         esac
       | LABEL (l) -> [if isBarrier(env) then retrieveStack(env, l) else env fi, code <+ Label(l)]
       -- [env, code <+ Label (l)]
@@ -498,14 +500,32 @@ fun compile (env, code) {
              [setStack(env, l), code <+ Mov(L(0), eax) <+ Binop("cmp", eax, value) <+ CJmp(c, l)]
           -- [env, code <+> move (L(0), eax) <+ Binop ("cmp", eax, value) <+ CJmp (c, l)]
         esac
+      | GLOBAL(x) ->
+        [addGlobal(env, x), code]
+       | BEGIN(fLabel, argsN, localsN) ->
+           [enterFunction(env, fLabel, localsN), code <+> prologue(fLabel)]
+       | CALL (fLabel, argsN) ->
+          case call(env, fLabel, argsN) of [env, funCode] ->
+             [env, code <+> funCode]
+           esac
+       | END ->
+           case epilogue(env) of [newEnv, endCode] ->
+             [newEnv, code <+> endCode]
+          esac
+       | DROP ->
+           case pop(env) of [_, env] ->
+             [env, code]
+           esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
-      }, [env, emptyBuffer ()], code)
+      }, [env, emptyBuffer ()], code);
+    printf(2)
   }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
 public fun compileX86 (args, code) {
+  printf(5);
   case compile (initEnv (), code) of
     [env, code] ->
        var asmFile = args.getBaseName ++ ".s",
@@ -522,5 +542,37 @@ public fun compileX86 (args, code) {
                       codeSection (code)
                    ).stringcat);
        system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
+  esac
+}
+
+fun call (env, fLabel, nA) {
+  printf(6);
+  case unzip $ map (fun (r) {[Push (r), Pop (r)]}, env.liveRegisters (nA)) of
+    [pushRegs, popRegs] ->
+      fun pushArgs (env, acc, n) {
+        case n of
+          0 -> [env, acc]
+        | n -> case env.pop of
+                 [x, env] -> pushArgs (env, Push (x) : acc, n - 1)
+               esac
+        esac
+      }
+
+      case pushArgs (env, {}, nA) of
+        [env, pushArgs] ->
+           case env.allocate of
+             [y, env] ->
+               [env, listBuffer (
+                       deepFlatten $
+                       {pushRegs,
+                        reverse (pushArgs),
+                        Call (fLabel),
+                        Binop ("+", L (wordSize * pushArgs.size), esp),
+                        reverse (popRegs),
+                        Mov (eax, y)}
+                     )
+               ]
+           esac
+      esac
   esac
 }
