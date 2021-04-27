@@ -26,12 +26,12 @@ public fun showSMInsn (i) {
   }
 
   case i of
-    BINOP  (s)       -> sprintf ("BINOP %s", s)
+    Binop  (s)       -> sprintf ("BINOP %s", s)
   | LD     (x)       -> sprintf ("LD %s", showLoc (x))
   | LDA    (x)       -> sprintf ("LDA %s", showLoc (x))
   | ST     (x)       -> sprintf ("ST %s", showLoc (x))
   | STI              -> "STI"
-  | CONST  (n)       -> sprintf ("CONST %d", n)
+  | Const  (n)       -> sprintf ("CONST %d", n)
   | LABEL  (s)       -> sprintf ("LABEL %s", s)
   | JMP    (l)       -> sprintf ("JMP %s", l)
   | CJMP   (c, l)    -> sprintf ("CJMP %s, %s", c, l)
@@ -46,6 +46,7 @@ public fun showSMInsn (i) {
   | STA              -> "STA"
   | ELEM             -> "ELEM"
   | BUILTIN (f, n)   -> sprintf ("BUILTIN %s, %d", f, n)
+  esac
 }
 
 public fun showSM (prg) {
@@ -125,11 +126,11 @@ fun eval (env, w, insns) {
     fun oldInsnsCheck (c, insn) {
         -- printf ("old %s %s\n", insn.string, c[0].string);
         case insn of
-            Read -> (
-              var newWorld = readWorld(c[3]);
-              [newWorld[0] : c[0], c[1], c[2], newWorld[1]]
-            ) |
-            Write -> [c[0].tl, c[1], c[2], writeWorld (c[0].hd, c[3])] |
+         --   Read -> (
+           --   var newWorld = readWorld(c[3]);
+            --  [newWorld[0] : c[0], c[1], c[2], newWorld[1]]
+           -- ) |
+           -- Write -> [c[0].tl, c[1], c[2], writeWorld (c[0].hd, c[3])] |
             Binop (s) -> [evalBinop (s, c[0].tl.hd, c[0].hd) : c[0].tl.tl, c[1], c[2], c[3]] |
             LD (x) -> [lookup (c[2], x) : c[0], c[1], c[2], c[3]] |
             LDA (x) -> [Ref (x) : c[0], c[1], c[2], c[3]] |
@@ -149,8 +150,25 @@ fun eval (env, w, insns) {
              -- case c[0] of
                -- hd : Ref(x) : tl -> [hd : tl, c[1], c[2] <- [x, hd], c[3]]
              -- esac |
+            STA ->
+              case c[0] of hd : value : ind : tl ->
+                hd[ind] := value;
+                [value : tl, c[1], c[2], c[3]]
+              esac |
             Const (n) -> [n : c[0], c[1], c[2], c[3]] |
             DROP -> [c[0].tl, c[1], c[2], c[3]] |
+            STRING (v) -> [v : c[0], c[1], c[2], c[3]] |
+            ARRAY (n) -> case take (c[0], n) of [tl, vs] ->
+                [listArray (vs) : tl.tl, c[1], c[2], c[3]]
+              esac |
+            ELEM -> case c[0] of ind : arr : tl ->
+                [arr[ind] : tl, c[1], c[2], c[3]]
+              esac |
+            BUILTIN (f, n) -> case take (c[0], n) of [stack, vals] ->
+              case evalBuiltin (f, vals, c[3]) of [value, world] ->
+                  [value : stack, c[1], c[2], world]
+                esac
+              esac |
             _ -> [c[0], c[1], c[2], c[3]]
         esac
       }
@@ -431,14 +449,20 @@ fun addVars (env, names) {
 
 
 public fun compileSM (stmt) {
-  getBuffer (compileAllExpr (stmt, initCompEnv ())[0])
+  var env = initCompEnv ();
+  env := foldl (addFun, beginScope (env), {
+      Fun ("read", {}),
+      Fun ("write", {"x"}),
+      Fun ("length", {"x"})
+  });
+  getBuffer (compileAllExpr (stmt, env)[0])
 }
 
 
 public fun compileAllExpr (expr, environment) {
   -- printf("4");
   fun compileAllExpr (stmt, env) {
-    -- printf("%s\n", stmt.string);
+     -- printf("1 %s\n", stmt.string);
     case stmt of
       Var (v) -> [singletonBuffer (LD (lookupVar (env, v))), env] |
       Const (c) -> [singletonBuffer (Const (c)), env] |
@@ -447,20 +471,32 @@ public fun compileAllExpr (expr, environment) {
         var comp1 = compileAllExpr (e1, env);
         var comp2 = compileAllExpr (e2, comp1[1]);
         [comp1[0] <+> comp2[0] <+> singletonBuffer (Binop (s)), comp2[1]] |
+
       Assn (s, e) ->
-        var comp1 = compileAllExpr(s, env);
-        var comp2 = compileAllExpr(e, comp1[1]);
-        [comp1[0] <+> comp2[0] <+ STI, comp2[1]] |
+        case s of
+          Ref (x) ->
+            var comp1 = compileAllExpr (e, env);
+            [comp1[0] <+ ST (lookupVar (comp1[1], x)), comp1[1]] |
+          ElemRef (arrE, indE) ->
+            var comp1 = compileAllExpr (indE, env);
+            var comp2 = compileAllExpr (e, comp1[1]);
+            var comp3 = compileAllExpr (arrE, comp2[1]);
+            [comp1[0] <+> comp2[0] <+> comp3[0] <+ STA, comp3[1]] |
+          _ ->
+            var comp1 = compileAllExpr(s, env);
+            var comp2 = compileAllExpr(e, comp1[1]);
+            [comp1[0] <+> comp2[0] <+ STI, comp2[1]]
+        esac |
       Seq (st1, st2) ->
         var comp1 = compileAllExpr (st1, env);
         var comp2 = compileAllExpr (st2, comp1[1]);
         [comp1[0] <+> comp2[0], comp2[1]] |
       Skip -> [emptyBuffer (), env] |
-      Read (s) -> [singletonBuffer (Read)
-        <+> singletonBuffer (ST (lookupVar(env, s))) <+ DROP, env] |
-      Write (e) ->
-        var comp = compileAllExpr (e, env);
-        [comp[0] <+> singletonBuffer (Write), comp[1]] |
+     -- Read (s) -> [singletonBuffer (Read)
+      --  <+> singletonBuffer (ST (lookupVar(env, s))) <+ DROP, env] |
+     -- Write (e) ->
+       -- var comp = compileAllExpr (e, env);
+       -- [comp[0] <+> singletonBuffer (Write), comp[1]] |
       While (c, s) ->
         case env.genLabels(2) of [l1, l2, newEnv] ->
           var newData = compileAllExpr (s, newEnv);
@@ -493,11 +529,17 @@ public fun compileAllExpr (expr, environment) {
           buffer := buffer <+> comp[0];
           argExprs := argExprs.tl
         od;
-        case lookupFun (env, fName) of Fun (fLabel, argsN) ->
-          buffer := buffer <+ CALL (fLabel, argsN)
+         case fName of
+          "read"   -> buffer := buffer <+ BUILTIN(fName, 0) |
+          "write"  -> buffer := buffer <+ BUILTIN(fName, 1) |
+          "length" -> buffer := buffer <+ BUILTIN(fName, 1) |
+          _ ->
+            case lookupFun (env, fName) of Fun (fLabel, argsN) ->
+              buffer := buffer <+ CALL (fLabel, argsN)
+            esac
         esac;
         [buffer, env] |
-      Scope(defs, expr) ->
+      Scope (defs, expr) ->
         var result;
         if size(defs) == 0 then
           compileAllExpr(expr, env)
@@ -510,13 +552,28 @@ public fun compileAllExpr (expr, environment) {
         fi |
       Fun(fLabel, args, body, fState) ->
         var bodyInsns;
-        env := addArgs(beginFun(env, fState), args);
+        env := addArgs (beginFun (env, fState), args);
         bodyInsns := compileAllExpr(body, env);
         [singletonBuffer(LABEL(fLabel)) <+ BEGIN (fLabel, size(args),
-          getLocals (bodyInsns[1])) <+> bodyInsns[0] <+ END, bodyInsns[1]]
+          getLocals (bodyInsns[1])) <+> bodyInsns[0] <+ END, bodyInsns[1]] |
+      Elem (arr, ind) ->
+        var comp1 = compileAllExpr (arr, env);
+        var comp2 = compileAllExpr (ind, comp1[1]);
+        [comp1[0] <+> comp2[0] <+ ELEM, comp2[1]] |
+      String (v) -> [singletonBuffer (STRING (v)), env] |
+      Array (exprs) ->
+        var comp;
+        var buffer = singletonBuffer (CONST (size (exprs)));
+        var ind = 0;
+        while size (exprs) > ind do
+          comp := compileAllExpr(exprs[ind], env);
+          env := comp[1];
+          buffer := buffer <+> comp[0];
+          ind := ind + 1
+        od;
+        [buffer <+ ARRAY (size (exprs))]
     esac
   }
-
   var comp = compileAllExpr (expr, environment);
   var mainWrap = singletonBuffer(LABEL("main")) <+ BEGIN("main", 0, getLocals (comp[1])) <+> comp[0] <+ END;
   var funs = getFuns (comp[1]);
