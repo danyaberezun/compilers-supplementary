@@ -33,9 +33,9 @@ public fun evalOp (op, l, r) {
   esac
 }
 
--- Evaluates an expression "expr" in a configuration "c".
--- A configuration is a pair of a state "s" and a world "w".
--- Returns a final configuration (if any)
+-- Evaluates an expression "expr" in a c "c".
+-- A c is a pair of a st "s" and a w "w".
+-- Returns a final c (if any)
 --
 -- A expression is represented by a data structure of the following shape:
 --
@@ -58,35 +58,35 @@ public fun evalOp (op, l, r) {
 --        Builtin (string, expr list)
 
 -- Helper function: checks that given name designates a regular variable in
--- a given state
-fun lookupVal (state, name) {
-  case state.lookup (name) of
+-- a given st
+fun lookupVal (st, name) {
+  case st.lookup (name) of
     x@Val (_) -> x
   | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
   esac
 }
 
 -- Helper function: checks that given name designates a function in
--- a given state
-fun lookupFun (state, name) {
-  case state.lookup (name) of
+-- a given st
+fun lookupFun (st, name) {
+  case st.lookup (name) of
     x@Fun (_, _) -> x
   | _            -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
   esac
 }
 
 -- Helper function: adds a bunch of regular variables current scope
-fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
+fun addNames (st, names) {
+  foldl (fun (s, name) {s.addName (name, Val (0))}, st, names)
 }
 
 -- Helper function: adds a function in current scope
-fun addFunction (state, name, args, body) {
-  state.addName (name, Fun (args, body))
+fun addFunction (st, name, args, body) {
+  st.addName (name, Fun (args, body))
 }
-                                        
+
 -- Evaluates a list of expressions, properly threading a configurations.
--- Returns the final configuration and the list of values
+-- Returns the final c and the list of values
 fun evalList (c, exprs) {
   case foldl (fun ([c, vals], e) {
                 case eval (c, e) of
@@ -99,8 +99,112 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun declerations(st, ds){
+  while size(ds) > 0 do
+    st := case ds[0] of
+           Var (x) -> addNames (st, x)
+         | Fun (name, args, body) -> addFunction (st, name, args, body)
+         esac;
+    ds := ds.tl
+  od;
+  st
+}
+
+fun argsDec (s, argsNames, args){
+  while size(args) >0 do
+    s := addName(s, argsNames[0], args[0]);
+    argsNames := argsNames.tl;
+    args := args.tl
+  od;
+  s
+}
+
+fun eval (c@[st, w], expr) {
+  case expr of
+    Const (v) -> [c, v]
+    | Var (x) ->  [c, lookup(st, x)]
+    | Ref (x) -> [c, Ref(x)]
+    | String(v) -> [c, v]
+    | Binop (op, l, r) ->
+          case eval (c, l) of [c1, lRes] ->
+          case eval (c1, r) of [c2, rRes] ->
+            [c2, evalOp (op, lRes, rRes)]
+          esac esac
+    | Assn (e1, e2) ->
+      case evalList(c, {e1, e2}) of
+        [c, {ElemRef(arr, index), v}] ->
+              arr[index] := v;
+              [c, v]
+        | [[st, w], {Ref(x), v}] ->
+          [[st <- [x, v], w], v]
+      esac
+
+    | Seq (e1, e2) -> case eval (c, e1) of
+                      [c1, _] -> eval (c1, e2)
+                    esac
+
+    | If (cond, trueExpr, falseExpr) ->
+        case eval (c, cond) of
+            [c1, 0] -> eval (c1, falseExpr)
+          | [c1, _] -> eval (c1, trueExpr)
+        esac
+
+    | While (cond, body) ->
+          case eval(c, cond) of
+            [c, 0] -> [c, {}]
+            | _ -> eval(eval(c, body)[0], expr)
+          esac
+
+    | DoWhile (body, cond) ->
+          case eval(eval(c, body)[0], cond) of
+            [c, 0] -> [c, {}]
+            |[c, _] -> eval(c, expr)
+          esac
+    | Scope (defs, expr) ->
+        st := enterScope (st);
+        st := declerations (st, defs);
+        case eval ([st,w], expr) of
+          [[st,w], r] -> [[leaveScope (st), w], r]
+        esac
+
+    | Call("read", _) ->
+      var rw = readWorld(w);
+      [[st, rw.snd], rw.fst]
+
+    | Call("write", expr) ->
+      case eval(c, expr[0]) of
+        [[st, w], v] -> [[st, writeWorld(v, w)], {}]
+      esac
+
+    | Call("length", expr) ->
+      case eval(c, expr[0]) of
+        [[st, w], v] -> [c, length(v)]
+      esac
+
+    | Call(n, args) ->
+      case lookup(st, n) of Fun(argNames, body) ->
+        var pst = st;
+        st := case evalList(c, args) of [[st, w], argValues] ->
+          st := enterFunction(st);
+          while size(argNames) > 0 do
+            st := addName(st, argNames.hd, argValues.hd);
+            argNames := argNames.tl;
+            argValues := argValues.tl
+          od; st
+        esac;
+        case eval([st, w], body) of [[st, w], ret] ->
+          st := leaveFunction(pst, getGlobal(st));
+          [[st, w], ret]
+        esac
+      esac
+
+    | Ignore (e) -> [eval(c, e)[0], {}]
+    | Skip -> [c, {}]
+    | Array  (exprs) -> case evalList (c, exprs) of [c, list] -> [c, listArray(list)] esac
+    | Elem    (expr, index) -> case evalList (c, {expr, index}) of [c, {arr, i}] -> [c, arr [i]] esac
+    | ElemRef (expr, index) -> case evalList (c, {expr, index}) of [c, {arr, i}] -> [c, ElemRef (arr, i)] esac
+    | _ -> failure ("Unknown expression '" ++ string(expr) ++ "' \n")
+  esac
 }
 
 
