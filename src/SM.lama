@@ -476,6 +476,71 @@ fun compileIgnore (Ignore (exp), lbState) {
   [compiledExpr.fst <+ DROP, compiledExpr.snd]
 }
 
+fun compileScope (Scope (defs, body), lbState) {
+  case foldl ( fun ([env, functions, global], def) {
+                 case def of
+                     Var (vars)            -> [addVars (lbState, vars), 
+                                                 functions, 
+                                                 listBuffer(if isGlobal(lbState) 
+                                                            then map (fun (v) {GLOBAL (v)}, vars) 
+                                                            else {} fi) <+> global] 
+                   | Fun (name, args, body)  -> 
+                     case genFunLabel (lbState, name) of
+                       [lab, lbState] -> [addFun(lbState, name, lab, args.size), [lab, args, body] : functions, global]
+                     esac
+                 esac
+               }, [beginScope(lbState), {}, emptyBuffer()], defs) 
+  of
+    [lbState,  functions, global] ->
+      var env = foldl ( fun (lbState, [lab, args, body]) 
+        {
+          rememberFun (lbState, lab, args, body)
+        }, lbState, functions);
+      var compiledBody = compileSMBuffer (body, env);
+      [global <+> compiledBody.fst, endScope(compiledBody.snd)]
+  esac
+}
+
+fun compileArgs (args, lbState) {
+  case args of
+      arg         -> compileSMBuffer (arg, lbState) 
+    | arg:argtail -> var compiledArg = compileSMBuffer (arg, lbState); 
+                     var compiledTail = compileArgs (argtail, compiledArg.snd);
+                     [compiledArg.fst <+> compiledTail.fst, compiledTail.snd]
+  esac
+}
+
+fun compileCall (Call (name, args), lbState) {
+  case args of
+      {}   -> case lookupFun (lbState, name) of
+                Fun (lab, argsize) -> [singletonBuffer (CALL (lab, argsize)), lbState]
+              esac
+    | args -> var compiledArgs = compileArgs(args, lbState);
+              case lookupFun (lbState, name) of
+                Fun (lab, argsize) -> [compiledArgs.fst <+ CALL (lab, argsize), compiledArgs.snd]
+              esac
+  esac
+}
+
+fun compileFunctions (env) {
+  fun iter (env, code, funclist) {
+    case funclist of
+    {}                                   -> case getFuns(env) of
+                                              [{}, env]    -> code
+                                            | [flist, env] -> iter (env, code, flist)
+                                            esac
+    | Fun (name, args, body, state):tail -> case compileSMBuffer (body) of
+                                              [fcode, env] -> iter (env, code 
+                                                                         <+ LABEL (name) 
+                                                                         <+ BEGIN (name, args.size, getLocals(env))
+                                                                         <+> fcode
+                                                                         <+ END,
+                                                                         tail)
+                                            esac
+    esac
+  }
+}
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
@@ -502,7 +567,18 @@ fun compileIgnore (Ignore (exp), lbState) {
 --    (use env.addArg).
 
 public fun compileSM (expr) {
-  getBuffer (compileSMBuffer (expr, initCompEnv ()).fst)
+  case initCompEnv ().genLabel of
+    [endLabel, lbState] -> 
+      case compileSMBuffer (expr, initCompEnv ()) of
+        [code, lbState] -> var func = compileFunctions (lbState); 
+                           getBuffer(
+                           singletonBuffer (LABEL ("main")) 
+                           <+ BEGIN ("main", 0, getLocals (lbState)) 
+                           <+> code 
+                           <+ END
+                           <+> func.fst)
+      esac
+  esac
 }
 
 public fun compileSMBuffer (expr, lbState) {
@@ -520,6 +596,8 @@ public fun compileSMBuffer (expr, lbState) {
   | Binop   (_, _, _) -> compileBinop     (expr, lbState)
   | Ref     (_)       -> compileRef       (expr, lbState)
   | Ignore  (_)       -> compileIgnore    (expr, lbState)
+  | Scope (_, _)      -> compileScope     (expr, lbState)
+  | Call (_, _)       -> compileCall      (expr, lbState)
   | _                 -> failure          ("Invalid compiling statement!")
   esac
 }
