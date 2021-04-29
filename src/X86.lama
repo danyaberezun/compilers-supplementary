@@ -435,7 +435,7 @@ fun stringDef ([name, vl]) {
 fun prologue (l) {
   singletonBuffer (Push (ebp)) <+
   Mov   (esp, ebp) <+> 
-  binop ("-", L (l * wordSize), esp)
+  binop ("-", L (l * wordSize), esp, false)
 }
 
 -- Generates function epilogue
@@ -505,7 +505,7 @@ fun set (suffix, x) {
   singletonBuffer (Mov (L (0), eax)) <+ Set (suffix, "al") <+ Mov (eax, x)
 }
 
-fun binop (op, x, y) {
+fun binop (op, x, y, prep) {
 
   var opMode =
     case op of
@@ -524,18 +524,26 @@ fun binop (op, x, y) {
     case op of
       "&&" -> LogPrep
     | "!!" -> LogPrep
-    | _    -> NoPrep
+    | _    -> FixnumPrep
     esac;
 
   case case opPrep of
     LogPrep -> [
         case x of
           L (n) -> [L (if n == 0 then 0 else 1 fi), emptyBuffer ()]
-        | _     -> [x, test (x) <+> set ("ne", x)]
+        | _     -> [x, move (x, eax) <+ Binop ("&&", L (-2), eax) <+> set ("ne", x)]
         esac, 
-        [y, test (y) <+> set ("ne", y)]
+        [y, move (y, eax) <+ Binop ("&&", L (-2), eax) <+> set ("ne", y)]
       ]
-  | NoPrep -> [[x, emptyBuffer ()], [y, emptyBuffer ()]]
+  | FixnumPrep -> 
+    fun fixnum (x) {
+      case [x, prep] of
+        [L (_), _] -> [x, emptyBuffer ()]
+      | [x, false] -> [x, emptyBuffer ()]
+      | _     -> [x, singletonBuffer (Sar1 (x))]
+      esac
+    }
+    [fixnum (x), fixnum (y)]
   esac of [[x, code0], [y, code1]] -> code0 <+> code1 <+>
     case opMode of
       OpSum -> case [x, y, op] of
@@ -565,8 +573,8 @@ fun binop (op, x, y) {
 
 fun test (x) {
   case x of
-    R (n) -> singletonBuffer (Binop ("test", x, x))
-  | _     -> binop ("cmp", L (0), x)
+    R (n) -> singletonBuffer (Binop ("test", L (-2), x))
+  | _     -> binop ("cmp", L (0), x, true)
   esac
 }
 
@@ -586,11 +594,17 @@ fun toFixedNum (r) {
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
   fun compileCall (env, code, f, n, t, fa) {
+    fun condFix (x) {
+      case x of
+        L (n) -> L (makeBox (n))
+      | x -> x
+      esac
+    }
     case [t, getNArgs (env) >= n] of
       [Tail, true] ->
         for var i; i := 0, i < n, i := i + 1 do
           var temp = pop (env);
-          code := code <+> move (temp [0], A (n - i - 1));
+          code := code <+> move (condFix (temp [0]), A (n - i - 1));
           env := temp [1]
         od;
         [allocate (env) [1], code <+ Leave <+ Jmp (f)]
@@ -599,14 +613,14 @@ fun compile (env, code) {
           var call = emptyBuffer ();
           for var i; i := 0, i < n, i := i + 1 do
             var temp = pop (env);
-            call := call <+ Push (temp [0]);
+            call := call <+ Push (condFix (temp [0]));
             env := temp [1]
           od;
           for var l; l := fa, size (fa), fa := fa.tl do
-            call := call <+ Push (L (l.hd))
+            call := call <+ Push (L (makeBox (l.hd)))
           od;
           env := registerNArgs (env, n + size (fa));
-          call <+ Call (f) <+> binop ("+", L (n * wordSize), esp)
+          call <+ Call (f) <+> binop ("+", L (n * wordSize), esp, false)
         ) of call ->
         case altPeek (env) of ss ->
         case allocate (env) of [s, env] ->
@@ -622,30 +636,33 @@ fun compile (env, code) {
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of
-        CONST (n) -> case allocate (env) of [s, env] -> [env, code <+> move (L (n), s)] esac
+        CONST (n) -> case allocate (env) of [s, env] -> [env, code <+> move (L (makeBox (n)), s)] esac
       | IMM (n) -> [push (env, L (n)), code]
       | LD (x) ->
           case allocate (env) of
             [s, env] -> [env, code <+> move (loc (env, x), s)]
           esac
-      | ST (x) -> [env, code <+> move (peek (env), loc (env, x))]
+      | ST (x) -> case peek (env) of
+                    L (n) -> [env, code <+> move (L (makeBox (n)), loc (env, x))]
+                  | s     -> [env, code <+> move (s, loc (env, x))]
+                  esac
       | BINOP (op) ->
           case pop2 (env) of [x, y, env] -> 
             case case [x, y, allocate (env)] of
-              [L (m), L (n), [s, env]] -> [env, move (y, s), x, s]
-            | [x,     L (n), [s, env]] -> case allocate (env) of [xx, env] -> [pop (env).snd, move (x, xx) <+> move (y, s), xx, s] esac
+              [L (m), L (n), [s, env]] -> [env, move (L (makeBox (n)), s), x, s]
+            | [x,     L (n), [s, env]] -> case allocate (env) of [xx, env] -> [pop (env).snd, move (x, xx) <+> move (L (makeBox (n)), s), xx, s] esac
             | [x,     y,     [s, env]] -> [env, emptyBuffer (), x, s]
             esac of [env, normCode, x, r] -> [env, code <+>
                 case suffix (op) of
-                  NotCmp         -> normCode <+> binop (op, x, r)
+                  NotCmp         -> normCode <+> binop (op, x, r, true)
                 | EZCmp (suffix) -> case [x, y] of
                         [L (n), L (m)] -> move (L (if (n == m) == (compare (op, "==") == 0) then 1 else 0 fi), r)
                       | [L (0), _]     -> test (y) <+> set (suffix, r)
                       | [_, L (0)]     -> test (x) <+> set (suffix, r)
-                      | _              -> normCode <+> binop ("cmp", x, r) <+> set (suffix, r)
+                      | _              -> normCode <+> binop ("cmp", x, r, true) <+> set (suffix, r)
                     esac
-                | suffix         -> normCode <+> binop ("cmp", x, r) <+> set (suffix, r) 
-                esac
+                | suffix         -> normCode <+> binop ("cmp", x, r, true) <+> set (suffix, r) 
+                esac <+> toFixedNum (r) 
             ] esac
           esac
       | LABEL (l) -> [if isBarrier (env) then retrieveStack (env, l) else env fi, code <+ Label (l)]
@@ -683,7 +700,7 @@ fun compile (env, code) {
                   esac
                 esac esac
       | CALL (f, n, t) -> compileCall (env, code, f, n, t, {})
-      | BUILTIN (f, n) -> compileCall (env, code, "B" ++ f, n, Just, {})
+      | BUILTIN (_, label, n) -> compileCall (env, code, label, n, Just, {})
       | ARRAY (n) -> compileCall (env, code, "Barray", n, Just, {n})
       | ELEM -> compileCall (env, code, "Belem", 2, Just, {})
       | STA -> compileCall (env, code, "Bsta", 3, Just, {})

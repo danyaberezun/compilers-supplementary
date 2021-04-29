@@ -20,7 +20,7 @@ typedef struct {
   char contents[0];
 } data; 
 
-int Blength (void *p) {
+int Llength (void *p) {
   data *a = TO_DATA(p);
   return BOX(LEN(a->tag));
 }
@@ -82,11 +82,11 @@ void* Bsta (void *x, int i, void *v) {
   return v;
 }
 
-void Bwrite (int x) {
+void Lwrite (int x) {
   printf ("%d\n", UNBOX (x));
 }
 
-int Bread () {
+int Lread () {
   int result;
 
   scanf  ("%d", &result);
