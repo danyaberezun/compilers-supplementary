@@ -32,6 +32,7 @@ int Llength (void *p) {
   return BOX(LEN(a->tag));
 }
 
+// bn - args number (valuesN+1tag); ... - values + tag
 extern void* Bsexp (int bn, ...) {
   va_list args; 
   int     i;    
