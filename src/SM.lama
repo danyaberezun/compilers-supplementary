@@ -72,82 +72,6 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
-fun evalRead ([stack, state, world], READ) {
-  var readRes = readWorld (world);
-  [[readRes[0]:stack, state, readRes[1]], Next]
-}
-
-fun evalWrite ([value:stack, state, world], WRITE) {
-  [[stack, state, writeWorld (value, world)], Next]
-}
-
-fun evalBinop ([r:l:stack, state, world], BINOP (op)) {
-  [[(evalOp (op, l, r)):stack, state, world], Next]
-}
-
-fun evalLD ([stack, state, world], LD (x)) {
-  [[state (x):stack, state, world], Next]
-}
-
-fun evalST ([value:stack, st, w], ST (variable)) {
-  [[value:stack, st <- [variable, value], w], Next]
-}
-
-fun evalConst ([stack, state, world], CONST (value)) {
-  [[value:stack, state, world], Next]
-}
-
-fun evalJump (conf, JMP (l))
-{
-    [conf, Next(l)]
-}
-
-fun evalCJump ([value:stack, state, world], CJMP (c, l))
-{
-    case c of
-        "z"  -> if value == 0 then [[stack, state, world], Next(l)] else [[stack, state, world], Next] fi 
-      | "nz" -> if value != 0 then [[stack, state, world], Next(l)] else [[stack, state, world], Next] fi
-    esac
-}
-
-fun evalLDA ([stack, st, w], LDA (x)) 
-{
-  [[x:stack, st, w], Next]
-}
-
-fun evalSTI ([v:x:stack, st, w], STI)
-{
-  [[v:stack, st <- [x, v], w], Next]
-}
-
-fun evalDUP ([v:stack, st, w], DUP)
-{
-  [[v:v:stack, st, w], Next]
-}
-
-fun evalDrop ([v:stack, st, w], DROP)
-{
-  [[stack, st, w], Next]
-}
-
-fun evalSingleIns(conf, i) {
-    case i of
-      READ         -> evalRead     (conf, i)
-    | WRITE        -> evalWrite    (conf, i)
-    | BINOP (s)    -> evalBinop    (conf, i)
-    | LD    (x)    -> evalLD       (conf, i)
-    | ST    (x)    -> evalST       (conf, i)
-    | CONST (n)    -> evalConst    (conf, i)
-    | LABEL (s)    -> [conf, Next]
-    | JMP   (l)    -> evalJump     (conf, i)
-    | CJMP  (c, l) -> evalCJump    (conf, i)
-    | LDA   (x)    -> evalLDA      (conf, i)
-    | STI          -> evalSTI      (conf, i)
-    | DUP          -> evalDUP      (conf, i)
-    | DROP         -> evalDrop     (conf, i)
-    | _            -> failure      ("Invalid instruction!")
-    esac
-}
 -- Stack machine interpreter. Takes an environment, a world and a program,
 -- returns a final output
 fun eval (env, w, insns) {
@@ -179,7 +103,7 @@ fun eval (env, w, insns) {
     esac
   }
 
-  -- Takes n positions from the list, retursn a pair: the remaining list and the taken
+  -- Takes n positions from the list, returns a pair: the remaining list and the taken
   -- sublist
   fun take (list, n) {
     fun inner (n, acc, list) {
@@ -194,18 +118,77 @@ fun eval (env, w, insns) {
 
   -- Core interpreter: takes a configuration and a program, returns a configuration
   (* Assignment *)
-  fun eval (c@[st, cst, s, w], insns) {
+  fun eval (c@[stack, callstack, state, world], insns) {
+    --printf(insns.string);
     case insns of
-      {}       -> c
-    | i:tail -> (
-        var result = evalSingleIns (c, i);
-        case result.snd of
-            Next         -> eval (env, result.fst, tail)
-          | Next (label) -> eval (env, result.fst, fromLabel (env, label))
+      {}                           -> c
+    | JMP  (label) : _             -> eval (c, fromLabel (env, label))
+    | CJMP (cond, label) : insns   -> 
+        case stack of
+          v:stack -> case cond of
+            "z"  -> if v == 0 then eval ([stack, callstack, state, world], fromLabel (env, label)) else eval ([stack, callstack, state, world], insns) fi 
+          | "nz" -> if v != 0 then eval ([stack, callstack, state, world], fromLabel (env, label)) else eval ([stack, callstack, state, world], insns) fi
+          esac
         esac
-      )
+    | CALL (flabel, nargs) : insns -> eval ([stack, [state, insns] : callstack, state, world], fromLabel (env, flabel))
+    | END : insns                  -> 
+        case callstack of
+          {}                       -> c
+        | [prevstate, insns]:tail  -> eval ([stack, tail, prevstate, world], insns)
+        esac
+    | i : insns                    -> 
+      eval (
+        case i of
+          READ                        -> var readRes = readWorld (world); [readRes[0]:stack, callstack, state, readRes[1]]
+        | WRITE                       -> 
+            case stack of
+              v:stack -> [stack, callstack, state, writeWorld (v, world)]
+            esac
+        | BINOP (op)                  -> 
+            case stack of
+              r:l:stack -> [(evalOp (op, l, r)):stack, callstack, state, world]
+            esac
+        | LD    (x)                   -> [lookup (state, x):stack, callstack, state, world]
+        | ST    (variable)            ->
+            case stack of
+              v:_ ->
+                assign (state, variable, v);
+                [stack, callstack, state, world]
+            esac
+        | CONST (value)               -> [value:stack, callstack, state, world]
+        | LABEL (_)                   -> c
+        | LDA   (x)                   -> [Ref (x):stack, callstack, state, world]
+        | STI                         -> 
+            case stack of
+              v:Ref (x):stack ->
+                assign (state, x, v);
+                [v:stack, callstack, state, world]
+            esac
+        | DUP                         -> 
+            case stack of
+              v:stack -> [v:v:stack, callstack, state, world]
+            esac
+        | DROP                        -> 
+            case stack of
+              {}      -> [{}, callstack, state, world]
+            | v:stack -> [stack, callstack, state, world]
+            esac
+        | BEGIN (name, nargs, nlocal) -> 
+            case take (stack, nargs) of
+              [stack, args] -> 
+                var localSt = makeState (nargs, nlocal);
+                foldl (fun (i, arg) {assign (localSt, Arg (i), arg); i+1}, 0, args);
+                [stack, callstack, localSt, world]
+            esac
+        | GLOBAL (x)                  -> 
+            assign (state, Glb (x), 0);
+            [stack, callstack, state, world]
+        | _                           -> failure      ("Invalid instruction!")
+        esac
+      , insns)
     esac
   }
+  --printf("%s", insns.string);
   eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
 }
 
@@ -406,45 +389,52 @@ fun addVars (env, names) {
   foldl (fun (env, name) {addVar (env, name)}, env, names)
 }
 
-fun compileVar (Var (variable), lbState) {
-  [singletonBuffer (LD (variable)), lbState]
+fun compileVar (Var (variable), env) {
+  --printf("Var\n");
+  [singletonBuffer (LD (lookupVar (env, variable))), env]
 }
 
-fun compileConst (Const (n), lbState) {
-  [singletonBuffer (CONST (n)), lbState]
+fun compileConst (Const (n), env) {
+  --printf("Const\n");
+  [singletonBuffer (CONST (n)), env]
 }
 
-fun compileBinop(Binop (op, expr1, expr2), lbState) {
-  var leftCompiled = compileSMBuffer(expr1, lbState);
+fun compileBinop(Binop (op, expr1, expr2), env) {
+  var leftCompiled = compileSMBuffer(expr1, env);
   var rightCompiled = compileSMBuffer(expr2, leftCompiled.snd);
+  --printf("Binop\n");
   [leftCompiled.fst <+> rightCompiled.fst <+ BINOP (op), rightCompiled.snd]
 }
 
 
-fun compileAssn (Assn (ref, expr), lbState) {
-  var refCompiled = compileSMBuffer (ref, lbState);
+fun compileAssn (Assn (ref, expr), env) {
+  var refCompiled = compileSMBuffer (ref, env);
   var expCompiled = compileSMBuffer (expr, refCompiled.snd);
+  --printf("Assn\n");
   [refCompiled.fst <+> expCompiled.fst <+ STI, expCompiled.snd]
 }
 
-fun compileSeq (Seq (stmt1, stmt2), lbState) {
-  var leftCompiled = compileSMBuffer(stmt1, lbState);
+fun compileSeq (Seq (stmt1, stmt2), env) {
+  var leftCompiled = compileSMBuffer(stmt1, env);
   var rightCompiled = compileSMBuffer(stmt2, leftCompiled.snd);
+  --printf("Seq\n");
   [leftCompiled.fst <+> rightCompiled.fst, rightCompiled.snd]
 }
 
-fun compileRead (Read (Ref (variable)), lbState) {
-  [listBuffer({READ, ST (variable), DROP}), lbState]
+fun compileRead (Read (Ref (variable)), env) {
+  --printf("Read\n");
+  [listBuffer({READ, ST (lookupVar (env, variable)), DROP}), env]
 }
 
-fun compileWrite (Write (expr), lbState) {
-  case compileSMBuffer (expr, lbState) of
-    [cmds, st] -> [cmds <+ WRITE, st]
+fun compileWrite (Write (expr), env) {
+  --printf("Write\n");
+  case compileSMBuffer (expr, env) of
+    [cmds, st] -> [cmds <+ WRITE <+ CONST(0), st]
   esac
 }
 
-fun compileIf (If (cond, thenExpr, elseExpr), lbState) {
-  var elseLab = genLabel (lbState);
+fun compileIf (If (cond, thenExpr, elseExpr), env) {
+  var elseLab = genLabel (env);
   var endLab = genLabel (elseLab.snd);
   var condCompiled = compileSMBuffer (cond, endLab.snd);
   var thenCompiled = compileSMBuffer (thenExpr, condCompiled.snd);
@@ -452,71 +442,76 @@ fun compileIf (If (cond, thenExpr, elseExpr), lbState) {
   [condCompiled.fst <+ CJMP ("z", elseLab.fst) <+> thenCompiled.fst <+ JMP(endLab.fst) <+ LABEL (elseLab.fst) <+> elseCompiled.fst <+ LABEL (endLab.fst), elseCompiled.snd] 
 }
 
-fun compileWhile (While (cond, expr), lbState) {
-  var beginLab = genLabel (lbState);
+fun compileWhile (While (cond, expr), env) {
+  var beginLab = genLabel (env);
   var endLab = genLabel (beginLab.snd);
   var condCompiled = compileSMBuffer (cond, endLab.snd);
   var bodyCompiled = compileSMBuffer (expr, condCompiled.snd);
   [singletonBuffer (LABEL (beginLab.fst)) <+> condCompiled.fst <+ CJMP ("z", endLab.fst) <+> bodyCompiled.fst <+ JMP (beginLab.fst) <+ LABEL (endLab.fst), bodyCompiled.snd]
 }
 
-fun compileDoWhile (DoWhile (expr, cond), lbState) {
-  var beginLab = genLabel (lbState);
+fun compileDoWhile (DoWhile (expr, cond), env) {
+  var beginLab = genLabel (env);
   var condCompiled = compileSMBuffer (cond, beginLab.snd);
   var bodyCompiled = compileSMBuffer (expr, condCompiled.snd);
   [singletonBuffer (LABEL (beginLab.fst)) <+> bodyCompiled.fst <+> condCompiled.fst <+ CJMP ("nz", beginLab.fst), bodyCompiled.snd]
 }
 
-fun compileRef (Ref (ref), lbState) {
-  [singletonBuffer (LDA (ref)), lbState]
+fun compileRef (Ref (x), env) {
+  [singletonBuffer (LDA (lookupVar (env, x))), env]
 }
 
-fun compileIgnore (Ignore (exp), lbState) {
-  var compiledExpr = compileSMBuffer (exp, lbState);
+fun compileIgnore (Ignore (exp), env) {
+  var compiledExpr = compileSMBuffer (exp, env);
+  --printf("Ignore\n");
   [compiledExpr.fst <+ DROP, compiledExpr.snd]
 }
 
-fun compileScope (Scope (defs, body), lbState) {
+fun compileScope (Scope (defs, body), env) {
+  --printf("Scope\n");
   case foldl ( fun ([env, functions, global], def) {
                  case def of
-                     Var (vars)            -> [addVars (lbState, vars), 
+                     Var (vars)              -> [addVars (env, vars), 
                                                  functions, 
-                                                 listBuffer(if isGlobal(lbState) 
+                                                 listBuffer(if isGlobal(env) 
                                                             then map (fun (v) {GLOBAL (v)}, vars) 
                                                             else {} fi) <+> global] 
                    | Fun (name, args, body)  -> 
-                     case genFunLabel (lbState, name) of
-                       [lab, lbState] -> [addFun(lbState, name, lab, args.size), [lab, args, body] : functions, global]
+                     case genFunLabel (env, name) of
+                       [lab, env] -> [addFun(env, name, lab, args.size), [lab, args, body] : functions, global]
                      esac
                  esac
-               }, [beginScope(lbState), {}, emptyBuffer()], defs) 
+               }, [beginScope(env), {}, emptyBuffer()], defs) 
   of
-    [lbState,  functions, global] ->
-      var env = foldl ( fun (lbState, [lab, args, body]) 
+    [env,  functions, global] ->
+      var newenv = foldl ( fun (env, [lab, args, body]) 
         {
-          rememberFun (lbState, lab, args, body)
-        }, lbState, functions);
-      var compiledBody = compileSMBuffer (body, env);
+          rememberFun (env, lab, args, body)
+        }, env, functions);
+      var compiledBody = compileSMBuffer (body, newenv);
       [global <+> compiledBody.fst, endScope(compiledBody.snd)]
   esac
 }
 
-fun compileArgs (args, lbState) {
+fun compileArgs (args, env) {
+  --printf("Args\n");
   case args of
-      arg         -> compileSMBuffer (arg, lbState) 
-    | arg:argtail -> var compiledArg = compileSMBuffer (arg, lbState); 
+
+      {}          -> [emptyBuffer(), env] 
+    | arg:argtail -> var compiledArg = compileSMBuffer (arg, env); 
                      var compiledTail = compileArgs (argtail, compiledArg.snd);
                      [compiledArg.fst <+> compiledTail.fst, compiledTail.snd]
   esac
 }
 
-fun compileCall (Call (name, args), lbState) {
+fun compileCall (Call (name, args), env) {
+  --printf("Call\n");
   case args of
-      {}   -> case lookupFun (lbState, name) of
-                Fun (lab, argsize) -> [singletonBuffer (CALL (lab, argsize)), lbState]
+      {}   -> case lookupFun (env, name) of
+                Fun (lab, argsize) -> [singletonBuffer (CALL (lab, argsize)), env]
               esac
-    | args -> var compiledArgs = compileArgs(args, lbState);
-              case lookupFun (lbState, name) of
+    | args -> var compiledArgs = compileArgs(args, env);
+              case lookupFun (compiledArgs.snd, name) of
                 Fun (lab, argsize) -> [compiledArgs.fst <+ CALL (lab, argsize), compiledArgs.snd]
               esac
   esac
@@ -529,7 +524,7 @@ fun compileFunctions (env) {
                                               [{}, env]    -> code
                                             | [flist, env] -> iter (env, code, flist)
                                             esac
-    | Fun (name, args, body, state):tail -> case compileSMBuffer (body) of
+    | Fun (name, args, body, state):tail -> case compileSMBuffer (body, addArgs(beginFun (env, state), args)) of
                                               [fcode, env] -> iter (env, code 
                                                                          <+ LABEL (name) 
                                                                          <+ BEGIN (name, args.size, getLocals(env))
@@ -539,6 +534,8 @@ fun compileFunctions (env) {
                                             esac
     esac
   }
+  --printf("Functions\n");
+  iter (env, {}, {})
 }
 
 -- Compiles an expression into a stack machine code.
@@ -567,38 +564,36 @@ fun compileFunctions (env) {
 --    (use env.addArg).
 
 public fun compileSM (expr) {
-  case initCompEnv ().genLabel of
-    [endLabel, lbState] -> 
-      case compileSMBuffer (expr, initCompEnv ()) of
-        [code, lbState] -> var func = compileFunctions (lbState); 
-                           getBuffer(
-                           singletonBuffer (LABEL ("main")) 
-                           <+ BEGIN ("main", 0, getLocals (lbState)) 
-                           <+> code 
-                           <+ END
-                           <+> func.fst)
-      esac
+  case compileSMBuffer (expr, initCompEnv ()) of
+    [code, env] -> var func = compileFunctions (env); 
+                   getBuffer(
+                       singletonBuffer (LABEL ("main")) 
+                       <+ BEGIN ("main", 0, getLocals (env)) 
+                       <+> code 
+                       <+ END
+                       <+> func)
   esac
 }
 
-public fun compileSMBuffer (expr, lbState) {
+public fun compileSMBuffer (expr, env) {
+  --printf("%s\n", expr.string);
   case expr of
-    Skip              -> [emptyBuffer (), lbState]
-  | Assn    (_, _)    -> compileAssn      (expr, lbState)
-  | Seq     (_, _)    -> compileSeq       (expr, lbState)
-  | Read    (_)       -> compileRead      (expr, lbState)
-  | Write   (_)       -> compileWrite     (expr, lbState)
-  | If      (_, _, _) -> compileIf        (expr, lbState)
-  | While   (_, _)    -> compileWhile     (expr, lbState)
-  | DoWhile (_, _)    -> compileDoWhile   (expr, lbState)
-  | Var     (_)       -> compileVar       (expr, lbState)
-  | Const   (_)       -> compileConst     (expr, lbState)
-  | Binop   (_, _, _) -> compileBinop     (expr, lbState)
-  | Ref     (_)       -> compileRef       (expr, lbState)
-  | Ignore  (_)       -> compileIgnore    (expr, lbState)
-  | Scope (_, _)      -> compileScope     (expr, lbState)
-  | Call (_, _)       -> compileCall      (expr, lbState)
-  | _                 -> failure          ("Invalid compiling statement!")
+    Skip              -> [emptyBuffer (), env]
+  | Assn    (_, _)    -> compileAssn      (expr, env)
+  | Seq     (_, _)    -> compileSeq       (expr, env)
+  | Read    (_)       -> compileRead      (expr, env)
+  | Write   (_)       -> compileWrite     (expr, env)
+  | If      (_, _, _) -> compileIf        (expr, env)
+  | While   (_, _)    -> compileWhile     (expr, env)
+  | DoWhile (_, _)    -> compileDoWhile   (expr, env)
+  | Var     (_)       -> compileVar       (expr, env)
+  | Const   (_)       -> compileConst     (expr, env)
+  | Binop   (_, _, _) -> compileBinop     (expr, env)
+  | Ref     (_)       -> compileRef       (expr, env)
+  | Ignore  (_)       -> compileIgnore    (expr, env)
+  | Scope (_, _)      -> compileScope     (expr, env)
+  | Call (_, _)       -> compileCall      (expr, env)
+  | _                 -> failure          ("Invalid compiling statement: %s", expr.string)
   esac
 }
 (* End *)
