@@ -3,6 +3,10 @@
 # include <stdarg.h>
 # include <string.h>
 
+# define UNBOXED(x)  (((int) (x)) &  0x0001)
+# define UNBOX(x)    (((int) (x)) >> 1)
+# define BOX(x)      ((((int) (x)) << 1) | 0x0001)
+
 # define STRING_TAG  0x00000001
 # define ARRAY_TAG   0x00000003
 
@@ -18,10 +22,11 @@ typedef struct {
 
 int Llength (void *p) {
   data *a = TO_DATA(p);
-  return LEN(a->tag);
+  return BOX(LEN(a->tag));
 }
 
-void* Barray (int n, ...) {
+void* Barray (int n0, ...) {
+  int     n = UNBOX(n0);
   va_list args; 
   int     i, ai; 
   data    *r; 
@@ -53,26 +58,32 @@ void* Bstring (void *p) {
   return s->contents;
 }
 
-void* Belem (void *p, int i) {
+void* Belem (void *p, int i0) {
+  int i = UNBOX(i0);
   data *a = TO_DATA(p);
   
   if (TAG(a->tag) == STRING_TAG) {
-    return (void*) a->contents[i];
+    return (void*) BOX(a->contents[i]);
   }
   
   return (void*) ((int*) a->contents)[i];
 }
 
-void* Bsta (int i, void *v, void *x) {
-  if (TAG(TO_DATA(x)->tag) == STRING_TAG)
-    ((char*) x)[i] = (char) v;
-  else ((int*) x)[i] = (int) v;
+void* Bsta (void *x, int i, void *v) {
+  if (UNBOXED(i)) {
+    if (TAG(TO_DATA(x)->tag) == STRING_TAG)((char*) x)[UNBOX(i)] = (char) UNBOX(v);
+    else ((int*) x)[UNBOX(i)] = (int) v;
+
+    return v;
+  }
+
+  * (void**) x = v;
 
   return v;
 }
 
 void Lwrite (int x) {
-  printf ("%d\n", x);
+  printf ("%d\n", UNBOX (x));
 }
 
 int Lread () {
@@ -80,5 +91,6 @@ int Lread () {
 
   scanf  ("%d", &result);
 
-  return result;
+  return BOX(result);
 }
+
