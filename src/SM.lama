@@ -122,7 +122,6 @@ fun eval (env, w, insns) {
 
   -- Core interpreter: takes a configuration and a program, returns a configuration
   fun eval (c@[stack, callstack, state, world], insns) {
-    --printf(insns.string);
     case insns of
       {}                           -> c
     | JMP  (label) : _             -> eval (c, fromLabel (env, label))
@@ -140,12 +139,15 @@ fun eval (env, w, insns) {
         | [prevstate, insns]:tail  -> eval ([stack, tail, prevstate, world], insns)
         esac
     | i : insns                    -> 
+      --printf("%s\n", i.string);
       eval (
         case i of
-          READ                        -> var readRes = readWorld (world); [readRes[0]:stack, callstack, state, readRes[1]]
-        | WRITE                       -> 
-            case stack of
-              v:stack -> [stack, callstack, state, writeWorld (v, world)]
+          BUILTIN (name, nargs)       -> 
+            case take (stack, nargs) of
+              [stack, args] -> 
+                case evalBuiltin (name, args, world) of
+                  [result, world] -> [result:stack, callstack, state, world]
+                esac
             esac
         | BINOP (op)                  -> 
             case stack of
@@ -186,6 +188,21 @@ fun eval (env, w, insns) {
         | GLOBAL (x)                  -> 
             assign (state, Glb (x), 0);
             [stack, callstack, state, world]
+        | ARRAY (n)                   ->
+          case take (stack, n) of
+            [size:stack, values] -> [listArray(values) : stack, callstack, state, world]
+          esac
+        | ELEM                        ->
+          case stack of
+            index:arr:stack -> [arr[index] : stack, callstack, state, world]
+          esac
+        | STA                         ->
+          case stack of
+            arr:value:index:stack ->
+              arr[index] := value;
+              [value : stack, callstack, state, world]
+          esac
+        | STRING (value)              -> [value:stack, callstack, state, world]
         | _                           -> failure      ("Invalid instruction!")
         esac
       , insns)
@@ -391,50 +408,40 @@ fun addVars (env, names) {
   foldl (fun (env, name) {addVar (env, name)}, env, names)
 }
 
-}
-
 fun compileVar (Var (variable), env) {
-  --printf("Var\n");
   [singletonBuffer (LD (lookupVar (env, variable))), env]
 }
 
 fun compileConst (Const (n), env) {
-  --printf("Const\n");
   [singletonBuffer (CONST (n)), env]
 }
 
 fun compileBinop(Binop (op, expr1, expr2), env) {
-  var leftCompiled = compileSMBuffer(expr1, env);
-  var rightCompiled = compileSMBuffer(expr2, leftCompiled.snd);
-  --printf("Binop\n");
-  [leftCompiled.fst <+> rightCompiled.fst <+ BINOP (op), rightCompiled.snd]
+  case compileList ({expr1, expr2}, env) of
+    [code, env] -> [code <+ BINOP (op), env]
+  esac
 }
 
 
 fun compileAssn (Assn (ref, expr), env) {
-  var refCompiled = compileSMBuffer (ref, env);
-  var expCompiled = compileSMBuffer (expr, refCompiled.snd);
-  --printf("Assn\n");
-  [refCompiled.fst <+> expCompiled.fst <+ STI, expCompiled.snd]
+  case ref of 
+    ElemRef (arr, index) ->
+      case compileList ({index, expr, arr}, env) of
+        [code, env] -> [code <+ STA, env]
+      esac
+  | Ref (x) ->
+      case compileSMBuffer (expr, env) of
+        [code, env] -> [code <+ ST (lookupVar (env, x)), env]
+      esac
+  | _ ->
+      case compileList ({ref, expr}, env) of
+        [code, env] -> [code <+ STI, env]
+      esac
+   esac
 }
 
-fun compileSeq (Seq (stmt1, stmt2), env) {
-  var leftCompiled = compileSMBuffer(stmt1, env);
-  var rightCompiled = compileSMBuffer(stmt2, leftCompiled.snd);
-  --printf("Seq\n");
-  [leftCompiled.fst <+> rightCompiled.fst, rightCompiled.snd]
-}
-
-fun compileRead (Read (Ref (variable)), env) {
-  --printf("Read\n");
-  [listBuffer({READ, ST (lookupVar (env, variable)), DROP}), env]
-}
-
-fun compileWrite (Write (expr), env) {
-  --printf("Write\n");
-  case compileSMBuffer (expr, env) of
-    [cmds, st] -> [cmds <+ WRITE <+ CONST(0), st]
-  esac
+fun compileSeq (Seq (expr1, expr2), env) {
+  compileList ({expr1, expr2}, env)
 }
 
 fun compileIf (If (cond, thenExpr, elseExpr), env) {
@@ -462,17 +469,17 @@ fun compileDoWhile (DoWhile (expr, cond), env) {
 }
 
 fun compileRef (Ref (x), env) {
+  --printf ("%s\n", env.string);
   [singletonBuffer (LDA (lookupVar (env, x))), env]
 }
 
 fun compileIgnore (Ignore (exp), env) {
-  var compiledExpr = compileSMBuffer (exp, env);
-  --printf("Ignore\n");
-  [compiledExpr.fst <+ DROP, compiledExpr.snd]
+  case compileSMBuffer (exp, env) of
+    [code, env] -> [code <+ DROP, env]
+  esac
 }
 
 fun compileScope (Scope (defs, body), env) {
-  --printf("Scope\n");
   case foldl ( fun ([env, functions, global], def) {
                  case def of
                      Var (vars)              -> [addVars (env, vars), 
@@ -488,36 +495,36 @@ fun compileScope (Scope (defs, body), env) {
                }, [beginScope(env), {}, emptyBuffer()], defs) 
   of
     [env,  functions, global] ->
-      var newenv = foldl ( fun (env, [lab, args, body]) 
+      case compileSMBuffer (body, foldl ( fun (env, [lab, args, body]) 
         {
           rememberFun (env, lab, args, body)
-        }, env, functions);
-      var compiledBody = compileSMBuffer (body, newenv);
-      [global <+> compiledBody.fst, endScope(compiledBody.snd)]
+        }, env, functions)) of
+        [code, env] -> [global <+> code, endScope(env)]
+      esac
   esac
 }
 
-fun compileArgs (args, env) {
-  --printf("Args\n");
-  case args of
-
-      {}          -> [emptyBuffer(), env] 
-    | arg:argtail -> var compiledArg = compileSMBuffer (arg, env); 
-                     var compiledTail = compileArgs (argtail, compiledArg.snd);
-                     [compiledArg.fst <+> compiledTail.fst, compiledTail.snd]
-  esac
+fun compileList (list, env) {
+  foldl(fun ([code, env], elem) 
+  {
+    case compileSMBuffer (elem, env) of
+      [elemcode, env] -> [code <+> elemcode, env]
+    esac
+  }, [emptyBuffer(), env], list)
 }
 
 fun compileCall (Call (name, args), env) {
-  --printf("Call\n");
-  case args of
-      {}   -> case lookupFun (env, name) of
-                Fun (lab, argsize) -> [singletonBuffer (CALL (lab, argsize)), env]
-              esac
-    | args -> var compiledArgs = compileArgs(args, env);
-              case lookupFun (compiledArgs.snd, name) of
-                Fun (lab, argsize) -> [compiledArgs.fst <+ CALL (lab, argsize), compiledArgs.snd]
-              esac
+  case compileList (args, env) of
+    [argcode, env] ->
+      case name of
+        "read"   -> [argcode <+ BUILTIN (name, 0), env]
+      | "write"  -> [argcode <+ BUILTIN (name, 1), env]
+      | "length" -> [argcode <+ BUILTIN (name, 1), env]
+      | _        -> 
+        case lookupFun (env, name) of
+          Fun (lab, argsize) -> [argcode <+ CALL (lab, argsize), env]
+        esac
+      esac
   esac
 }
 
@@ -538,8 +545,23 @@ fun compileFunctions (env) {
                                             esac
     esac
   }
-  --printf("Functions\n");
   iter (env, {}, {})
+}
+
+fun compileString (String (value), env) {
+  [singletonBuffer (STRING (value)), env]
+}
+
+fun compileArray (Array (expList), env) {
+  case compileList (expList, env) of
+    [code, env] -> [singletonBuffer (CONST (size (expList))) <+> code <+ ARRAY (size (expList)), env]
+  esac
+}
+
+fun compileElem (Elem (arr, index), env) {
+  case compileList ({arr, index}, env) of
+    [code, env] -> [code <+ ELEM, env]
+  esac
 }
 
 -- Compiles an expression into a stack machine code.
@@ -547,7 +569,12 @@ fun compileFunctions (env) {
 -- instructions.
 
 public fun compileSM (expr) {
-  case compileSMBuffer (expr, initCompEnv ()) of
+  case compileSMBuffer (expr, 
+    foldl (addFun, beginScope (initCompEnv ()), 
+    {Fun ("read", {}), 
+     Fun ("write", {"x"}), 
+     Fun ("length", {"x"})
+    })) of
     [code, env] -> var func = compileFunctions (env); 
                    getBuffer(
                        singletonBuffer (LABEL ("main")) 
@@ -559,13 +586,10 @@ public fun compileSM (expr) {
 }
 
 public fun compileSMBuffer (expr, env) {
-  --printf("%s\n", expr.string);
   case expr of
     Skip              -> [emptyBuffer (), env]
   | Assn    (_, _)    -> compileAssn      (expr, env)
   | Seq     (_, _)    -> compileSeq       (expr, env)
-  | Read    (_)       -> compileRead      (expr, env)
-  | Write   (_)       -> compileWrite     (expr, env)
   | If      (_, _, _) -> compileIf        (expr, env)
   | While   (_, _)    -> compileWhile     (expr, env)
   | DoWhile (_, _)    -> compileDoWhile   (expr, env)
@@ -576,7 +600,9 @@ public fun compileSMBuffer (expr, env) {
   | Ignore  (_)       -> compileIgnore    (expr, env)
   | Scope (_, _)      -> compileScope     (expr, env)
   | Call (_, _)       -> compileCall      (expr, env)
+  | String (_)        -> compileString    (expr, env)
+  | Array (_)         -> compileArray     (expr, env)
+  | Elem (_, _)       -> compileElem      (expr, env)
   | _                 -> failure          ("Invalid compiling statement: %s", expr.string)
   esac
 }
-(* End *)
