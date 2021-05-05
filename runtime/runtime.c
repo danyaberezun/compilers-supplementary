@@ -9,20 +9,58 @@
 
 # define STRING_TAG  0x00000001
 # define ARRAY_TAG   0x00000003
+# define SEXP_TAG    0x00000005
 
 # define LEN(x) ((x & 0xFFFFFFF8) >> 3)
 # define TAG(x) (x & 0x00000007)
 
 # define TO_DATA(x) ((data*)((char*)(x)-sizeof(int)))
+# define TO_SEXP(x) ((sexp*)((char*)(x)-2*sizeof(int)))
 
 typedef struct {
   int tag; 
   char contents[0];
 } data; 
 
+typedef struct {
+  int tag; 
+  data contents; 
+} sexp;
+
 int Llength (void *p) {
   data *a = TO_DATA(p);
   return BOX(LEN(a->tag));
+}
+
+extern void* Bsexp (int bn, ...) {
+  va_list args; 
+  int     i;    
+  int     ai;  
+  size_t *p;  
+  sexp   *r;  
+  data   *d;  
+  int n = UNBOX(bn);
+
+  r = (sexp*) malloc (sizeof(int) * (n+1));
+  d = &(r->contents);
+  r->tag = 0;
+    
+  d->tag = SEXP_TAG | ((n-1) << 3);
+  
+  va_start(args, bn);
+  
+  for (i=0; i<n-1; i++) {
+    ai = va_arg(args, int);
+    
+    p = (size_t*) ai;
+    ((int*)d->contents)[i] = ai;
+  }
+
+  r->tag = UNBOX(va_arg(args, int));
+
+  va_end(args);
+
+  return d->contents;
 }
 
 void* Barray (int n0, ...) {
