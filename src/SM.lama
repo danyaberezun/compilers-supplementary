@@ -133,6 +133,7 @@ fun eval (env, w, insns) {
     | LDA   (vr) : tl      -> eval ([vr : s, cst, st, w], tl)
     | ST    (vr) : tl      -> assign (st, vr, s.fst); eval (c, tl)
     | STI : tl             -> case s of value : vr : rest -> assign (st, vr, value); eval ([value : rest, cst, st, w], tl) esac
+    | STA : tl             -> case s of value : i : vr : rest -> vr[i] := value; eval ([value : s, cst, st, w], tl) esac
     | CONST (const) : tl   -> eval ([const : s, cst, st, w], tl)
     | LABEL (s) : tl       -> eval (c, tl)
     | JMP   (l) : tl       -> eval (c, fromLabel (env, l))
@@ -151,9 +152,24 @@ fun eval (env, w, insns) {
           eval ([s, cst, st, w], ret)
         | 0 -> c
         esac
-    | DUP  : tl            -> case s of value : rest -> eval ([value : s, cst, st, w], tl) esac
-    | DROP : tl            -> case s of value : rest -> eval ([rest, cst, st, w], tl) esac
-    | 0 -> c
+    | DUP  : tl -> case s of value : _ -> eval ([value : s, cst, st, w], tl) esac
+    | DROP : tl ->
+        case s of
+          value : s -> eval ([s, cst, st, w], tl)
+        | s   -> eval ([s, cst, st, w], tl)
+        esac
+    | BUILTIN ("read", n) : tl   ->
+        var n = readWorld (w);
+        eval ([n.fst : s, cst, st, n.snd], tl)
+    | BUILTIN ("write", n) : tl  ->
+        case s of value : s -> eval ([s, cst, st, writeWorld (value, w)], tl) esac
+    | BUILTIN ("length", n) : tl -> 
+        case s of value : s -> eval ([length (value) : s, cst, st, w], tl) esac
+    | STRING (x) : tl -> eval ([x : s, cst, st, w], tl)
+    | ELEM : tl       -> case s of i : vr : rest -> eval ([vr[i] : rest, cst, st, w], tl) esac
+    | ARRAY (x) : tl  -> case take (s, x) of
+          [s, args] -> eval ([listArray (args) : s, cst, st, w], tl)
+        esac
     esac
   }
   (* End *)
@@ -358,6 +374,22 @@ fun addVars (env, names) {
   foldl (fun (env, name) {addVar (env, name)}, env, names)
 }
 
+var addPredefFun = fun (env) {
+  var pf = {
+    Fun ("read", {}),
+    Fun ("write", {"a"}),
+    Fun ("length", {"a"})
+  };
+  env := beginScope (env);
+  while size (pf) > 0 do 
+    env := case pf.fst of Fun (f, args) ->
+      addFun (env, f, f, size (args))
+    esac;
+    pf := pf.tl
+  od;
+  env
+};
+
 var initDefs = fun (env, d) {
   var funcs = {};
   while size (d) > 0 do
@@ -427,7 +459,13 @@ var compileIf = fun (expr1, expr2, expr3, env){
 var compileSMInner = fun (env, stmt){
   case stmt of
     Assn   (vr, expr)         -> case vr of 
-        Ref (vr) -> [env, compileSMInner (env, expr).snd <+ DUP <+ ST (lookupVar (env, vr))]
+        Ref (vr) -> [env, compileSMInner (env, expr).snd <+ ST (lookupVar (env, vr))]
+      | ElemRef (a, i) -> 
+          case compileSMInner (env, a) of [env, a] ->
+            case compileSMInner (env, i) of [env, i] ->
+              [env, a <+> i <+> compileSMInner (env, expr).snd <+ STA]
+            esac
+          esac
       | _ -> 
         var comp1 = compileSMInner (env, vr);
         var comp2 = compileSMInner (comp1.fst, expr);
@@ -479,8 +517,33 @@ var compileSMInner = fun (env, stmt){
         args := args.tl
       od;
       case lookupFun (env, f) of Fun (f, l) ->
-        [env, code <+ CALL (f, l)]  
+        [env, code <+ 
+          case stmt of
+            Call ("read", _)    -> BUILTIN (f, size (args))
+          | Call ("write", _)   -> BUILTIN (f, size (args))
+          | Call ("length", _)  -> BUILTIN (f, size (args))
+          | _                   -> CALL (f, l)
+          esac
+        ]
       esac
+  | Builtin (f, n) -> [env, singletonBuffer (BUILTIN (f, n))]
+  | String (x)     -> [env, singletonBuffer (STRING (x))]
+  | Elem (expr1, expr2)  -> 
+      case compileSMInner (env, expr1) of [env, expr1] ->
+        case compileSMInner (env, expr2) of [env, expr2] ->
+          [env, expr1 <+> expr2 <+ ELEM]
+        esac
+      esac
+  | Array (list) ->
+      var elem; var sz = size (list);
+      var code = emptyBuffer ();
+      while size (list) > 0 do
+        elem := compileSMInner (env, list.fst);
+        env  := elem.fst;
+        code := code <+> elem.snd;
+        list := list.tl
+      od;
+      [env, code <+ ARRAY (sz)]
   esac
 };
 
@@ -510,7 +573,7 @@ var compileSMInner = fun (env, stmt){
 
 public fun compileSM (expr) {
   getBuffer (
-    case compileSMInner (initCompEnv(), expr) of [env, code] -> 
+    case compileSMInner (addPredefFun (initCompEnv()), expr) of [env, code] -> 
       emptyBuffer() <+ LABEL ("main") <+ BEGIN ("main", 0, getLocals (env)) <+> code <+ END <+> createFuns (getFuns (env))
     esac
   )
