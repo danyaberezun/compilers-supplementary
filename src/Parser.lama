@@ -40,7 +40,7 @@ fun freshName (env) {
 
 -- Checks if a plain value "val" can be used in the context described by
 -- the attribute "atr".
-fun assertValue (atr, v, loc) {
+fun assertValue (atr, vl, loc) {
   case atr of
     Ref  -> error ("reference expected", loc)
   | Void -> vl => fun (vl) {Ignore (vl)}
@@ -50,9 +50,9 @@ fun assertValue (atr, v, loc) {
 
 -- Checks if a void epxression can be used in the context described by
 -- the attribute "atr".
-fun assertVoid (atr, v, loc) {
+fun assertVoid (atr, vl, loc) {
   case atr of
-    Void -> v
+    Void -> vl
   | Val  -> error ("value expected", loc)
   | Weak -> vl => fun (vl) {Seq (vl, Const (0))}
   | _    -> error ("reference expected", loc)
@@ -95,7 +95,7 @@ fun expandScope (defs, expr) {
     foldr (fun ([defs, expr], def) {     
              case def of
                 [ident, None]         -> [ident : defs, expr]
-             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Set (Ref (ident), value)), expr)]
+             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
              esac
            },
            [{}, expr],
@@ -182,8 +182,8 @@ fun reifyPatternBindings (matched, brs) {
   )
 }
 
-var else_fun = memo $ eta syntax (loc = pos kElif x=exp kThen y=scopeExpr 			{fun (a) {If (x (Val), y (a), Skip)}} |
-				  loc = pos kElif x=exp kThen y=scopeExpr z=else_fun		{fun (a) {If (x (Val), y (a), z (a))}} |
+var else_fun = memo $ eta syntax (loc = pos kElif x=exp kThen y=scopeExpr 			{fun (a) {chainST({x(Val), y(a)}) => fun({x, y}){If (x, y, Skip)}}} |
+				  loc = pos kElif x=exp kThen y=scopeExpr z=else_fun		{fun (a) {chainST({x(Val), y(a), z(a)}) => fun({x, y, z}){If (x, y, z)}}} |
 				  kElse x=scopeExpr {x});
  
 var
@@ -232,15 +232,35 @@ var
     } |
   
                                           inbr[s("("), scopeExpr, s(")")]  					 |
-                                  loc = pos kSkip 						{fun (a) {assertVoid (a, Skip, loc)}} |
-				  --loc = pos kRead y=inbr[s("("), exp, s(")")] 			{fun (a) {assertVoid (a, Read (y (Ref)), loc)}} |
-				  --loc = pos kWrite y=inbr[s("("), exp, s(")")] 			{fun (a) {assertVoid (a, Write (y (Val)), loc)}} |
-				  loc = pos kIf x=exp kThen y=scopeExpr kFi 				{fun (a) {If(x(Val), y(a), Skip)}} |
-				  loc = pos kIf x=exp kThen y=scopeExpr z=else_fun kFi 		{fun (a) {If(x(Val), y(a), z(a))}} |
-				  loc = pos kWhile x=exp kDo y=scopeExpr kOd				{fun (a) {assertVoid (a, While (x (Val), y (Void)), loc)}} | 
-				  loc = pos kDo y=scopeExpr kWhile x=exp kOd				{fun (a) {assertVoid (a, distributeScope(y(Void), fun(ys){DoWhile (ys, x (Val))}), loc)}} |
-				  loc = pos kFor x=scopeExpr s[","] y=exp s[","] z=exp kDo w=scopeExpr kOd	{fun (a) {assertVoid (a, distributeScope(x(Void), fun(xs) {Seq(xs, While (y (Val), Seq(w (Void), z (Void))))}), loc)}}),
+                                  loc = pos kSkip 						{fun (a) {assertVoid (a, returnST $ Skip, loc)}} |
+				  loc = pos kIf x=exp kThen y=scopeExpr kFi 				{fun (a) {chainST({x(Val), y(a)}) => fun({x, y}) {If(x, y, Skip)}}} |
+				  loc = pos kIf x=exp kThen y=scopeExpr z=else_fun kFi 		{fun (a) {chainST({x(Val), y(a), z(a)}) => fun({x, y, z}){If(x, y, z)}}} |
+				  loc = pos kWhile x=exp kDo y=scopeExpr kOd				{fun (a) {assertVoid (a, chainST({x(Val), y(Void)}) => fun({x, y}) {While (x, y)}, loc)}} | 
+				  loc = pos kDo y=scopeExpr kWhile x=exp kOd				{fun (a) {assertVoid (a, chainST({x(Val), y(Void)}) => fun({x, y}) {distributeScope(y, fun(ys){DoWhile (ys, x)})}, loc)}} |
+				  loc = pos kFor x=scopeExpr s[","] y=exp s[","] z=exp kDo w=scopeExpr kOd	{fun (a) {assertVoid (a, chainST({x(Void), y(Val), z(Void), w(Void)}) => fun({x, y, z, w}){distributeScope(x, fun(xs) {Seq(xs, While (y, Seq(w, z)))})}, loc)}} |
+				  loc = pos kCase x=exp kOf y=cases kEsac {fun(a){
+										fun(state){
+											case unzip(y) of
+												[patterns, expressions] -> case chainST(x(Val) : map(fun(e) {e(a)}, expressions)) (state) of
+													[state, matched:expressions] -> case freshName(state) of
+														[state, name] -> [state, expandScope({Val({[name, matched]})}, Case(Val(name), reifyPatternBindings(name, zip(patterns, expressions))))]
+													esac
+												esac
+											esac
+										}
+									  }}
+				),
+
+  cases = memo $ eta syntax (p=pattern s["->"] se=scopeExpr s["|"] c=cases {[p, se] : c} |
+		      p=pattern s["->"] se=scopeExpr {{[p, se]}}
+			),
    
+  pattern = memo $ eta syntax (x=decimal {Decimal(stringInt(x))} |
+			x=inbr[s("("), list0(pattern), s(")")] {Array(x)} |
+			x=uident args=inbr[s("("), list0(pattern), s(")")]? {Sexp(x, case args of None -> {} | Some(args) -> args esac)} |
+			s["_"] {Wildcard} |
+			x=lident p=(-s["@"] pattern)? {Named(x, case p of None -> Wildcard | Some(p) -> p esac)}
+			),
 
   basic = memo $ eta (
     expr ({[Right, {[s (":="), fun (l, loc, r) {
