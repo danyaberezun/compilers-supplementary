@@ -36,7 +36,7 @@ public fun showSMInsn (i) {
   | ST      (x)       -> sprintf ("ST %s", showLoc (x))
   | CONST   (n)       -> sprintf ("CONST %d", n)
   | IMM     (n)       -> sprintf ("IMM %d", n)
-  | LABEL   (s)       -> sprintf ("LABEL %s", s)
+  | LABEL   (s, f)    -> sprintf ("LABEL %s %d", s, f)
   | JMP     (l)       -> sprintf ("JMP %s", l)
   | CJMP    (c, l)    -> sprintf ("CJMP %s, %s", c.string, l)
   | CALL    (f, n, t) -> sprintf ("CALL %s, %d, %s", f, n, t.string)
@@ -154,6 +154,9 @@ fun eval (env, w, insns) {
                     state:ret:cstack -> eval ([stack, cstack, state, world], ret)
                   | _ -> c
                   esac
+        | META (msg) -> case evalBuiltin ("Lwrite", {msg}, world) of [_, world] ->
+                          [stack, cstack, state, world]
+                        esac 
         | _ -> 
             case case insn of
               BINOP (s) -> case stack of
@@ -177,7 +180,7 @@ fun eval (env, w, insns) {
             | LDA (s)   -> [s:stack, cstack, state, world]
             | CONST (n) -> [n:stack, cstack, state, world]
             | IMM (n)   -> [n:stack, cstack, state, world]
-            | LABEL (s) -> [stack, cstack, state, world]
+            | LABEL (s, f) -> [stack, cstack, state, world]
             | STRING (s) -> [s:stack, cstack, state, world]
             | ARRAY (n)   -> case take (stack, n) of [stack, a] -> [listArray (a):stack, cstack, state, world] esac
             | SEXP (s, n) -> case take (stack, n) of [stack, a] -> [Sexp (s, listArray (a)):stack, cstack, state, world] esac
@@ -202,6 +205,12 @@ fun eval (env, w, insns) {
                                       case evalBuiltin (f, args, world) of [v, world] ->
                                         [v:stack, cstack, state, world]
                                       esac esac
+            | PATT ([tag, n]) -> case stack of 
+                l@#array:stack -> [(length (l) == n && compare (tag, "[]") == 0):stack, cstack, state, world]
+              | Sexp (t, a):stack -> [(length (a) == n && compare (tag, t) == 0):stack, cstack, state, world]
+              | _:stack -> [0:stack, cstack, state, world]
+              | _ -> failure ("stack is empty")
+              esac
             esac of c -> eval (c, insns) esac
         esac 
     esac
@@ -462,6 +471,38 @@ public fun compileSM (stmt) {
     }, [env, emptyBuffer ()], stmts)
   }
 
+  fun compilePattern (env, pattern) {
+    case pattern of
+      Wildcard -> [env, singletonBuffer (DROP) <+ CONST (1)]
+    | Array (ps) -> compilePattern (env, Sexp ("[]", ps))
+    | Sexp (tag, ps) -> case genLabel (env) of [none, env] ->
+                        case foldl (fun ([env, code, count], p) {
+                                      case compilePattern (env, p) of [env, p] ->
+                                        [env, code <+ DUP <+ IMM (count) <+ ELEM <+> p <+ CJMP (E, none), count + 1]
+                                      esac
+                                    }, [env, emptyBuffer (), 0], ps) of [env, code, _] ->
+                        case genLabel (env) of [exit, env] ->
+                          [env, singletonBuffer (DUP) <+ 
+                          PATT ([tag, size (ps)]) <+
+                          CJMP (E, none) <+>
+                          code <+
+                          DROP <+
+                          CONST (1) <+
+                          JMP (exit) <+
+                          LABEL (none, false) <+
+                          DROP <+
+                          CONST (0) <+
+                          LABEL (exit, false)]
+                        esac esac esac
+
+    | Decimal (n) -> [env, singletonBuffer (IMM (n)) <+ BINOP ("==")]
+    | Named (v) -> [env, singletonBuffer (ST (lookupVar (env, v))) <+ DROP <+ CONST (1)]
+    | NamedPattern (v, p) ->  case compilePattern (env, p) of [env, p] ->
+                                [env, singletonBuffer (ST (lookupVar (env, v))) <+> p]
+                              esac
+    esac
+  }
+
   fun inner (env, stmt) {
     case stmt of
       Assn (Ref (st), expr) ->  case inner (env, expr) of [env, code] -> 
@@ -505,20 +546,20 @@ public fun compileSM (stmt) {
                                   case genLabel (env) of [lbl1, env] -> 
                                     [env, code <+ 
                                           CJMP (E, lbl0) <+> code0 <+ JMP (lbl1) <+ 
-                                          LABEL (lbl0) <+> code1 <+ LABEL (lbl1)]
+                                          LABEL (lbl0, false) <+> code1 <+ LABEL (lbl1, false)]
                                   esac esac esac esac esac
     | While (cond, body) -> case genLabel (env) of [lbl0, env] ->
                             case inner (env, body) of [env, code0] ->
                             case genLabel (env) of [lbl1, env] ->
                             case inner (env, cond) of [env, code] ->
                               [env, singletonBuffer (JMP (lbl1)) <+ 
-                                    LABEL (lbl0) <+> code0 <+ 
-                                    LABEL (lbl1) <+> code <+ CJMP (NE, lbl0)]
+                                    LABEL (lbl0, true) <+> code0 <+ 
+                                    LABEL (lbl1, false) <+> code <+ CJMP (NE, lbl0)]
                             esac esac esac esac
     | DoWhile (body, cond) -> case genLabel (env) of [lbl, env] ->
                               case inner (env, body) of [env, code0] ->
                               case inner (env, cond) of [env, code] ->
-                                [env, singletonBuffer (LABEL (lbl)) <+> code0 <+> 
+                                [env, singletonBuffer (LABEL (lbl, true)) <+> code0 <+> 
                                       code <+ CJMP (NE, lbl)]
                               esac esac esac
     | Scope (defs, body) -> case enterScope (env) of env ->
@@ -545,10 +586,10 @@ public fun compileSM (stmt) {
                                         case addArgs (env, args) of env ->
                                         case inner (env, body) of [env, code0] ->
                                         case BEGIN (fLabel, size (args), getLocals (env)) of begin ->
-                                          [env, code <+ LABEL (fLabel) <+ begin <+> code0 <+ END] 
+                                          [env, code <+ LABEL (fLabel, false) <+ begin <+> code0 <+ END] 
                                         esac esac esac esac
                                       }, [env, emptyBuffer ()], fs) of [env, codeF] ->
-                                      [env, globals <+ LABEL ("main") <+ begin <+> code <+ END <+> codeF]
+                                      [env, globals <+ LABEL ("main", false) <+ begin <+> code <+ END <+> codeF]
                                     esac esac esac
                               else  case leaveScope (env) of env ->
                                       [env, code]
@@ -564,6 +605,21 @@ public fun compileSM (stmt) {
                               Builtin (label, argn) -> [env, args <+ BUILTIN (f, label, argn)] 
                             | Fun (label, argn)     -> [env, args <+ CALL (label, argn, t)]
                             esac esac
+    | Case (e, cs) -> case inner (env, e) of [env, e] ->
+                      case genLabel (env) of [exit, env] ->
+                      case foldl (fun ([env, code], [[pattern, defs], expr]) {
+                          case enterScope (env) of env ->
+                          case foldl (fun (env, d) {case d of 
+                                Var (ds) -> addVars (env, ds)
+                              esac}, env, defs) of env ->
+                          case compilePattern (env, pattern) of [env, pattern] ->
+                          case inner (env, expr) of [env, expr] ->
+                          case genLabel (env) of [none, env] -> 
+                            [leaveScope (env), code <+ DUP <+> pattern <+ CJMP (E, none) <+ DROP <+> expr <+ JMP (exit) <+ LABEL (none, false)]
+                          esac esac esac esac esac
+                        }, [env, e], cs) of [env, code] ->
+                       [env, code <+ META ("case failure") <+ LABEL (exit, false)]
+                      esac esac esac
     esac
   }
   getBuffer (inner (initCompEnv (), stmt) [1])
