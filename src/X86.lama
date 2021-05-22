@@ -576,33 +576,6 @@ fun compile (args, env, code) {
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
 
-        -- printf ("Insn: %s\n", i.string);
-
-        -- This if removes unreachable code; otherwise
-        -- the stack invariants for the symbolic interpreter
-        -- are violated
-        -- if env.isBarrier 
-        -- then case i of
-        --        LABEL (l, true) -> [env.dropBarrier, code <+ Label (l)]
-        --      | LABEL (l, _)    -> if hasStack (env, l)
-        --                           then [retrieveStack (env, l), code <+ Label (l)]
-        --                           else [env, code]
-        --                           fi
-        --      | _               -> [env, code]
-        --      esac
-        -- else
-        --   case i of
-        --     READ ->
-        --       case env.allocate of
-        --         [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-        --       esac             
-        --   | WRITE ->
-        --       case env.pop of
-        --         [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-        --       esac
-        --   | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        --   esac
-        -- fi
         fun callWrapper(callableName, argsN) {
             case call(env, callableName, argsN) of [env, funCode] ->
               [env, code <+> funCode]
@@ -612,88 +585,131 @@ fun compile (args, env, code) {
         -- printf(envString(env));
         -- printf("x86c %s\n", string(i));
 
-        case i of
-          BINOP(operation) ->
-            case pop2(env) of [rhs, lhs, env] ->
-              -- [env.push(rhs), code <+> getX86OpBuffer(operation, lhs, rhs)]
-              case allocate(env) of [s, env] ->
-                [env, code <+> getX86OpBuffer(operation, lhs, rhs) <+> move(rhs, s)]
-              esac
-            esac
-        | LD(variableName) -> 
-            case allocate(env) of -- .addGlobal(variableName)?
-              [s, env] -> [env, code <+> move(loc(env, variableName), s)] -- Does not work with <+ Mov, because memory-memory move is not allowed
-            esac
-        | LDA(variableName) ->
-            case allocate(env) of [s1, env] -> 
-              case allocate(env) of [s2, env] ->
-                [env, code <+ Lea(env.loc(variableName), eax) <+ Mov(eax, s1) <+ Mov(eax, s2)]
-              esac
-            esac
-        | ST(variableName) ->
-            [env, code <+> move(peek(env), loc(env, variableName))]
-        | STI ->
-            case pop2(env) of
-              [s, ref, env] -> 
-                -- ref may be located in stack, causing unallowed double addressing (-offset(%ebp)) when translating I(0, ref)
-                [push(env, s), code <+ Mov(ref, eax) <+ Mov(s, edx) <+ Mov(edx, I(0, eax))]
-            esac
-        | STA ->
-            callWrapper("Bsta", 3)
-        | CONST(value) -> 
-            case allocate(env) of
-              [s, env] -> [env, code <+ Mov(L(makeBox(value)), s)]
-            esac
-        | GLOBAL(x) ->
-            [addGlobal(env, x), code]
-        | STRING(value) ->
-            case addString(env, value) of [env, name] ->
-              case allocate(env) of [s, env] ->
-                case call(env, "Bstring", 1) of [env, funCode] ->
-                  [env, code <+> move(M("$" ++ name), s) <+> funCode]
+        -- This if removes unreachable code; otherwise
+        -- the stack invariants for the symbolic interpreter
+        -- are violated
+        if env.isBarrier 
+        then case i of
+               LABEL (l, true) -> [env.dropBarrier, code <+ Label (l)]
+             | LABEL (l, _)    -> if hasStack (env, l)
+                                  then [retrieveStack (env, l), code <+ Label (l)]
+                                  else [env, code]
+                                  fi
+             | _               -> [env, code]
+             esac
+        else
+          case i of
+            BINOP(operation) ->
+              case pop2(env) of [rhs, lhs, env] ->
+                case allocate(env) of [s, env] ->
+                  [env, code <+> getX86OpBuffer(operation, lhs, rhs) <+> move(rhs, s)]
                 esac
               esac
-            esac
-        | ARRAY(valuesN) ->
-            callWrapper("Barray", valuesN+1)
-        | SEXP(name, valuesN) ->
-            case allocate(env) of [s, env] ->
-              case call(env, "Bsexp", valuesN+2) of [env, funCode] ->
-                [env, code <+> move(L(makeBox(tagHash(name))), s) <+> funCode]
+          | PATT(p) ->
+              case p of
+                Tag(pTag, pSize) ->
+                  case allocate(env) of [s1, env] ->
+                    case allocate(env) of [s2, env] ->
+                      case call(env, "Btag", 3) of [env, funCode] ->
+                        [
+                          env, 
+                          code <+> move(L(makeBox(tagHash(pTag))), s1) 
+                            <+> move(L(makeBox(pSize)), s2) <+> funCode
+                        ]
+                      esac
+                    esac
+                  esac |
+                Array(pSize) ->
+                  case allocate(env) of [s1, env] ->
+                    case call(env, "Barray_patt", 2) of [env, funCode] ->
+                      [env, code <+> move(L(makeBox(pSize)), s1) <+> funCode]
+                    esac
+                  esac
               esac
-            esac
-        | ELEM ->
-            callWrapper("Belem", 2)
-        | LABEL(labelName) ->
-            -- [env, code <+ Label(labelName)]
-            [if isBarrier(env) then retrieveStack(env, labelName) else env fi, code <+ Label(labelName)]
-        | JMP(labelName) ->
-            -- [env, code <+ Jmp(labelName)]
-            [setBarrier(setStack(env, labelName)), code <+ Jmp(labelName)]
-        | CJMP(condition, labelName) ->
-            case pop(env) of [value, env] ->
-              [setStack(env, labelName), code <+ Mov(L(makeBox(0)), eax) <+ Binop("cmp", eax, value) <+ CJmp(condition, labelName)]
-            esac
-        | BEGIN(fLabel, argsN, localsN) -> 
-            [enterFunction(env, fLabel, localsN), code <+> prologue(fLabel)]
-        | CALL (fLabel, argsN) ->
-            callWrapper(fLabel, argsN)
-        | BUILTIN("read", 0) ->
-            callWrapper("Lread", 0)
-        | BUILTIN("write", 1) ->
-            callWrapper("Lwrite", 1)
-        | BUILTIN("length", 1) ->
-            callWrapper("Llength", 1)
-        | END ->
-            case epilogue(env) of [newEnv, endCode] ->
-              [newEnv, code <+> endCode]
-            esac
-        | DROP ->
-            case pop(env) of [_, env] ->
-              [env, code]
-            esac
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
+          | LD(variableName) -> 
+              case allocate(env) of -- .addGlobal(variableName)?
+                [s, env] -> [env, code <+> move(loc(env, variableName), s)] -- Does not work with <+ Mov, because memory-memory move is not allowed
+              esac
+          | LDA(variableName) ->
+              case allocate(env) of [s1, env] -> 
+                case allocate(env) of [s2, env] ->
+                  [env, code <+ Lea(env.loc(variableName), eax) <+ Mov(eax, s1) <+ Mov(eax, s2)]
+                esac
+              esac
+          | ST(variableName) ->
+              [env, code <+> move(peek(env), loc(env, variableName))]
+          | STI ->
+              case pop2(env) of
+                [s, ref, env] -> 
+                  -- ref may be located in stack, causing unallowed double addressing (-offset(%ebp)) when translating I(0, ref)
+                  [push(env, s), code <+ Mov(ref, eax) <+ Mov(s, edx) <+ Mov(edx, I(0, eax))]
+              esac
+          | STA ->
+              callWrapper("Bsta", 3)
+          | CONST(value) -> 
+              case allocate(env) of
+                [s, env] -> [env, code <+ Mov(L(makeBox(value)), s)]
+              esac
+          | GLOBAL(x) ->
+              [addGlobal(env, x), code]
+          | STRING(value) ->
+              case addString(env, value) of [env, name] ->
+                case allocate(env) of [s, env] ->
+                  case call(env, "Bstring", 1) of [env, funCode] ->
+                    [env, code <+> move(M("$" ++ name), s) <+> funCode]
+                  esac
+                esac
+              esac
+          | ARRAY(valuesN) ->
+              callWrapper("Barray", valuesN+1)
+          | SEXP(name, valuesN) ->
+              case allocate(env) of [s, env] ->
+                case call(env, "Bsexp", valuesN+2) of [env, funCode] ->
+                  [env, code <+> move(L(makeBox(tagHash(name))), s) <+> funCode]
+                esac
+              esac
+          | ELEM ->
+              callWrapper("Belem", 2)
+          | LABEL(labelName) ->
+              -- [if isBarrier(env) then retrieveStack(env, labelName) else env fi, code <+ Label(labelName)]
+              failure("Old label type is used\n")
+          | LABEL (labelName, _)  -> [env, code <+ Label(labelName)]
+          | JMP(labelName) ->
+              -- [env, code <+ Jmp(labelName)]
+              [setBarrier(setStack(env, labelName)), code <+ Jmp(labelName)]
+          | CJMP(condition, labelName) ->
+              case pop(env) of [value, env] ->
+                [setStack(env, labelName), code <+ Mov(L(makeBox(0)), eax) <+ Binop("cmp", eax, value) <+ CJmp(condition, labelName)]
+              esac
+          | BEGIN(fLabel, argsN, localsN) -> 
+              [enterFunction(env, fLabel, localsN), code <+> prologue(fLabel)]
+          | CALL (fLabel, argsN) ->
+              callWrapper(fLabel, argsN)
+          | BUILTIN("read", 0) ->
+              callWrapper("Lread", 0)
+          | BUILTIN("write", 1) ->
+              callWrapper("Lwrite", 1)
+          | BUILTIN("length", 1) ->
+              callWrapper("Llength", 1)
+          | END ->
+              case epilogue(env) of [newEnv, endCode] ->
+                [newEnv, code <+> endCode]
+              esac
+          | DROP ->
+              case pop(env) of [_, env] ->
+                [env, code]
+              esac
+          | DUP ->
+              case peek(env) of value ->
+              case allocate(env) of [s, env] ->
+                [env, code <+> move(value, s)]
+              esac
+              esac
+          | META(_) ->
+              callWrapper("Bmatch_failure", 0) -- TODO
+          | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+          esac
+        fi
       }, [env, emptyBuffer ()], code)
   }
 

@@ -127,11 +127,23 @@ fun eval (env, w, insns) {
   fun eval (configuration@[stack, contrStack, state, world], instructions) {
     fun applyInstruction([stack, contrStack, state, world], instruction) {
       -- printf("stev %s\n  stck %s\n  stte %s\n  cstk %s\n", instruction.string, stack.string, state.string, contrStack.string);
+      -- printf("stev %s\n  stck %d %s\n", instruction.string, size(stack), stack.string);
       case instruction of
         BINOP(operation) ->
           case stack of
             rhs:lhs:tail ->
               stack := evalOp(operation, lhs, rhs) : tail
+          esac |
+        PATT(p) ->
+          case p of
+            Tag(pTag, pSize) ->
+              case stack of Sexp(sTag, sValues) : tail ->
+                stack := (compare(pTag, sTag) == 0 && pSize == length(sValues)) : tail
+              esac |
+            Array(pSize) ->
+              case stack of arr@#array : tail ->
+                stack := (pSize == length(arr)) : tail
+              esac
           esac |
 
         LD(variableName) ->
@@ -187,6 +199,13 @@ fun eval (env, w, insns) {
             head : tail ->
               stack := tail
           esac |
+        DUP ->
+          case stack of 
+            value : tail -> stack := value : value : tail
+          esac |
+
+        META(_) ->
+          failure("Match failure in stack interpreter\n") |
 
         BUILTIN(name, argsN) ->
           case take(stack, argsN) of [newStack, vals] ->
@@ -199,10 +218,10 @@ fun eval (env, w, insns) {
         CALL(_, _) -> skip |
         BEGIN(_, _, _) -> skip |
         END -> skip |
-        LABEL(_) -> skip |
+        LABEL(_, _) -> skip |
         JMP(_) -> skip |
         CJMP(_, _) -> skip |
-        _ -> failure("Unknown instruction '" ++ string(instruction) ++ "' at stack unwrapping\n")
+        _ -> failure("Unknown instruction '" ++ string(instruction) ++ "' in stack interpreter\n")
       esac;
 
       [stack, contrStack, state, world]
@@ -556,30 +575,30 @@ fun compileExpr (expression) {
 
       -- Flow control
       While (condition, body) ->
-        case environment.genLabels(2) of 
+        case genLabels(environment, 2) of 
           [labelStart, labelBody, newEnv] ->
             environment := newEnv;
-            singletonBuffer(JMP(labelStart)) <+ LABEL(labelBody) 
-              <+> compileExprAux(body) <+ LABEL(labelStart)
+            singletonBuffer(JMP(labelStart)) <+ LABEL(labelBody, true) 
+              <+> compileExprAux(body) <+ LABEL(labelStart, false)
               <+> compileExprAux(condition) <+ CJMP("nz", labelBody)
         esac |
       DoWhile(body, condition) ->
-        case environment.genLabels(1) of [labelBody, newEnv] ->
+        case genLabels(environment, 1) of [labelBody, newEnv] ->
           environment := newEnv;
-          singletonBuffer(LABEL(labelBody))
+          singletonBuffer(LABEL(labelBody, true))
             <+> compileExprAux(body)
             <+> compileExprAux(condition) <+ CJMP("nz", labelBody)
         esac |
       If (condition, consequentExpr, alternativeExpr) ->
-        case environment.genLabels(2) of 
+        case genLabels(environment, 2) of 
           [labelAlternative, labelEnd, newEnv] -> 
             environment := newEnv;
             compileExprAux(condition)
               <+ CJMP("z", labelAlternative)
               <+> compileExprAux(consequentExpr)
-              <+ JMP(labelEnd) <+ LABEL(labelAlternative)
+              <+ JMP(labelEnd) <+ LABEL(labelAlternative, false)
               <+> compileExprAux(alternativeExpr)
-              <+ LABEL(labelEnd)
+              <+ LABEL(labelEnd, false)
         esac |
       Call(fName, argExprs) ->
         -- Evaluating arguments
@@ -596,6 +615,115 @@ fun compileExpr (expression) {
             case lookupFun(environment, fName) of Fun(fLabel, argsN) ->
               CALL(fLabel, argsN)
             esac
+        esac |
+      Case(scrName, cases) ->
+        -- Match last element on the stack with array pattern.
+        -- If not matched, jump to the nextCaseLabel.
+        fun genArrPatternInsns(pattern, nextCaseLabel, depth) {
+          case pattern of
+            0 -> emptyBuffer() |
+            #box ->    
+              foldl(
+                fun([index, buffer], pattElem) {
+                  [
+                    index+1, 
+                    buffer <+ DUP 
+                      <+ CONST(index) <+ ELEM -- Take element by index
+                      <+> genCasePatternInsns(pattElem, nextCaseLabel, depth+1)
+                      <+ DROP -- Drop element of the array
+                      -- Drop does not do its work fully here, because we can jump to other case in subpatterns, leaving unnecessary things in stack
+                  ]
+                },
+                [0, emptyBuffer()],
+                pattern
+              )[1]
+          esac
+        }
+        -- Match last element on the stack with pattern passed as argument.
+        -- If not matched, jump to the nextCaseLabel
+        fun genCasePatternInsns(pattern, nextCaseLabel, depth) {
+          fun getDropSuffix() {
+            case depth of
+              0 -> "" |
+              _ -> "_DROP" ++ string(depth)
+            esac
+          }
+
+          case pattern of
+            Wildcard -> emptyBuffer() |
+            Const(x) -> 
+              singletonBuffer(DUP) <+ CONST(x) <+ BINOP("==") 
+                <+ CJMP("z", nextCaseLabel ++ getDropSuffix()) |
+            Array(arr) -> 
+              singletonBuffer(DUP) <+ PATT(Array(size(arr))) 
+                <+ CJMP("z", nextCaseLabel ++ getDropSuffix()) 
+                <+> genArrPatternInsns(arr, nextCaseLabel, depth) |
+            Sexp(tag, arr) -> 
+              singletonBuffer(DUP) <+ PATT(Tag(tag, size(arr))) 
+                <+ CJMP("z", nextCaseLabel ++ getDropSuffix())
+                <+> genArrPatternInsns(arr, nextCaseLabel, depth) |
+            Named(_, pattern) -> genCasePatternInsns(pattern, nextCaseLabel, depth)
+          esac 
+        }
+        -- Generate instuctions for pattern matching and branch expression.
+        -- Jumps to endLabel when successfully matched with the pattern.
+        fun genCaseBranchInsns([pattern, expression], endLabel) {
+          fun genDropzone(originLabel, depth) {
+            case depth of
+              0 -> emptyBuffer() |
+              _ -> 
+                singletonBuffer(
+                  LABEL(originLabel ++ "_DROP" ++ string(depth), false)
+                ) <+ DROP <+> genDropzone(originLabel, depth-1)
+            esac
+          }
+
+          fun calcMaxDepth(pattern, depth) {
+            fun foldFun (acc, elem) { 
+              var tmp = calcMaxDepth(elem, depth);
+              case elem of 
+                Wildcard -> skip |
+                Const(x) -> skip |
+                Named(_, _) -> skip |
+                _ -> tmp := tmp + 1
+              esac;
+              if tmp > acc then tmp else acc fi
+            }
+            case pattern of
+              Wildcard -> 0 |
+              Const(x) -> 0 |
+              Array(arr) -> foldl(foldFun, depth, arr) |
+              Sexp(_, arr) -> foldl(foldFun, depth, arr) |
+              Named(_, pattern) -> calcMaxDepth(pattern, depth)
+            esac 
+          }
+
+          case genLabel(environment) of [nextCaseLabel, newEnv] ->
+            environment := newEnv;
+            genCasePatternInsns(pattern, nextCaseLabel, 0) <+ DROP -- Drop scrutinee that was loaded with LD and is not needed anymore at the beginning of the branch code execution
+              <+> compileExprAux(expression) 
+              <+ JMP(endLabel) <+> genDropzone(nextCaseLabel, calcMaxDepth(pattern, 0)) -- Dropzone for jumping from pattern matching with depth
+              <+ LABEL(nextCaseLabel, false)
+          esac
+        }
+
+        fun genCaseInsns(currCase : cases, endLabel) {
+          genCaseBranchInsns(currCase, endLabel) 
+            <+> 
+            if cases then 
+              genCaseInsns(cases, endLabel) 
+            else 
+              singletonBuffer(META(1)) <+ DROP
+            fi
+        }
+
+        case genLabels(environment, 1) of [endLabel, newEnv] ->
+          var tmp;
+          environment := newEnv;
+          tmp := singletonBuffer(LD(lookupVar(environment, scrName))) <+> 
+            genCaseInsns(cases, endLabel) <+ LABEL(endLabel, false);
+          -- printf("TMP: %s\n", tmp.string);
+          tmp
         esac |
 
       Scope(defs, expr) ->
@@ -614,7 +742,7 @@ fun compileExpr (expression) {
         var bodyInsns;
         environment := addArgs(beginFun(environment, fState), args);
         bodyInsns := compileExprAux(body);
-        singletonBuffer(LABEL(fLabel))
+        singletonBuffer(LABEL(fLabel, false))
           <+ BEGIN(fLabel, size(args), getLocals(environment))
           <+> bodyInsns
           <+ END |
@@ -627,7 +755,7 @@ fun compileExpr (expression) {
   }
 
   fun wrapInMainFun(instructions) {
-    singletonBuffer(LABEL("main")) <+ BEGIN("main", 0, getLocals(environment)) 
+    singletonBuffer(LABEL("main", false)) <+ BEGIN("main", 0, getLocals(environment)) 
       <+> instructions
       <+ END
   }
