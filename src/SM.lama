@@ -52,6 +52,7 @@ public fun showSMInsn (i) {
   | ELEM             -> "ELEM"
   | BUILTIN (f, n)   -> sprintf ("BUILTIN %s, %d", f, n)
   | META (m)         -> sprintf ("META %s", m.string)
+  | FAIL (msg, loc)  -> sprintf ("FAIL %s, %s", msg.string, loc.string)
   | PATT (p)         -> sprintf ("PATT %s", p.string)
   esac
 }
@@ -132,16 +133,22 @@ fun eval (env, w, insns) {
   fun eval (c@[stack, callstack, state, world], insns) {
     case insns of
       {}                           -> c
-    | JMP  (label) : _             -> eval (c, fromLabel (env, label))
+    | JMP  (label) : _             -> 
+        --printf ("%s, %s\n", JMP (label).string, stack.string);
+        eval (c, fromLabel (env, label))
     | CJMP (cond, label) : insns   -> 
+        --printf ("%s, %s\n", CJMP (cond, label).string, stack.string);
         case stack of
           v:stack -> case cond of
             "z"  -> if v == 0 then eval ([stack, callstack, state, world], fromLabel (env, label)) else eval ([stack, callstack, state, world], insns) fi 
           | "nz" -> if v != 0 then eval ([stack, callstack, state, world], fromLabel (env, label)) else eval ([stack, callstack, state, world], insns) fi
           esac
         esac
-    | CALL (flabel, nargs) : insns -> eval ([stack, [state, insns] : callstack, state, world], fromLabel (env, flabel))
+    | CALL (flabel, nargs) : insns -> 
+        --printf ("%s, %s\n", CALL (flabel, nargs).string, stack.string);
+        eval ([stack, [state, insns] : callstack, state, world], fromLabel (env, flabel))
     | END : insns                  -> 
+        --printf ("%s, %s\n", END.string, stack.string);
         case callstack of
           {}                       -> c
         | [prevstate, insns]:tail  -> eval ([stack, tail, prevstate, world], insns)
@@ -228,12 +235,28 @@ fun eval (env, w, insns) {
           case take (stack, n) of
             [size:stack, values] -> [Sexp (tag, listArray(values)) : stack, callstack, state, world]
           esac
+        | FAIL (msg, loc)             -> error (msg, loc)
+        | PATT (pat) ->
+          case pat of
+            Array (n) ->
+              case stack of 
+                arr@#array : stack       -> [(length(arr) == n) : stack, callstack, state, world]
+              | _ : stack -> [0:stack, callstack, state, world]
+              esac
+          | Sexp (patname, n) ->
+              case stack of 
+                Sexp (name, arr) : stack -> 
+                  var res = (compare(patname, name) == 0) && (length(arr) == n);
+                  [res : stack, callstack, state, world]
+              | _ : stack       -> [0:stack, callstack, state, world]
+              esac
+          esac
         | _                           -> failure      ("Invalid instruction!")
         esac
       , insns)
     esac
   }
-  -- printf ("%s\n", showSM (insns));
+  --printf ("%s\n", showSM (insns));
   eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
 }
 
@@ -510,7 +533,7 @@ fun checkElemRef (expr) {
   | Set (_, exp)          -> checkElemRef (exp) 
   | Sexp (_, _)           -> 0
   | Case (_, brs)         -> 
-      foldl( fun ([_, branch], acc) {if acc then 1 else checkElemRef (branch) fi}, 0, brs)
+      foldl( fun (acc, [_, branch]) {if acc then 1 else checkElemRef (branch) fi}, 0, brs)
   | _                     -> 0
   esac
 }
@@ -528,7 +551,6 @@ fun compileAssn (Assn (ref, expr), env) {
           [code <+ STA, env]
       esac
     else
-      --printf("%s\n", ref.string);
       case compileSMBuffer (ref, env) of
         [refcode, env] ->
           case compileSMBuffer (expr, env) of
@@ -678,25 +700,6 @@ fun compileSet (Set (name, value), env) {
   esac
 }
 
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine
--- instructions.
-
-public fun compileSM (expr) {
-  case compileSMBuffer (expr, 
-    foldl (addFun, beginScope (initCompEnv ()), 
-    {Fun ("read", {}), 
-     Fun ("write", {"x"}), 
-     Fun ("length", {"x"})
-    })) of
-    [code, env] ->  getBuffer(
-                       singletonBuffer (LABEL ("main", false), false) 
-                       <+ BEGIN ("main", 0, getLocals (env)) 
-                       <+> code 
-                       <+ END
-                       <+> compileFunctions (env))
-  esac
-}
 
 fun compileSexp (Sexp (tag, args), env) {
   case compileList (args, env) of
@@ -704,8 +707,99 @@ fun compileSexp (Sexp (tag, args), env) {
   esac
 }
 
-fun compileCase (Case (name, brs), env) {
-  0
+fun compileCase (Case (name, brs, loc), env) {
+  -- Pattern code jumps to exitlabel if pattern does not match, and terminates at the end otherwise
+  fun compilePattern (pat, env) {
+    fun compileSeq (ps, falselabel, i, env) {
+      -- Sequence of patterns with the indexing of the scrutinee object for arrays and sexprs
+      case ps of
+        p:ps ->
+          case compilePattern (p, env) of
+            [pattcode, env] ->
+              case compileSeq (ps, falselabel, i+1, env) of 
+                [nextseqcode, env] ->
+                  [singletonBuffer(DUP) -- Storing pattern for the next one in sequence; gets cleaned up by code in falseLabel if exits prematurely or at the end if everything matches
+                   <+  CONST (i) 
+                   <+  ELEM 
+                   <+> pattcode             -- This consumes i-th elem and returns 0 or 1
+                   <+  CJMP ("z", falselabel) 
+                   <+> nextseqcode
+                  , env]
+              esac
+          esac
+      | {} -> [singletonBuffer (DROP), env] -- Every sequence pattern matched; dropping leftover scrutinee
+      esac
+    }
+
+    fun compileComposite (pattarg, ps, env) {
+      case genLabels (env, 2) of
+        [epilogueFalse, epilogueEnd, env] ->
+          case compileSeq (ps, epilogueFalse, 0, env) of
+            [seqcode, env] ->
+              [singletonBuffer (DUP)         -- Duping scrutinee for the sequence
+               <+  PATT (pattarg)            -- First calling PATT to check the size of the scrutinee, only then proceeding to checking the pattern itself
+               <+  CJMP ("z", epilogueFalse)
+               <+> seqcode                   -- This consumes scrutinee, but does not return 0 or 1; rather jumps to epilogueFalse if match fails
+               <+  CONST (1)                 -- Sequenced matched completely, storing 1 as an answer
+               <+  JMP (epilogueEnd)
+               <+  LABEL (epilogueFalse, false)
+               <+  DROP                      -- Dropping garbage left by the sequence
+               <+  CONST (0)                 -- Storing 0 as an answer
+               <+  LABEL (epilogueEnd, false)
+              , env]
+          esac
+      esac
+    }
+
+    case pat of
+      Wildcard        -> [singletonBuffer (DROP) <+ CONST (1), env] 
+    | Decimal (x)     -> [singletonBuffer (CONST (x)) <+ BINOP ("=="), env]
+    | Named (_, p)    -> compilePattern(p, env)
+    | Array (ps)      -> compileComposite (Array (size (ps)), ps, env)
+    | Sexp (name, ps) -> compileComposite (Sexp (name, size (ps)), ps, env)
+    esac 
+  }
+
+  -- Branch code will execute the branch and jump to caseendlabel if pattern matches
+  -- If pattern does not match, skips the branch code
+  fun compileBranch (branches, caseendlabel, env) {
+    case branches of
+      [pat, branch] : brs ->
+        case genLabel (env) of
+          [label, env] ->
+            case compilePattern(pat, env) of 
+              [patterncode, env] ->
+                case compileSMBuffer (branch, env) of
+                  [branchcode, env] ->
+                    case compileBranch (brs, caseendlabel, env) of
+                      [nextbranchcode, env] ->
+                        [singletonBuffer (DUP)     -- Duplicating scrutinee for the next branch
+                         <+> patterncode           -- Consumes scrutinee and returns 0 or 1
+                         <+  CJMP ("z", label)
+                         <+  DROP                  -- Dropping scrutinee for the next branch
+                         <+> branchcode 
+                         <+  JMP (caseendlabel) 
+                         <+  LABEL (label, false) 
+                         <+> nextbranchcode
+                        , env]
+                    esac
+                esac
+            esac
+        esac
+    | {} -> [singletonBuffer(DROP) <+ FAIL ("Failed to match expression", loc), env]
+    esac
+  }
+  --printf("Compiling final case code\n");
+  case compileSMBuffer (name, env) of
+    [namecode, env] ->
+      case genLabel (env) of
+        [endlabel, env] ->
+          case compileBranch(brs, endlabel, env) of
+            [branchcode, env] -> 
+              [namecode <+> branchcode <+ LABEL (endlabel, false), env]
+          esac
+      esac
+  esac
 }
 
 public fun compileSMBuffer (expr, env) {
@@ -731,7 +825,27 @@ public fun compileSMBuffer (expr, env) {
   | ElemRef (_,_)     -> compileElemRef   (expr, env)
   | Set (_, _)        -> compileSet       (expr, env)
   | Sexp (_, _)       -> compileSexp      (expr, env)
-  --| Case (_, _)       -> compileCase      (expr, env)
+  | Case (_, _, _)    -> compileCase      (expr, env)
   | _                 -> failure          ("Invalid compiling statement: %s", expr.string)
+  esac
+}
+
+-- Compiles an expression into a stack machine code.
+-- Takes an expression, returns a list of stack machine
+-- instructions.
+
+public fun compileSM (expr) {
+  case compileSMBuffer (expr, 
+    foldl (addFun, beginScope (initCompEnv ()), 
+    {Fun ("read", {}), 
+     Fun ("write", {"x"}), 
+     Fun ("length", {"x"})
+    })) of
+    [code, env] ->  getBuffer(
+                       singletonBuffer (LABEL ("main", false), false) 
+                       <+ BEGIN ("main", 0, getLocals (env)) 
+                       <+> code 
+                       <+ END
+                       <+> compileFunctions (env))
   esac
 }
