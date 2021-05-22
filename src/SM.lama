@@ -146,6 +146,7 @@ fun eval (env, w, insns) {
 
   (* Assignment *)
   fun eval (c@[stack, controlStack, state, world], insns) {
+    --printf ("%s\n", string (insns));
     case insns of
       {} -> c
     | JMP (l) : _                -> eval (c, fromLabel (env, l))
@@ -200,6 +201,19 @@ fun eval (env, w, insns) {
             esac
           | DUP       -> case stack of x:tail -> [x:x:tail, controlStack, state, world] esac
           | SEXP(s, n)-> case take (stack, n) of [newStack, args] -> [Sexp (s, listArray (args)):newStack, controlStack, state, world] esac
+          | PATT (p)  -> 
+              case p of
+                Tag (t, size) ->
+                  case stack of
+                    Sexp (name, exprs) : stack -> [(compare (name, t) == 0 && length (exprs) == size) : stack, controlStack, state, world]
+                  | _                  : stack -> [0 : stack, controlStack, state, world]
+                  esac
+              | Array (size) ->
+                  case stack of
+                    arr@#array : stack -> [(length (arr) == size) : stack, controlStack, state, world]
+                  | _          : stack -> [0 : stack, controlStack, state, world]
+                  esac
+              esac
           esac;
 
         eval(newConfiguration, insnsTail)
@@ -576,6 +590,74 @@ public fun compileSM (expr) {
       | Elem (expr, index)    -> case compileArgs (env, {expr, index}) of [env, argsCode] -> [env, argsCode <+ ELEM] esac
       | ElemRef (expr, index) -> case compileArgs (env, {expr, index}) of [env, argsCode] -> [env, argsCode] esac
       | Sexp (name, exprs)    -> case compileArgs (env, exprs) of [env, argsCode] -> [env, argsCode <+ SEXP (name, size (exprs))] esac
+      | Case (scrutinee, brs) -> 
+          fun labelDepth (depth, label) {
+            if depth > 0
+            then sprintf("%s_drop_%d", label, depth)
+            else label
+            fi
+          }
+
+          fun genDrops (depth, label) {
+            var buf = emptyBuffer (), d = depth;
+
+            while d > 0 do
+              buf := buf <+ LABEL (labelDepth (d, label), false) <+ DROP;
+              d := d - 1
+            od;
+
+            buf
+          }
+
+          fun max(a, b) { if (a > b) then a else b fi }
+
+          fun compileAllPatterns(env, ps, nextPatt, depth) {
+            foldl(fun ([env, i, acc, maxDepth], p) { 
+              case compilePattern (env, p, nextPatt, depth + 1) of
+                [env, newDepth, pattCode] -> [env, i + 1, acc <+ DUP <+ CONST (i) <+ ELEM <+> pattCode <+ DROP, max (newDepth, maxDepth)]
+              esac
+            }, [env, 0, emptyBuffer (), depth], ps)
+          }
+
+          fun compilePattern(env, patt, nextPatt, depth) {
+            case patt of
+              Array (ps)      -> 
+                case compileAllPatterns (env, ps, nextPatt, depth) of
+                  [env, _, psCode, maxDepth] -> 
+                    [env, maxDepth, singletonBuffer(DUP) <+ PATT (Array (size(ps))) <+ CJMP ("z", labelDepth (depth, nextPatt)) <+> psCode]
+                esac
+            | Sexp (name, ps) -> 
+                case compileAllPatterns (env, ps, nextPatt, depth) of
+                  [env, _, psCode, maxDepth] -> 
+                    [env, maxDepth, singletonBuffer(DUP) <+ PATT (Tag (name, size(ps))) <+ CJMP ("z", labelDepth (depth, nextPatt)) <+> psCode]
+                esac
+            | Named (_, p)    -> compilePattern (env, p, nextPatt, depth)
+            | Const (n)       -> [env, depth, singletonBuffer(DUP) <+ CONST (n) <+ BINOP ("==") <+ CJMP ("z", labelDepth (depth, nextPatt))]
+            | All             -> [env, depth, emptyBuffer()]
+            esac
+          }
+
+          fun compileBranches(env, brs, successL) {
+            foldl(fun([env, code], [patt, branch]) { 
+              case genLabel (env) of
+                [nextPatt, env] ->
+                  case compilePattern (env, patt, nextPatt, 0) of
+                    [env, maxDepth, pattCode] ->
+                      case compile (env, branch) of
+                        [env, branchCode] -> [env, code <+> pattCode <+ DROP <+> branchCode <+ JMP (successL) <+> genDrops (maxDepth, nextPatt) <+ LABEL (nextPatt, false)]
+                      esac
+                  esac
+              esac
+              }, [env, emptyBuffer()], brs
+            )
+          }
+
+          case genLabel (env) of
+            [successL, env] -> 
+              case compileBranches (env, brs, successL) of
+                [env, code] -> [env, singletonBuffer (LD (lookupVar (env, scrutinee))) <+> code <+ LABEL (successL, false)]
+              esac
+          esac
     esac
   }
 
