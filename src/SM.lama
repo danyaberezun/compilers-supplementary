@@ -91,7 +91,6 @@ fun eval (env, w, insns) {
 
   -- Lookups a location in local/global states
   fun lookup ([args, locs], loc) {
-    -- printf("IN %s\n", showLoc (loc));
     case loc of
       Arg (i) -> args[i]
     | Loc (i) -> locs[i]
@@ -136,20 +135,7 @@ fun eval (env, w, insns) {
   -- Return pair ot new context and next commands
   fun evalCommand (c@[stack, callStack, state, world], command, commandTail) {
     case command of 
-      READ -> 
-      case readWorld (world) of [value, newWorld] ->
-        [[value:stack, callStack, state, newWorld], commandTail]
-      esac
-    | WRITE -> (
-        case stack of 
-          value:newStack -> (
-            var newWorld = writeWorld (value, world);
-            [[newStack, callStack, state, newWorld], commandTail]
-        )
-        | _ -> failure ("Got empty stack to WRITE")
-        esac
-    )
-    | BINOP (opStr) -> (
+      BINOP (opStr) -> (
         case stack of
           snd:fst:rest -> (
             var value = evalOp (opStr, fst, snd);
@@ -159,7 +145,6 @@ fun eval (env, w, insns) {
         esac
     )
     | LD (loc) -> (
-        -- printf("BEFORE %s\n", showLoc (loc));
         [[lookup (state, loc):stack, callStack, state, world], commandTail]
     )
     | ST (loc) -> (
@@ -223,6 +208,25 @@ fun eval (env, w, insns) {
         assign (state, Glb (varName), 0);
         [c, commandTail]
       )
+    | STRING (s) -> [[s:stack, callStack, state, world], commandTail]
+    | ARRAY (elemsCnt) ->
+      case take (stack, elemsCnt) of [newStack, elems] ->
+        [[listArray (elems):newStack, callStack, state, world], commandTail]
+      esac
+    | ELEM ->
+      case stack of idx:arr:rest ->
+        [[arr[idx]:rest, callStack, state, world], commandTail]
+      esac
+    | STA ->
+      case stack of value:idx:arr:rest ->
+        arr[idx] := value;
+        [[value:rest, callStack, state, world], commandTail]
+      esac
+    | BUILTIN (name, argsCnt) ->
+      case take (stack, argsCnt) of [newStack, args] ->
+      case evalBuiltin(name, args, world) of [funcRes, newWorld] ->
+        [[funcRes:newStack, callStack, state, newWorld], commandTail]
+      esac esac
     esac
   }
 
@@ -512,18 +516,24 @@ fun compileSMBuff (env, stmt) {
     case compileSMBuff (env1, r) of [env2, codeR] ->
       [env2, codeL <+> codeR <+ BINOP (opStr)]
     esac esac
-  | Assn (e0, e1) -> 
-    case compileSMBuff (env, e0) of [env1, code0] ->
-    case compileSMBuff (env1, e1) of [env2, code1] ->
-      [env2, code0 <+> code1 <+ STI]
-    esac esac
-  | Read (e) -> 
-    case compileSMBuff (env, e) of [env1, codeE] ->
-      [env1, codeE <+ READ <+ STI <+ DROP]
-    esac
-  | Write (expr) -> 
-    case compileSMBuff (env, expr) of [env1, code] -> 
-      [env1, code <+ WRITE]
+  | Assn (refExpr, valueExpr) -> 
+    case refExpr of 
+      ElemRef (arrExpr, idxExpr) ->
+      case compileSMBuff (env, arrExpr) of [env1, arrCode] ->
+      case compileSMBuff (env1, idxExpr) of [env2, idxCode] ->
+      case compileSMBuff (env2, valueExpr) of [env3, valueCode] ->
+        [env3, arrCode <+> idxCode <+> valueCode <+ STA]
+      esac esac esac
+    | Ref (x) -> 
+        var varLoc = lookupVar (env, x);
+        case compileSMBuff (env, valueExpr) of [env1, valueCode] ->
+          [env1, valueCode <+ ST (varLoc)]
+        esac
+    | _ ->
+      case compileSMBuff (env, refExpr) of [env1, refCode] ->
+      case compileSMBuff (env1, valueExpr) of [env2, valueCode] ->
+        [env2, refCode <+> valueCode <+ STI]
+      esac esac
     esac
   | Skip -> [env, emptyBuffer ()]
   | Seq (x, y) -> 
@@ -581,9 +591,28 @@ fun compileSMBuff (env, stmt) {
         [endScope (env3), prologCode <+> exprCode]
       esac esac
   | Call (fName, argExprs) ->
-    case lookupFun (env, fName) of Fun (fLabel, argsCnt) ->
-    case compileSMBuffList (env, argExprs) of [env2, argsCode] ->
-      [env2, argsCode <+ CALL (fLabel, argsCnt)]
+      var callCommand = case fName of
+                          "read" -> BUILTIN ("read", 0)
+                        | "write" -> BUILTIN ("write", 1)
+                        | "length" -> BUILTIN ("length", 1)
+                        | "stringval" -> BUILTIN ("stringval", 1)
+                        | _ -> 
+                          case lookupFun (env, fName) of Fun (fLabel, argsCnt) ->
+                            CALL (fLabel, argsCnt)
+                          esac
+                        esac;
+      case compileSMBuffList (env, argExprs) of [env1, argsCode] ->
+        [env1, argsCode <+ callCommand]
+      esac
+  | String (s) -> [env, singletonBuffer (STRING (s))]
+  | Array (elemExprs) ->
+    case compileSMBuffList (env, elemExprs) of [env1, elemsCode] ->
+      [env1, elemsCode <+ ARRAY (size (elemExprs))]
+    esac
+  | Elem (arrExpr, idxExpr) ->
+    case compileSMBuff (env, arrExpr) of [env1, arrCode] ->
+    case compileSMBuff (env1, idxExpr) of [env2, idxCode] ->
+      [env2, arrCode <+> idxCode <+ ELEM]
     esac esac
   esac
 }
@@ -602,7 +631,7 @@ fun compileFun(env, Fun (fLabel, args, body, state)) {
 
 fun compileFuncs(env, funcs) {
   foldl (
-    fun ([curEnv, curCode], func) {
+    fun ([curEnv, curCode], func@Fun (fLabel, args, body, state)) {
       case compileFun (curEnv, func) of [newEnv, funcCode] ->
         [newEnv, curCode <+> funcCode]
       esac
@@ -634,7 +663,7 @@ fun compileFuncsRecurively(env) {
 -- Takes an expression, returns a list of stack machine
 -- instructions.
 public fun compileSM (expr) {
-  var env = initCompEnv ();
+  var env = beginScope (initCompEnv ());
   case compileSMBuff (env, expr) of [env1, mainCode] ->
     var functionsCode = compileFuncsRecurively (env1);
     var code = singletonBuffer (LABEL ("main"))
