@@ -163,7 +163,7 @@ fun eval (env, w, insns) {
     )
     | CONST (value) -> [[value:stack, callStack, state, world], commandTail]
     | JMP (label) -> [c, fromLabel (env, label)]
-    | LABEL (_) -> [c, commandTail]
+    | LABEL (_, _) -> [c, commandTail]
     | CJMP (type, label) -> (
       case stack of
         head:tail -> (
@@ -252,6 +252,22 @@ fun eval (env, w, insns) {
       case evalBuiltin(name, args, world) of [funcRes, newWorld] ->
         [[funcRes:newStack, callStack, state, newWorld], commandTail]
       esac esac
+    | PATT (Array (elemsCnt)) -> 
+      case stack of scrutinee:rest ->
+        var matchRes = case scrutinee of
+                         #array -> length (scrutinee) == elemsCnt
+                       | _ -> 0
+                       esac;
+        [[matchRes:rest, callStack, state, world], commandTail] 
+      esac
+    | PATT (Tag (tagName, elemsCnt)) ->
+      case stack of scrutinee:rest -> 
+        var matchRes = case scrutinee of
+                         Sexp (sexpName, elems) -> (compare (sexpName, tagName) == 0) && (length (elems) == elemsCnt)
+                       | _ -> 0
+                       esac;
+        [[matchRes:rest, callStack, state, world], commandTail]
+      esac
     esac
   }
 
@@ -549,6 +565,71 @@ fun compileSMBuffList(env, stmts) {
   )
 }
 
+fun compilePatternsList (env, patterns, failLabel) {
+  fun inner (curEnv, curCode, curPatterns, curIdx) {
+    case curPatterns of 
+      {} -> [curEnv, curCode]
+    | headPattern:tailPatterns -> 
+      case compilePattern (curEnv, headPattern) of [curEnv1, headCode] ->
+        var newCode = curCode <+ DUP <+ CONST (curIdx) <+ ELEM <+> headCode <+ CJMP ("z", failLabel);
+        inner (curEnv1, newCode, tailPatterns, curIdx + 1)
+      esac 
+    esac
+  }
+  inner (env, emptyBuffer (), patterns, 0)
+}
+
+fun compileArrayPattern(env, patterns, patternCheck) {
+  case genLabels (env, 2) of [failLabel, exitLabel, env1] ->
+  case compilePatternsList (env1, patterns, failLabel) of [env2, listCode] ->
+    [env2, singletonBuffer (DUP)
+           <+ patternCheck
+           <+ CJMP ("z", failLabel)
+           <+> listCode
+           <+ DROP
+           <+ CONST (1)
+           <+ JMP (exitLabel)
+           <+ LABEL (failLabel, false)
+           <+ DROP
+           <+ CONST (0)
+           <+ LABEL (exitLabel, false)
+    ]
+  esac esac
+}
+
+fun compilePattern (env, pattern) {
+  case pattern of
+    Wildcard -> [env, listBuffer ({DROP, CONST (1)})]
+  | Const (n) -> [env, listBuffer ({CONST (n), BINOP ("==")})]
+  | Named (_, None) -> [env, listBuffer ({DROP, CONST (1)})]
+  | Named (_, Some (p)) -> compilePattern (env, p)
+  | Array (patterns) -> compileArrayPattern (env, patterns, PATT (Array (size (patterns))))
+  | Sexp (name, patterns) -> compileArrayPattern(env, patterns, PATT (Tag (name, size (patterns))))
+  esac
+}
+
+fun compileCases(env, cases, matchFinishLabel) {
+  foldl (
+    fun ([curEnv, curCode], [pattern, expr]) {
+      case compilePattern (curEnv, pattern) of [curEnv1, patternCode] ->
+      case compileSMBuff (curEnv1, expr) of [curEnv2, exprCode] ->
+      case genLabel (curEnv2) of [nextCaseLabel, curEnv3] ->
+        [curEnv3, curCode   
+                  <+ DUP
+                  <+> patternCode
+                  <+ CJMP ("z", nextCaseLabel)
+                  <+ DROP
+                  <+> exprCode
+                  <+ JMP (matchFinishLabel)
+                  <+ LABEL (nextCaseLabel, false)
+        ]
+      esac esac esac
+    },
+    [env, emptyBuffer ()],
+    cases
+  )
+}
+
 fun compileSMBuff (env, stmt) {
   case stmt of
     Var (varName) ->
@@ -588,28 +669,28 @@ fun compileSMBuff (env, stmt) {
                   <+ CJMP ("z", falseLabel) 
                   <+> trueStmtCode
                   <+ JMP (exitLabel)
-                  <+ LABEL (falseLabel)
+                  <+ LABEL (falseLabel, false)
                   <+> falseStmtCode
-                  <+ LABEL (exitLabel);
+                  <+ LABEL (exitLabel, false);
       [env3, newCode]
     esac esac esac esac
   | While (cond, body) -> 
     case genLabels (env, 2) of [condLabel, exitLabel, env0] ->
     case compileSMBuff (env0, cond) of [env1, condCode] ->
     case compileSMBuff (env1, body) of [env2, bodyCode] ->
-      var newCode = singletonBuffer (LABEL (condLabel))
+      var newCode = singletonBuffer (LABEL (condLabel, true))
                   <+> condCode
                   <+ CJMP ("z", exitLabel)
                   <+> bodyCode
                   <+ JMP (condLabel)
-                  <+ LABEL (exitLabel);
+                  <+ LABEL (exitLabel, false);
       [env2, newCode]
     esac esac esac
   | DoWhile (body, cond) -> 
     case genLabel (env) of [bodyLabel, env0] ->
     case compileSMBuff (env0, cond) of [env1, condCode] ->
     case compileSMBuff (env1, body) of [env2, bodyCode] ->
-      var newCode = singletonBuffer (LABEL (bodyLabel))
+      var newCode = singletonBuffer (LABEL (bodyLabel, true))
                   <+> bodyCode
                   <+> condCode
                   <+ CJMP ("nz", bodyLabel);
@@ -661,6 +742,13 @@ fun compileSMBuff (env, stmt) {
     case compileSMBuff (env1, idxExpr) of [env2, idxCode] ->
       [env2, arrCode <+> idxCode]
     esac esac
+  | Case (scrutineeName, cases) -> (
+      var scrutineeLoc = lookupVar (env, scrutineeName);
+      case genLabel (env) of [matchFinishLabel, env1] ->
+      case compileCases (env1, cases, matchFinishLabel) of [env2, casesCode] ->
+        [env2, singletonBuffer (LD (scrutineeLoc)) <+> casesCode <+ LABEL (matchFinishLabel, false)]
+      esac esac
+    )
   esac
 }
 
@@ -668,7 +756,7 @@ fun compileFun(env, Fun (fLabel, args, body, state)) {
   var env1 = beginFun (env, state);
   var env2 = addArgs (env1, args);
   case compileSMBuff (env2, body) of [env3, bodyCode] ->
-    var funcCode = singletonBuffer (LABEL (fLabel)) 
+    var funcCode = singletonBuffer (LABEL (fLabel, false)) 
                    <+ BEGIN (fLabel, size (args), getLocals (env3))
                    <+> bodyCode
                    <+ END;
@@ -713,7 +801,7 @@ public fun compileSM (expr) {
   var env = beginScope (initCompEnv ());
   case compileSMBuff (env, expr) of [env1, mainCode] ->
     var functionsCode = compileFuncsRecurively (env1);
-    var code = singletonBuffer (LABEL ("main"))
+    var code = singletonBuffer (LABEL ("main", false))
                <+ BEGIN ("main", 0, getLocals (env1))
                <+> mainCode
                <+ END
