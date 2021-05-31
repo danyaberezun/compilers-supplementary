@@ -122,34 +122,48 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun initScope(s, d) {
-  while size(d) > 0 do
-    s := case d.fst of 
-           Var (x) -> addNames (s, x)
-         | Fun (f, args, body) -> addFunction (s, f, args, body)
-         esac;
-    d := d.tl
-  od;
-  s
-}
+var match = fun (pat, e) {
+    case [pat, e] of
+      [Wildcard, _] -> 1
+    | [Named (_, pat), e] -> match (pat, e)
+    | [Decimal (d), e] -> compare (d, e) == 0
+    | [Sexp (s1, args1), Sexp (s2, args2)] ->
+        if compare (s1, s2) == 0
+        then matchList (args1, arrayList (args2))
+        else 0
+        fi
+    | [Const (vr), e] -> vr == e
+    | [Array (args1), args2] -> matchList (args1, arrayList (args2))
+    | _ -> 0
+    esac
+};
 
-fun initFunArgs (s, argsNames, args) {
-  while size(args) > 0 do
-    s := addName(s, argsNames.fst, args.fst);
-    argsNames := argsNames.tl;
-    args := args.tl
-  od;
-  s
-}
+var matchList = fun (pat, e) {
+  case [pat, e] of [pat : pt, e : et] -> 
+    if match (pat, e)
+    then matchList (pt, et)
+    else 0
+    fi
+  | [{}, {}] -> 1
+  | _ -> 0
+  esac
+};
+
+var evalCases = fun (c, cases, e) {
+  case cases of [pat, cs] : cases -> 
+    if match (pat, e) 
+    then eval (c, cs)
+    else evalCases (c, cases, e)
+    fi
+  esac
+};
 
 fun eval (c@[st, w], expr) {
   case expr of
     Assn (lExpr, rExpr) ->
-      case evalList (c, {lExpr, rExpr}) of [c@[st, w], {lExpr, rExpr}] -> 
-        case lExpr of
-          {x, i} -> x[i] := rExpr; [c, rExpr]
-        | _ ->  [[st <- [lExpr, rExpr], w], rExpr]
-        esac
+      case evalList (c, {lExpr, rExpr}) of [c@[st, w], {Ref (lExpr), rExpr}] -> 
+        [[st <- [lExpr, Val (rExpr)], w], rExpr]
+      | [c, {ElemRef (x, i), rExpr}] -> x[i] := rExpr; [c, rExpr]
       esac
   | Seq  (lExpr, rExpr) -> case evalList (c, {lExpr, rExpr}) of [c, {v1, v2}] -> [c, v2] esac
   | Skip -> [c, Void]
@@ -168,53 +182,81 @@ fun eval (c@[st, w], expr) {
         [c, 0] -> [c, Bottom] |
         [c, _] -> eval (c, expr)
       esac 
-  | Var   (x) -> [c, lookup(st, x)]
-  | Ref   (x) -> [c, x]
+  | Var   (x) -> [c, case lookupVal (st, x) of Val (v) -> v esac]
+  | Ref   (x) -> [c, Ref (x)]
   | Const (z) -> [c, z]
   | Binop (op, lExpr, rExpr) -> 
       case evalList (c, {lExpr, rExpr}) of
         [c@[st, w], {l1Expr, r1Expr}] -> [c, binOp (op, l1Expr, r1Expr)]
       esac
-  | Scope (defs, expr) ->
-      st := enterScope (st);
-      st := initScope (st, defs);
-      case eval ([st, w], expr) of
-        [[st, w], r] -> [[leaveScope (st), w], r]
-      esac
+  | Scope (defs, expr) -> 
+      if size (defs) == 0 then eval (c, expr)
+      else
+        st := enterScope (st);
+        while size (defs) > 0 do
+          st := case defs.fst of
+            Var (defs) -> addNames (st, defs)
+          | Val (defs) -> addNames (st, defs)
+          | Fun (name, args, body) -> addFunction (st, name, args, body)
+          esac;
+          defs := defs.tl
+        od;
+        case eval ([st, w], expr) of
+          [[st, w], v] -> [[leaveScope (st), w], v]
+        esac
+      fi
   | Sexp (s, list) -> 
       case evalList (c, list) of
-        [c, list] -> [c, listArray (list)]
+        [c, list] -> [c, Sexp (s, listArray (list))]
       esac
-  | Call (f, args) ->  
-      case lookup (st, f) of Fun (argsNames, expr) ->
-        case evalList (c, args) of [[st, w], args] ->
-          case initFunArgs (enterFunction (st), argsNames, args) of st ->
-            case expr of External -> 
-              case evalBuiltin (f, args, w) of 
-                [x, w] -> [[leaveFunction (c.fst, getGlobal (st)), w], x]
-              esac
-          | _ ->    
-          case eval ([st, w], expr) of 
-            [[st, w], r] -> [[leaveFunction (c.fst, getGlobal (st)), w], r]
+  | Call (name, args) -> 
+      case lookupFun (st, name) of Fun (as, body) ->
+        var prevSt = st;
+        case evalList (c, args) of [[st, w], vals] ->
+          case body of
+            External -> case evalBuiltin (name, vals, w) of [n, w] -> [[st, w], n] esac
+          | _ -> 
+            st := enterFunction (st);
+            while size (as) > 0 do
+              st := addName (st, as.fst, Val (vals.fst));
+              as := as.tl;
+              vals := vals.tl
+            od;
+            case eval ([st, w], body) of [[st, w], ret] ->
+              st := leaveFunction (prevSt, getGlobal (st));
+              [[st, w], ret]
+            esac
           esac
         esac
       esac
-    esac
-  esac
-  | Ignore (e) -> [eval (c, e).fst, Void]
-  | String (x) -> [c, x]
-  | Elem (expr1, expr2) ->
-      case evalList (c, {expr1, expr2}) of
-        [c, {expr1, expr2}] -> [c, expr1[expr2]]
+  | Case (e, cases) -> 
+      case eval (c, e) of
+        [c, v] -> evalCases (c, cases, v)
       esac
-  | ElemRef (expr1, expr2) -> evalList (c, {expr1, expr2})
+  | Ignore (e) -> [eval (c, e).fst, Void]
+  | String (st) -> [c, st]
+  | Elem (arr, ind) -> 
+      case evalList (c, {arr, ind}) of
+        [c, {arr, ind}] -> 
+        case arr of
+          Sexp (s, arr) -> [c, arr[ind]]
+        | _ -> [c, arr[ind]]
+        esac
+      esac
+  | ElemRef (arr, ind) -> 
+      case evalList (c, {arr, ind}) of
+        [c, {arr, ind}] -> 
+        case arr of
+          Sexp (s, arr) -> [c, ElemRef (arr, ind)]
+        | _ -> [c, ElemRef (arr, ind)]
+        esac
+      esac
   | Array (list) -> 
       case evalList (c, list) of
         [c, list] -> [c, listArray (list)]
       esac
   esac
 }
-(* End *)
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
