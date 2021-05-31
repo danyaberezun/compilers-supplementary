@@ -107,7 +107,8 @@ void* Belem (void *p, int i0) {
   return (void*) ((int*) a->contents)[i];
 }
 
-void* Bsta (int i0, void *v, void *x) {
+<<<<<<< HEAD
+void* Bsta (void *v, int i0, void *x) {
   int i = UNBOX (i0);
   
   if (TAG(TO_DATA(x)->tag) == STRING_TAG) 
