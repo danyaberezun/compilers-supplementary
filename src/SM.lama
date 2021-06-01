@@ -90,55 +90,7 @@ public fun countOp (op, x, y) {
   esac   
 }
 
-fun evalOneInstr (c@[stack, state, world], insn) {
-  case insn of
-    CONST (n) -> [[n:stack , state, world], Stay]
-  | READ -> 
-      case readWorld (world) of
-        [n, new_world] -> [[n:stack, state, new_world], Stay]
-      esac
-  | WRITE ->
-      case stack of
-        z:zs -> [[zs, state, writeWorld (z, world)], Stay]
-      esac
-  | LD (x) -> [[(state (x)):stack, state, world], Stay]
-  | LDA (x) -> [[(Ref (x)):stack, state, world], Stay]
-  | ST (x) -> 
-      case stack of
-        z:zs -> [[z:zs, state <- [x, z], world], Stay]
-      esac
-  | STI ->
-    case stack of
-      v:Ref (x):s -> [[v:s, state <- [x, v], world], Stay]
-    esac
-  | BINOP (op) -> 
-      case stack of
-        y:x:s ->
-          [[countOp(op, x, y):s, state, world], Stay]
-      esac
-  | LABEL (s) ->
-      [c, Stay]
-  | JMP (l) ->
-      [c, Jump (l)]
-  | CJMP (cond, l) ->
-      case stack of 
-        value:stack_tail -> 
-          case [value, cond] of
-            [0, "z"] -> [[stack_tail, state, world], Jump (l)]
-          | [1, "nz"] -> [[stack_tail, state, world], Jump (l)]
-          | _ -> [[stack_tail, state, world], Stay]
-          esac
-      esac
-  | DROP ->
-      case stack of
-        x:s -> [[s, state, world], Stay]
-      esac
-  | DUP ->
-      case stack of
-        x:s -> [[x:stack, state, world], Stay]
-      esac
-  esac
-}
+
 
 -- Stack machine interpreter. Takes an environment, a world and a program,
 -- returns a final output
@@ -170,7 +122,7 @@ fun eval (env, w, insns) {
                  globalState ::= fun (y) {if compare (x, y) == 0 then v else g (y) fi}
     esac
   }
-
+  
   -- Takes n positions from the list, retursn a pair: the remaining list and the taken
   -- sublist
   fun take (list, n) {
@@ -184,10 +136,100 @@ fun eval (env, w, insns) {
     inner (n, {}, list)
   }
 
+  fun assignList (state, index, values) {
+    case values of
+      v:vs -> 
+        assign (state, Arg (index), v);
+        assignList (state, index + 1, vs)
+    | _ -> skip
+    esac
+  }
+
+  fun evalOneInstr (c@[stack, sc, state, world], insn, p) {
+  case insn of
+    CONST (n) -> [[n:stack, sc, state, world], p]
+  | READ -> 
+      case readWorld (world) of
+        [n, new_world] -> [[n:stack, sc, state, new_world], p]
+      esac
+  | WRITE ->
+      case stack of
+        z:zs -> [[zs, sc, state, writeWorld (z, world)], p]
+      esac
+  | LD (x) -> [[(lookup (state, x)):stack, sc, state, world], p]
+  | LDA (x) -> 
+      [[(Ref (x)):stack, sc, state, world], p]
+  | ST (x) -> 
+      case stack of
+        z:zs -> 
+          assign (state, x, z);
+          [[z:zs, sc, state, world], p]
+      esac
+  | STI ->
+    case stack of
+      v:Ref (x):s -> 
+        assign (state, x, v);
+        [[v:s, sc, state, world], p]
+    esac
+  | BINOP (op) -> 
+      case stack of
+        y:x:s ->
+          [[countOp(op, x, y):s, sc, state, world], p]
+      esac
+  | LABEL (s) ->
+      [c, p]
+  | JMP (l) ->
+      [c, fromLabel (env, l)]
+  | CJMP (cond, l) ->
+      case stack of 
+        value:stack_tail -> 
+          case [value, cond] of
+            [0, "z"] -> [[stack_tail, sc, state, world], fromLabel (env, l)]
+          | [1, "nz"] -> [[stack_tail, sc, state, world], fromLabel (env, l)]
+          | _ -> [[stack_tail, sc, state, world], p]
+          esac
+      esac
+  | DROP ->
+      case stack of
+        x:stack -> [[stack, sc, state, world], p]
+      | _ -> failure ("""%s""", c.string)
+      esac
+  | DUP ->
+      case stack of
+        x:s -> [[x:stack, sc, state, world], p]
+      esac
+  | CALL   (f, n)    ->
+      [[stack, [state, p]:sc, state, world], fromLabel (env, f)]
+  | BEGIN  (f, a, l) -> 
+      case take (stack, a) of
+        [stack, args] ->
+          var state_ = makeState (a, l);
+          assignList (state_, 0, args);
+          [[stack, sc, state_, world], p]
+      esac 
+  | GLOBAL (x)       ->
+      assign (state, Glb (x), 0);
+      [[stack, sc, state, world], p]
+  | END              -> 
+      case sc of
+        [state, next_insns]:sc -> [[stack, sc, state, world], next_insns]
+      | {} -> [c, {}]
+      esac
+  esac
+}
+
   -- Core interpreter: takes a configuration and a program, returns a configuration
   (* Assignment *)
   fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+    --failure ("""%s""", insns.string);
+    case insns of
+      insn:insns ->
+        case evalOneInstr (c, insn, insns) of
+          [c, next_insns] ->
+            eval (c, next_insns)
+        esac
+    | _ -> c
+    esac
   }
   (* End *)
   
@@ -391,9 +433,62 @@ fun addVars (env, names) {
   foldl (fun (env, name) {addVar (env, name)}, env, names)
 }
 
+fun rememberFuns (env, funcs) {
+  foldl (
+    fun (env, [label, args, body]) {
+      rememberFun (env, label, args, body)
+    },
+    env, funcs
+  )
+}
+
+
+fun collectDefinitions (defs) {
+  foldl (
+    fun ([vars, funcs], def) {
+      case def of
+        Var (names) -> [names +++ vars, funcs]
+      | func@Fun (name, args, body) -> [vars, func:funcs]
+      esac
+    },
+    [{}, {}], defs)
+}
+
+fun addFuncs (env, funcs) {
+  foldl (
+    fun ([env, funcs], Fun (name, args, body)) {
+      case genFunLabel (env, name) of
+        [label, env] ->
+          [addFun (env, name, label, size (args)), [label, args, body]:funcs]
+      esac
+    }, 
+    [env, {}], funcs)
+}
+
+fun addGlobalTag (env, vars) {
+  if isGlobal (env) 
+  then
+    listBuffer (map (fun (x) { GLOBAL (x) }, vars))
+  else emptyBuffer ()
+  fi
+}
+
+fun compileArgs (env, args) {
+  case args of
+    arg:args ->
+      case compileSMrec (env, arg) of
+        [stmts_arg, env] ->
+          case compileArgs (env, args) of
+            [stmts_args, env] -> [stmts_arg <+> stmts_args, env]
+          esac
+      esac
+  | _ -> [emptyBuffer (), env]
+  esac
+}
+
 fun compileSMrec (env, stmt) {
   case stmt of
-    Var (x) -> [singletonBuffer (LD (x)), env]
+    Var (x) -> [singletonBuffer (LD (lookupVar (env, x))), env]
   | Const (x) -> [singletonBuffer (CONST (x)), env]
   | Binop (op, x, y) -> 
       case compileSMrec (env, x) of
@@ -402,7 +497,7 @@ fun compileSMrec (env, stmt) {
             [y, env] -> [(x <+> y) <+ BINOP (op), env]
           esac
       esac
-  | Ref (name) -> [singletonBuffer (LDA (name)), env]
+  | Ref (name) -> [singletonBuffer (LDA (lookupVar (env, name))), env]
   | Ignore (e) ->
     case compileSMrec (env, e) of
       [v, env] -> [v <+ DROP, env]
@@ -469,6 +564,29 @@ fun compileSMrec (env, stmt) {
             esac
           esac
       esac
+  | Call (name, args_exprs) ->
+      case lookupFun (env, name) of
+        Fun (label, nargs) ->
+          case compileArgs (env, args_exprs) of
+            [stmts_args, env] -> [stmts_args <+ CALL (label, nargs), env]
+          esac
+      esac
+  | Scope (defs, e) ->
+      -- failure ("""%s""", defs.string);
+      case collectDefinitions (defs) of -- 2.a
+        [vars, funcs] -> 
+          -- failure ("""%s""", vars.string);
+          case addFuncs (addVars (beginScope (env), vars), funcs) of
+            [env, funcs] ->
+              -- failure ("""%s""", env.string);
+              var glob_vars = addGlobalTag (env, vars); -- 2.b
+              var new_env = rememberFuns (env, funcs); -- 2.c
+              -- failure ("""%s""", vars.string)
+              case compileSMrec (new_env, e) of
+                [stmts, env] -> [glob_vars <+> stmts, endScope (env)] 
+              esac
+          esac
+      esac
   esac
 }
 
@@ -477,6 +595,32 @@ fun compileSMrec (env, stmt) {
 -- instructions.
 
 (* Assignment *)
+fun generateFunction (env, label, args, body, state) {
+  var env_ = beginFun (env, state);
+  case compileSMrec (addArgs (env_, args), body) of
+    [code, env] ->
+      [emptyBuffer () <+ LABEL (label) 
+                      <+ BEGIN (label, size (args), getLocals (env))
+                      <+> code <+ END, env]
+  esac
+}
+
+fun generateFunctionsCode (env) {
+  case getFuns (env) of
+    [funcs, env] ->
+      foldl (
+        fun ([stmts, env], Fun (label, args, body, state)) {
+          case generateFunction (env, label, args, body, state) of
+            [stmts_func, env] -> 
+              case generateFunctionsCode (env) of
+                [stmts_inner, env] ->
+                  [stmts_func <+> stmts_inner <+> stmts, env]
+              esac
+          esac
+        },
+      [emptyBuffer (), env], funcs)
+  esac
+}
 
 -- Some guidelines for compiling functions and scopes.
 --
@@ -497,6 +641,16 @@ fun compileSMrec (env, stmt) {
 --    environment (use env.beginFun) and register arguments
 --    (use env.addArg).
 public fun compileSM (stmt) {
-  (compileSMrec (initCompEnv (), stmt) [0]) . getBuffer
+  -- failure ("""%s""", stmt.string);
+  case compileSMrec (initCompEnv (), stmt) of
+    [prog_code, env] ->
+      var locals = getLocals (env);
+      -- failure ("""%s""", prog_code.string);
+      case generateFunctionsCode (env) of
+        [stmts_funcs, env] ->
+          getBuffer (singletonBuffer (LABEL ("main")) <+ BEGIN ("main", 0, locals) 
+                                      <+> prog_code <+ END <+> stmts_funcs)
+      esac
+  esac
 }
 (* End *)
