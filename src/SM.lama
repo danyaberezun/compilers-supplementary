@@ -219,12 +219,35 @@ fun eval (env, w, insns) {
         [state, next_insns]:sc -> [[stack, sc, state, world], next_insns]
       | {} -> [c, {}]
       esac
+  | STRING (s) -> [[s:stack, sc, state, world], p]
+  | ARRAY (n) ->
+      case take (stack, n) of
+        [stack, args] ->
+          [[listArray (args) : stack, sc, state, world], p]
+      esac
+  | STA ->
+      case stack of
+        v : i : a : s -> 
+          a[i] := v;
+          [[v : s, sc, state, world], p]
+      esac
+  | ELEM ->
+      case stack of
+        i : a : s -> [[a[i] : s, sc, state, world], p]
+      esac
+  | BUILTIN (name, n) ->
+      case take (stack, n) of
+        [stack ,args] ->
+          case evalBuiltin (name, args, world) of
+            [res, world] -> [[res : stack, sc, state, world], p]
+          esac
+      esac
   esac
 }
 
   -- Core interpreter: takes a configuration and a program, returns a configuration
   fun eval (c@[st, cst, s, w], insns) {
-    --failure ("""%s""", insns.string);
+    -- failure ("""%s""", insns.string);
     case insns of
       insn:insns ->
         case evalOneInstr (c, insn, insns) of
@@ -489,6 +512,14 @@ fun compileArgs (env, args) {
   esac
 }
 
+fun compileExprs (exprs, env) {
+  foldl (fun ([code, env], expr) {
+           case compileSMrec (env, expr) of
+             [new_code, env] -> [code <+> new_code, env]
+           esac 
+        }, [emptyBuffer (), env], exprs)
+}
+
 fun compileSMrec (env, stmt) {
   case stmt of
     Var (x) -> [singletonBuffer (LD (lookupVar (env, x))), env]
@@ -510,16 +541,13 @@ fun compileSMrec (env, stmt) {
       case compileSMrec (env, x) of
         [insts_x, env] ->
           case compileSMrec (env, e) of
-            [insts_e, env] -> [insts_x <+> insts_e <+ STI, env]
+            [insts_e, env] -> 
+                var state_command = case x of
+                  ElemRef (arr, index) -> STA
+                | _ -> STI
+                esac;
+                [insts_x <+> insts_e <+ state_command, env]
           esac
-      esac
-  | Read (x) -> 
-      case compileSMrec (env, x) of
-        [insts, env] -> [insts <+ READ <+ STI <+ DROP, env]
-      esac
-  | Write (e) -> 
-      case compileSMrec(env, e) of
-        [insts, env] -> [insts <+ WRITE, env]
       esac
   | Seq (s1, s2) -> 
       case compileSMrec (env, s1) of
@@ -568,16 +596,24 @@ fun compileSMrec (env, stmt) {
           esac
       esac
   | Call (name, args_exprs) ->
-      case lookupFun (env, name) of
-        Fun (label, nargs) ->
-          case compileArgs (env, args_exprs) of
-            [stmts_args, env] -> [stmts_args <+ CALL (label, nargs), env]
-          esac
+      case compileArgs (env, args_exprs) of
+          [stmts_args, env] -> 
+            var command = case name of
+              "write" -> BUILTIN ("write", 1)
+            | "read" -> BUILTIN ("read", 0)
+            | "length" -> BUILTIN ("length", 1)
+            | "stringval" -> BUILTIN ("stringval", 1)
+            | _ ->
+              case lookupFun (env, name) of
+                Fun (label, nargs) ->  CALL (label, nargs)
+              esac
+            esac;
+            [stmts_args <+ command, env]
       esac
   | Scope (defs, e) ->
       -- failure ("""%s""", defs.string);
       case collectDefinitions (defs) of -- 2.a
-        [vars, funcs] -> 
+        [vars, funcs] ->
           -- failure ("""%s""", vars.string);
           case addFuncs (addVars (beginScope (env), vars), funcs) of
             [env, funcs] ->
@@ -590,6 +626,25 @@ fun compileSMrec (env, stmt) {
               esac
           esac
       esac
+  | String  (s) -> [singletonBuffer (STRING (s)), env]        
+  | Array   (exprs) ->
+      case compileExprs (exprs, env) of
+        [stmts, env] -> [stmts <+ ARRAY (size (exprs)), env]
+      esac
+  | Elem    (arr, index) ->
+      case compileSMrec (env, arr) of
+        [arr_code, env] ->
+          case compileSMrec (env, index) of
+            [index_code, env] -> [arr_code <+> index_code <+ ELEM, env]
+          esac
+      esac
+  | ElemRef (arr, index) ->
+      case compileSMrec (env, arr) of
+        [arr_code, env] ->
+          case compileSMrec (env, index) of
+            [index_code, env] -> [arr_code <+> index_code, env]
+          esac
+      esac
   esac
 }
 
@@ -600,6 +655,7 @@ fun compileSMrec (env, stmt) {
 (* Assignment *)
 fun generateFunction (env, label, args, body, state) {
   var env_ = beginFun (env, state);
+  -- failure ("""%s""", body.string);
   case compileSMrec (addArgs (env_, args), body) of
     [code, env] ->
       [emptyBuffer () <+ LABEL (label) 
@@ -613,8 +669,10 @@ fun generateFunctionsCode (env) {
     [funcs, env] ->
       foldl (
         fun ([stmts, env], Fun (label, args, body, state)) {
+          -- failure ("""%s""", state.string);
           case generateFunction (env, label, args, body, state) of
             [stmts_func, env] -> 
+              
               case generateFunctionsCode (env) of
                 [stmts_inner, env] ->
                   [stmts_func <+> stmts_inner <+> stmts, env]
@@ -645,10 +703,9 @@ fun generateFunctionsCode (env) {
 --    (use env.addArg).
 public fun compileSM (stmt) {
   -- failure ("""%s""", stmt.string);
-  case compileSMrec (initCompEnv (), stmt) of
+  case compileSMrec (beginScope (initCompEnv ()), stmt) of
     [prog_code, env] ->
       var locals = getLocals (env);
-      -- failure ("""%s""", prog_code.string);
       case generateFunctionsCode (env) of
         [stmts_funcs, env] ->
           getBuffer (singletonBuffer (LABEL ("main")) <+ BEGIN ("main", 0, locals) 
