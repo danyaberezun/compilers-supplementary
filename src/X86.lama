@@ -28,16 +28,16 @@ var ebx = R (0),
 var wordSize = 4;
 
 -- We need to distinguish the following operand types: 
---    R (int)       -- hard register                    
---    S (int)       -- a position on the hardware stack 
---    M (string)    -- a named memory location          
+--    R (int)       -- hard register
+--    S (int)       -- a position on the hardware stack
+--    M (string)    -- a named memory location
 --    L (int)       -- an immediate operand
 --    I (int, opnd) -- an indirect operand with offset
 
 -- Some x86 instruction (we do not need all of them):
 --   Mov   (opnd, opnd)         -- copies a value from the first to the second operand  
 --   Lea   (opnd, opnd)         -- loads an address of the first operand into the second
---   Binop (string, opnd, opnd) -- makes a binary operation; note, the first operand   
+--   Binop (string, opnd, opnd) -- makes a binary operation; note, the first operand
 --                                 designates x86 operator, not the source language one
 --   IDiv  (opnd)               -- x86 integer division, see instruction set reference 
 --   Cltd                       -- see instruction set reference           
@@ -155,7 +155,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
   fun peek () {
     stack.fst
   }
-  
+
   -- Adds a global variable; returns an updated environment
   fun addGlobal (name) {
     makeEnv (stack, stackSlots, addSet (globals, globalName (name)), barrier, stackMap)
@@ -344,6 +344,27 @@ fun suffix (op) {
   | "!=" -> "ne"
   | ">=" -> "ge"
   | ">"  -> "g"
+  | _ -> UNKNOWN_OP
+  esac
+}
+
+
+fun binOpToAS(op) {
+--  printf("inside binParser with %s", op);
+  case op of
+     "+" -> SMUL (op)
+    | "-" -> SMUL (op)
+    | "*" -> SMUL (op)
+    | "/" -> DIV (eax)
+    | "%" -> DIV (edx)
+    | "!!" -> LOP (op)
+    | "&&" -> LOP (op)
+    | _ -> (
+        case suffix (op) of
+            UNKNOWN_OP -> ""
+            | word -> CMP (word)
+        esac
+    )
   esac
 }
 
@@ -358,17 +379,68 @@ fun compile (env, code) {
           READ ->
             case env.allocate of
               [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
+            esac
         | WRITE ->
             case env.pop of
               [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
             esac
+       | DROP -> case env.pop of [_, env] -> [env, code] esac
+       | LDA (x) -> case env.allocate of
+              [s, env] -> [env.addGlobal(x), code <+ Lea (env.loc(x), eax) <+ Mov (eax, s)]
+            esac
+      | LD (x) ->
+          case env.addGlobal(x).allocate of
+            [s, env] -> [env, code <+> move (env.loc(x), s)]
+          esac
+      | LDA (x) ->
+          case env.allocate of
+            [s, env] -> [addGlobal(env, x), code <+ Lea (env.loc(x), s) ]
+          esac
+      | ST (x) ->
+         case env.addGlobal(x).pop of
+            [s, env] -> [env, code <+> move(s, env.loc(x))]
+         esac
+      | STI -> case env.pop2 of [y, x, env] ->
+                 case env.push(x) of env ->
+                   if memOpnd(y) then
+                     [env, code <+ Mov(y, eax) <+ Mov(x, edx) <+ Mov(eax, I(0, edx) <+ Mov(eax, x))]
+                   else
+                     [env, code <+ Mov(x, edx) <+ Mov(y, I(0, edx)) <+ Mov(y, x)]
+                   fi
+                 esac
+               esac
+      | CONST (x) ->
+        case env.allocate of
+            [s, env] -> [env, code <+ Mov ( L(x), s) ]
+        esac
+     | BINOP (op) ->
+        case env.pop2 of
+            [x, y, env] -> (
+                case env.push(y) of
+                    envNew -> case binOpToAS(op) of
+                           SMUL (op) -> [envNew, code <+ Mov (y, eax) <+ Binop (op, x, eax) <+ Mov (eax, y)]
+                           | DIV (reg) -> [envNew, code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (reg, y)]
+                           | CMP (op) -> [envNew, code <+ Mov (y, eax) <+ Binop ("cmp", x, eax) <+ Mov ( L(0), eax) <+ Set (op, "%al") <+ Mov (eax, y) ]
+                           | LOP (op) -> [envNew, code <+ Binop ("cmp", L(0), y) <+ Mov ( L(0), edx) <+ Set(suffix("!="), "%dl") <+
+                                          Binop ("cmp", L(0), x) <+ Mov ( L(0), eax) <+ Set(suffix("!="), "%al") <+
+--                           Binop("cmp", y, eax)  <+ Set(suffix("!="), "%al")  <+ Binop("cmp", x, edx) <+ Set(suffix("!="), "%dl") <+
+                                           Binop(op, edx, eax) <+ Mov(eax, y) ]
+                           | "" -> [envNew, code ]
+                          esac
+                esac
+            )
+        esac
+     | LABEL (l) -> [env, code <+ Label (l)]
+     | JMP (l) -> [env.setStack(l).setBarrier, code <+ Jmp (l) ]
+     | CJMP (mode, l) -> case env.pop of
+            [s, env] -> [env.setStack(l), code <+ Binop("cmp", L(0), s) <+ CJmp (mode, l) ]
+        esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
   }
 
-  compile (env, code) 
+  compile (env, code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
