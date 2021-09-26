@@ -18,4 +18,4 @@ $(TESTS): %: %.lama
 	./$@ > $@.s && gcc -g -m32 -o $@.run ../runtime/runtime.o $@.s && cat $@.input | ./$@.run > $@.log && diff $@.log orig/$@.log
 
 clean:
-	$(RM) *.s *.i *~ $(LOGS) $(TESTS)
+	$(RM) *.s *.i *.run *.sm *~ $(LOGS) $(TESTS)
