@@ -164,7 +164,13 @@ fun makeEnv (stack, stackSlots, globals) {
     stackSlots
   }
 
-  [envString, allocate, push, pop, pop2, addGlobal, loc, getGlobals, getStackSize]
+  fun top () {
+    case stack of
+      x : stack -> x
+    esac
+  }
+
+  [envString, allocate, push, pop, pop2, addGlobal, loc, getGlobals, getStackSize, top]
 }
 
 -- Exported accessors
@@ -202,6 +208,10 @@ fun getGlobals (env) {
 
 fun getStackSize (env) {
   env [8] ()
+}
+
+fun top (env) {
+  env [9] ()
 }
 
 -- Creates an initial environment
@@ -279,6 +289,12 @@ fun suffix (op) {
   esac
 }
 
+fun byteReg (reg) {
+  case reg of R (num) ->
+    "%" ++ regs[num].substring(2,1) ++ "l"
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -286,17 +302,94 @@ fun compile (env, code) {
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of
-        READ ->
+        READ      ->
           case env.allocate of
             [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
           esac             
-      | WRITE ->
+      | WRITE     ->
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      | LD    (x) ->
+          case env.allocate of
+            [s, env] -> [env.addGlobal (x), code <+> move (env.loc (x), s)]
+          esac
+      | ST    (x) ->
+          case env.pop of
+            [s, env] -> [env.addGlobal (x), code <+> move (s, env.loc (x))]
+          esac
+      | CONST (n) ->
+          case env.allocate of
+            [s, env] -> [env, code <+ Mov (L (n), s)]
+          esac
+      | BINOP (s) -> compileBinop (s, env, code)
+      esac
+    }, [env, emptyBuffer ()], code)
+}
+
+fun compileBinop (op, env, code) {
+  case env.pop of [src, env] -> case env.top of dst ->
+
+    fun compileSrcDst (op) {
+      if stackOpnd (dst)
+      then  {
+              Mov (dst, eax),
+              Binop (op, src, eax),
+              Mov (eax, dst)
+            }
+      else  {
+              Binop (op, src, dst)
+            }
+      fi
+    }
+
+    fun compileDivRem (op) {
+      {
+        Mov (dst, eax),
+        Cltd,
+        IDiv (src),
+        case op of
+          "/" -> Mov (eax, dst)
+        | "%" -> Mov (edx, dst)
         esac
-    }, [env, emptyBuffer ()], code)}
+      }
+    }
+
+    fun compileLogical (op) {
+      if stackOpnd (dst)
+      then  {
+              Mov (dst, eax),
+              Binop ("cmp", src, eax),
+              Mov (L (0), dst),
+              Set (suffix (op), dst)
+            }
+      else  {
+              Binop ("cmp", src, dst),
+              Mov (L (0), dst),
+              Set (suffix (op), byteReg (dst))
+            }
+      fi
+    }
+
+    [env, foldl (infix <+, code,
+      case op of
+        "+"  -> compileSrcDst ("+")
+      | "-"  -> compileSrcDst ("-")
+      | "&&" -> compileSrcDst ("&&")
+      | "!!" -> compileSrcDst ("!!")
+      | "*"  -> compileSrcDst ("*")
+      | "/"  -> compileDivRem ("/")
+      | "%"  -> compileDivRem ("%")
+      | "==" -> compileLogical ("==")
+      | "!=" -> compileLogical ("!=")
+      | "<"  -> compileLogical ("<")
+      | "<=" -> compileLogical ("<=")
+      | ">"  -> compileLogical (">")
+      | ">=" -> compileLogical (">=")
+      esac
+    )]
+  esac esac
+}
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
