@@ -19,4 +19,4 @@ expr_tests:
 	make -C deep-expressions
 
 clean:
-	$(RM) *.s *.i *~ $(LOGS) $(TESTS) *.run
+	$(RM) *.s *.i *~ $(LOGS) $(TESTS) *.run *.sm
