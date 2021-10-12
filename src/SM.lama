@@ -30,6 +30,25 @@ public fun showSM (prg) {
   map (fun (i) {showSMInsn (i) ++ "\n"}, prg).stringcat
 }
 
+-- Jump if False
+fun jmpF (label) {
+  CJMP ("z", label)
+}
+
+-- Jump if True
+fun jmpT (label) {
+  CJMP ("nz", label)
+}
+
+fun jmpCond (c) {
+  if compare (c, "z") == 0
+  then fun (v) {v == 0}
+  elif compare (c, "nz") == 0
+  then fun (v) {v != 0}
+  else failure ("Unknown jump condition")
+  fi
+}
+
 -- Evaluation environment: keeps a mapping between labels and (sub)programs
 fun initEvalEnv (insns) {
   var map =
@@ -55,19 +74,32 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (c, insns) {
-  foldl (evalOne, c, insns)
-}
+fun eval (env, [vstack, state, world], insns) {
+  fun ev (vstack, state, world, insns) {
+    case insns of 
+      ins:insns ->
+        case ins of
+          READ         -> case readWorld (world) of [value, newWorld] -> ev (value : vstack, state, newWorld, insns) esac
+        | WRITE        -> case vstack of head:tail -> ev (tail, state, writeWorld (head, world), insns) esac
+        | BINOP (s)    -> case vstack of r:l:tail -> ev (opValue (s) (l, r) : tail, state, world, insns) esac
+        | LD    (x)    -> ev (state (x) : vstack, state, world, insns)
+        | ST    (x)    -> case vstack of head:tail -> ev (tail, state <- [x, head], world, insns) esac
+        | CONST (n)    -> ev (n : vstack, state, world, insns)
+        | LABEL (s)    -> ev (vstack, state, world, insns)
+        | JMP   (l)    -> ev (vstack, state, world, env.fromLabel (l))
+        | CJMP  (c, l) -> 
+          case vstack of head:tail -> 
+            if jmpCond (c) (head) 
+            then ev (vstack, state, world, env.fromLabel (l))
+            else ev (vstack, state, world, insns)
+            fi
+          esac
+        esac
+    | {} -> [vstack, state, world]
+    esac
+  }
 
-fun evalOne ([vstack, state, world], ins) {
-  case ins of
-    READ      -> case readWorld (world) of [value, newWorld] -> [value : vstack, state, newWorld] esac
-  | WRITE     -> case vstack of head:tail -> [tail, state, writeWorld (head, world)] esac
-  | BINOP (s) -> case vstack of r:l:tail -> [opValue (s) (l, r) : tail, state, world] esac
-  | LD    (x) -> [state (x) : vstack, state, world]
-  | ST    (x) -> case vstack of head:tail -> [tail, state <- [x, head], world] esac
-  | CONST (n) -> [n : vstack, state, world]
-  esac
+  ev (vstack, state, world, insns)
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -109,9 +141,9 @@ fun genLabels (env, n) {
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
   case expr of
-    Var   (name)      -> {LD (name)}
-  | Const (value)     -> {CONST (value)}
-  | Binop (op, l, r)  -> compileExpr (l) +++ compileExpr (r) +++ {BINOP (op)}
+    Var   (name)      -> singletonBuffer (LD (name))
+  | Const (value)     -> singletonBuffer (CONST (value))
+  | Binop (op, l, r)  -> compileExpr (l) <+> compileExpr (r) <+ BINOP (op)
   esac
 }
 
@@ -153,7 +185,26 @@ public fun compileSM (stmt) {
                   esac
              esac
         esac
-    | _              -> failure ("compileSM not implemented\n")
+    | If (expr, sThen, sElse) -> 
+      case env.genLabel of [labMid, env] ->
+        case compile (lab, env, sThen) of [_, env, cThen] -> 
+          case compile (lab, env, sElse) of [_, env, cElse] -> 
+            [true, env, compileExpr (expr) <+ jmpF (labMid) <+> cThen <+ JMP (lab) <+ LABEL (labMid) <+> cElse] 
+          esac
+        esac
+      esac
+    | While (expr, stmt) ->
+      case env.genLabels (2) of [lab1, lab2, env] ->
+        case compile (lab2, env, stmt) of [_, env, cStmt] ->
+          [false, env, singletonBuffer (JMP (lab2)) <+ LABEL (lab1) <+> cStmt <+ LABEL (lab2) <+> compileExpr (expr) <+ jmpT (lab1)]
+        esac
+      esac
+    | DoWhile (stmt, expr) ->
+      case env.genLabels (2) of [lab1, lab2, env] ->
+        case compile (lab2, env, stmt) of [used, env, cStmt] ->
+          [false, env, singletonBuffer (LABEL (lab1)) <+> cStmt <+> label (lab2, used) <+> compileExpr (expr) <+ jmpT (lab1)]
+        esac
+      esac
     esac
   }
 
