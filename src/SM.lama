@@ -52,22 +52,37 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
--- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
--- returns a final configuration
-fun evalOne (c @ [stack, state, world], insn) {
-  case insn of
-    READ      -> fun([v, w]) { [v : stack, state, w] } (readWorld(world))      |
-    WRITE     -> [stack.tl, state, writeWorld(stack.hd, world)]                |
-    BINOP (s) -> [fun(r : l : t) { binop(s, l, r) : t } (stack), state, world] |
-    LD    (s) -> [state(s) : stack, state, world]                              |
-    ST    (s) -> [stack.tl, state <- [s,stack.hd], world]                      |
-    CONST (n) -> [n : stack, state, world]                                     |
-    _ -> c
-  esac
+fun shouldJump (m, v) {
+  if compare(m, "z") == 0 then
+    v == 0
+  elif compare(m, "nz") == 0 then
+    v != 0
+  else
+    failure("unsupported condition")
+  fi
 }
 
-fun eval (env, c, insns) {
-  foldl(evalOne, c, insns)
+-- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
+-- returns a final configuration
+fun eval (env, c @ [stack, state, world], insns) {
+  --printf("%s %s\n", stack.string, insns.string);
+  case insns of
+      READ      : insns -> eval(env, fun([v, w]) { [v : stack, state, w] } (readWorld(world))      , insns)
+    | WRITE     : insns -> eval(env, [stack.tl, state, writeWorld(stack.hd, world)]                , insns)
+    | BINOP (s) : insns -> eval(env, [fun(r : l : t) { binop(s, l, r) : t } (stack), state, world] , insns)
+    | LD    (s) : insns -> eval(env, [state(s) : stack, state, world]                              , insns)
+    | ST    (s) : insns -> eval(env, [stack.tl, state <- [s,stack.hd], world]                      , insns)
+    | CONST (n) : insns -> eval(env, [n : stack, state, world]                                     , insns)
+    | LABEL (l) : insns -> eval(env, c                                                             , insns) 
+    | JMP   (l) : insns -> eval(env, c, env.fromLabel(l))                                
+    | CJMP(c,l) : insns -> 
+        if shouldJump(c, stack.hd) then
+          eval(env, [stack.tl, state, world], env.fromLabel(l))
+        else
+          eval(env, c, insns)
+        fi     
+    |   _ -> c                                                 
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -109,9 +124,9 @@ fun genLabels (env, n) {
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
   case expr of
-    Var   (s)        ->  { LD(s) }    |
-    Const   (n)      ->  { CONST(n) } |
-    Binop (op, l, r) ->  compileExpr(l) +++ compileExpr(r) +++ { BINOP(op) }
+    Var   (s)        ->  singletonBuffer (LD(s))    |
+    Const   (n)      ->  singletonBuffer (CONST(n)) |
+    Binop (op, l, r) ->  compileExpr(l) <+> compileExpr(r) <+ BINOP(op)
   esac
 }
 
@@ -130,13 +145,13 @@ public fun compileSM (stmt) {
   }
 
   -- Generates SM code for a given statement
-  --    lab  --- a label th go to after the statement is executed
+  --    lab  --- a label to go to after the statement is executed
   --    env  --- compilation environment
   --    stmt --- a statement to generate SM code for
   -- Returns a triple:
   --    boolean flag indicating if "lab" was used
   --    updated environment
-  --    code buffer  
+  --    code buffer
   fun compile (lab, env, stmt) {
     case stmt of
       Skip           -> [false, env, emptyBuffer ()]
@@ -153,7 +168,17 @@ public fun compileSM (stmt) {
                   esac
              esac
         esac
-    | _              -> failure ("compileSM not implemented\n")
+    | If (cond, s1, s2) -> 
+        case env.genLabel of
+          [s2Lab, env] -> 
+            case compile(lab, env, s1) of
+              [_, env, s1Code] ->
+                case compile(lab, env, s2) of 
+                  [_, env, s2Code] -> 
+                    [true, env, (compileExpr(cond) <+ CJMP("z", s2Lab)) <+> (s1Code <+ JMP(lab)) <+> label(s2Lab, true) <+> s2Code]
+                esac
+            esac
+        esac
     esac
   }  
 
