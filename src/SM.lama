@@ -88,13 +88,23 @@ fun eval (env, c@[top_s, st, w], insns) {
         esac
       | BINOP (op) -> case top_s of
         x:y:tail -> (
-            var res = binOp(op, y, x);
+            var res = evalOp(op, y, x);
             eval(env, [res:tail, st, w], t)
         )
        esac
+      | DROP -> case top_s of
+            h:tail -> eval(env, [tail, st, w], t)
+       esac
       | LD (x) -> eval (env, [st(x):top_s, st, w], t)
+      | LDA(x) -> eval (env, [ Ref (x):top_s, st, w], t)
       | ST (x) -> case top_s of
             h:tail -> eval(env, [tail, st <- [x, h], w], t)
+       esac
+      | STI -> case top_s of
+        x:Ref (y) : tail -> (
+            var newConf = [x:tail, st <- [y, x], w];
+            eval (env, newConf, t)
+        )
        esac
       | CONST (x) -> eval(env, [x:top_s, st, w], t)
       | LABEL (l) -> eval(env, c, t)
@@ -150,22 +160,6 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
-fun compileExpr (expr) {
---  printf("%s", expr);
-  case expr of
-   -- ok, it should be singletonBuffer if I want to use optimized list concat
-    Var (x) -> singletonBuffer (LD (x))
-   | Const (x) -> singletonBuffer (CONST(x))
-   | Binop (op, x, y) -> (
-        var l = compileExpr(x);
-        var r = compileExpr(y);
-        l <+> r <+  BINOP(op)
-    )
-  esac
-}
-
 
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
@@ -196,14 +190,25 @@ public fun compileSM (stmt) {
     | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
     | Read  (x)      -> [false, env, singletonBuffer (READ) <+ ST (x)]
-    | Write (e)      -> [false, env, compileExpr (e) <+ WRITE]
-    | Assn  (x, e)   -> [false, env, compileExpr (e) <+ ST (x)]
-    | Seq   (s1, s2) ->
+    | Write (e)      -> case compile(lab, env, e) of
+           [_, newEnv, expr] -> [false, newEnv, expr <+> singletonBuffer(WRITE)]
+        esac
+    | Assn  (x, e) -> case compile(lab, env, x) of
+           [_, newEnv, lhs] ->  case compile(lab, newEnv, e) of
+                    [_, newEnv, expr] -> [false, newEnv, lhs <+> expr <+> singletonBuffer(STI)]
+                esac
+        esac
+    | Binop (s, lhs, rhs) -> case compile(lab, env, lhs) of
+                      [_, newEnv, lhsR] -> case compile(lab, newEnv, rhs) of
+                          [_, newEnv, rhsR] -> [false, newEnv, lhsR <+> rhsR <+ BINOP(s) ]
+                          esac
+        esac
+    | Seq (s1, s2) ->
         case env.genLabel of
           [s2Lab, env] ->
              case compile (s2Lab, env, s1) of
                [s2LabUsed, env, s1Code] ->
-                  case compile (lab, env, s2) of
+                  case compile (s2Lab, env, s2) of
                     [labUsed, env, s2Code] -> [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
                   esac
              esac
@@ -221,9 +226,12 @@ public fun compileSM (stmt) {
         case env.genLabels(2) of
             [trueL, endL, newEnv] -> case compile(trueL, newEnv, tb) of
                     [trueLUsed, newEnv, trBlock] -> case compile(endL, newEnv, fb) of
-                              [falseLUsed, newEnv, flsBlock] -> [true, newEnv,
-                                                    compileExpr(cond) <+ CJMP ("nz", trueL) <+> flsBlock
+                              [falseLUsed, newEnv, flsBlock] -> case compile(trueL, newEnv, cond) of
+                                    [_, newEnv, condBlock] ->
+                                                    [true, newEnv,
+                                                    condBlock <+ CJMP ("nz", trueL) <+> flsBlock
                                                     <+ JMP (endL) <+ LABEL (trueL) <+> trBlock <+ LABEL (endL) ]
+                            esac
                         esac
                 esac
         esac
@@ -236,18 +244,25 @@ public fun compileSM (stmt) {
     | While (cond, block) ->
         case env.genLabels(2) of
             [condL, loopL, newEnv] -> case compile(loopL, newEnv, block) of
-                    [loopLUsed, newEnv, blockSt] -> [true, newEnv, singletonBuffer(JMP (condL)) <+ LABEL (loopL) <+> blockSt
+                    [loopLUsed, newEnv, blockSt] -> case compile(condL, env, cond) of
+                                [_, newEnv, condBlock]  ->    [true, newEnv, singletonBuffer(JMP (condL)) <+ LABEL (loopL) <+> blockSt
                                                                                   -- cond.compileExpr() gives seg fault
-                                                              <+ LABEL (condL) <+> compileExpr(cond) <+ CJMP("nz", loopL) ]
+                                                              <+ LABEL (condL) <+> condBlock <+ CJMP("nz", loopL) ]
+                       esac
                 esac
         esac
     | DoWhile (block, cond) ->
         case genLabel(env) of
             [loopL, newEnv] -> case compile(loopL, newEnv, block) of
-                    [loopLUsed, newEnv, blockSt] -> [true, newEnv, singletonBuffer(LABEL (loopL)) <+> blockSt <+> compileExpr(cond) <+ CJMP("nz", loopL)]
+                    [loopLUsed, newEnv, blockSt] -> case compile(loopL, newEnv, cond) of
+                               [_, newEnv, condBlock] -> [true, newEnv, singletonBuffer(LABEL (loopL)) <+> blockSt <+> cond <+ CJMP("nz", loopL)]
+                     esac
                 esac
         esac
-    | _              -> failure ("compileSM not implemented\n")
+    | Ignore (e) -> case compile (lab, env, e) of
+                [_, newEnv, exprC] -> [false, newEnv, exprC <+ DROP]
+      esac
+    | v              -> failure ("%s compileSM not implemented\n", v)
     esac
   }
 
