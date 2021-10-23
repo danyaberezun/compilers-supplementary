@@ -28,16 +28,16 @@ var ebx = R (0),
 var wordSize = 4;
 
 -- We need to distinguish the following operand types: 
---    R (int)       -- hard register                    
---    S (int)       -- a position on the hardware stack 
---    M (string)    -- a named memory location          
+--    R (int)       -- hard register
+--    S (int)       -- a position on the hardware stack
+--    M (string)    -- a named memory location
 --    L (int)       -- an immediate operand
 --    I (int, opnd) -- an indirect operand with offset
 
 -- Some x86 instruction (we do not need all of them):
 --   Mov   (opnd, opnd)         -- copies a value from the first to the second operand  
 --   Lea   (opnd, opnd)         -- loads an address of the first operand into the second
---   Binop (string, opnd, opnd) -- makes a binary operation; note, the first operand   
+--   Binop (string, opnd, opnd) -- makes a binary operation; note, the first operand
 --                                 designates x86 operator, not the source language one
 --   IDiv  (opnd)               -- x86 integer division, see instruction set reference 
 --   Cltd                       -- see instruction set reference           
@@ -155,7 +155,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
   fun peek () {
     stack.fst
   }
-  
+
   -- Adds a global variable; returns an updated environment
   fun addGlobal (name) {
     makeEnv (stack, stackSlots, addSet (globals, globalName (name)), barrier, stackMap)
@@ -350,25 +350,114 @@ fun suffix (op) {
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  fun compile (env, code) {
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-            esac
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-      }, [env, emptyBuffer ()], code)
-  }
+  foldl (
+    fun ([env, scode], i) {
+      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      case i of
+        READ      ->
+          case env.allocate of
+            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+          esac
+      | WRITE     ->
+          case env.pop of
+            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+          esac
+      | LD    (x) ->
+          case env.allocate of
+            [s, env] -> [env.addGlobal (x), code <+> move (env.loc (x), s)]
+          esac
+      | ST    (x) ->
+          case env.pop of
+            [s, env] -> [env.addGlobal (x), code <+> move (s, env.loc (x))]
+          esac
+      | CONST (n) ->
+          case env.allocate of
+            [s, env] -> [env, code <+ Mov (L (n), s)]
+          esac
+      | BINOP (s) -> compileBinop (s, env, code)
+      | LABEL (s)    -> [env, code <+ Label (s)]
+      | JMP   (l)    -> [env, code <+ Jmp (l)]
+      | CJMP  (c, l) ->
+          case env.pop of [s, env] ->
+            [env, code <+ Binop ("cmp", L (0), s) <+ CJmp (c, l)]
+          esac
+      esac
+    }, [env, emptyBuffer ()], code)
+}
 
-  compile (env, code) 
+fun convertToBool (loc) {
+  {
+    Binop ("cmp", L (0), loc),
+    Mov (L (0), eax),
+    Set (suffix ("!="), "%al"),
+    Mov (eax, loc)
+  }
+}
+
+fun compileBinop (op, env, code) {
+  case env.pop of [src, env] -> case env.top of dst ->
+
+    fun compileSrcDst (op) {
+      if stackOpnd (dst)
+      then  {
+              Mov (dst, eax),
+              Binop (op, src, eax),
+              Mov (eax, dst)
+            }
+      else  {
+              Binop (op, src, dst)
+            }
+      fi
+    }
+
+    fun compileDivRem (op) {
+      {
+        Mov (dst, eax),
+        Cltd,
+        IDiv (src),
+        case op of
+          "/" -> Mov (eax, dst)
+        | "%" -> Mov (edx, dst)
+        esac
+      }
+    }
+
+    fun compileLogical (op) {
+      if stackOpnd (dst)
+      then  {
+              Mov (dst, eax),
+              Binop ("cmp", src, eax),
+              Mov (L (0), eax),
+              Set (suffix (op), "%al"),
+              Mov (eax, dst)
+            }
+      else  {
+              Binop ("cmp", src, dst),
+              Mov (L (0), eax),
+              Set (suffix (op), "%al"),
+              Mov (eax, dst)
+            }
+      fi
+    }
+
+    [env, foldl (infix <+, code,
+      case op of
+        "+"  -> compileSrcDst ("+")
+      | "-"  -> compileSrcDst ("-")
+      | "&&" -> convertToBool (src) +++ convertToBool (dst) +++ compileSrcDst ("&&")
+      | "!!" -> convertToBool (src) +++ convertToBool (dst) +++ compileSrcDst ("!!")
+      | "*"  -> compileSrcDst ("*")
+      | "/"  -> compileDivRem ("/")
+      | "%"  -> compileDivRem ("%")
+      | "==" -> compileLogical ("==")
+      | "!=" -> compileLogical ("!=")
+      | "<"  -> compileLogical ("<")
+      | "<=" -> compileLogical ("<=")
+      | ">"  -> compileLogical (">")
+      | ">=" -> compileLogical (">=")
+      esac
+    )]
+  esac esac
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
@@ -379,7 +468,7 @@ public fun compileX86 (args, code) {
        var asmFile = args.getBaseName ++ ".s",
            runtime = case getEnv ("LAMA_RUNTIME") of
                        #val -> "../runtime/"
-                     | path -> path
+                     | path     -> path
                      esac ++ "/runtime.o";
        
        fwrite (asmFile,
