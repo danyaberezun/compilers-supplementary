@@ -20,21 +20,29 @@ fun error (msg, loc) {
 --   Ref  --- a reference to a mutable cell (aka "lvalue")
 --   Void --- no value (aka "void"/"unit")
 
--- Checks if a plain value "val" can be used in the context described by
--- the attribute "atr".
-fun assertValue (atr, v, loc) {
-  case atr of
-    Ref  -> error ("reference expected", loc)
-  | Void -> Ignore (v)
-  | _    -> v
+fun fitRef (context, v, loc) {
+  case context of
+    Void -> Ignore (Var (v))
+  | Val  -> Var (v)
+  | Ref  -> Ref (v)
   esac
 }
 
-fun assertVoid (atr, v, loc) {
-  case atr of
+-- Checks if a plain value "val" can be used in the context described by
+-- the attribute "atr".
+fun fitVal (context, v, loc) {
+  case context of
+    Void -> Ignore (v)
+  | Val  -> v
+  | Ref  -> error ("reference expected", loc)
+  esac
+}
+
+fun fitVoid (context, v, loc) {
+  case context of
     Void -> v
   | Val  -> error ("value expected", loc)
-  | _    -> error ("reference expected", loc)
+  | Ref  -> error ("reference expected", loc)
   esac
 }
 
@@ -44,40 +52,180 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
-fun binop (op) {
-  [syntax (pos -s[op]), fun (l, loc, r) {
-                          fun (a) {
-                            assertValue (a, Binop (op, l (Val), r (Val)), loc)
-                          }
-                        }
-  ]
+fun procBinops (binops) {
+  fun makeBinop (l, [loc, op], r) {
+    fun (context) {
+      var parsed = case op of
+        ":=" -> Assn (l (Ref), r (Val))
+      | _    -> Binop (op, l (Val), r (Val))
+      esac;
+      fitVal (context, parsed, loc)
+    }
+  }
+
+  fun procBinop (op) {
+    [syntax (pos s[op]), makeBinop]
+  }
+
+  fun procBinopGroup ([assoc, ops]) {
+    [assoc, map (procBinop, ops)]
+  }
+
+  map (procBinopGroup, binops)
 }
 
-var primary  = memo $ eta syntax (
-                                  -- decimal constant
-                                  loc=pos x=decimal                                 {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
+var binops = procBinops ({
+  [Right, {":="}],
+  [Left,  {"!!"}],
+  [Left,  {"&&"}],
+  [Nona,  {"==", "!=", "<", "<=", ">", ">="}],
+  [Left,  {"+", "-"}],
+  [Left,  {"*", "/", "%"}]
+});
 
-                                  -- identifier
-                                  x=lident                                          {fun (a) {
-                                                                                       case a of
-                                                                                         Ref  -> Ref (x)
-                                                                                       | Void -> Ignore (Var (x))
-                                                                                       | _    -> Var (x)
-                                                                                       esac
-                                                                                    }} |
-                                  $(failure ("the rest of primary parsing in not implemented\n"))),
-    basic    = memo $ eta (expr ({[Right, {[s (":="),
-                                            fun (l, loc, r) {
-                                              fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
-                                            }]}],
-                                  [Left , map (binop, {"!!"})],
-                                  [Left , map (binop, {"&&"})],
-                                  [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
-                                  [Left , map (binop, {"+", "-"})],
-                                  [Left , map (binop, {"*", "/", "%"})]
-                                 },
-                                 primary)),
-    exp      = memo $ eta syntax (basic | s1=basic s[";"] s2=exp {fun (a) {Seq (s1 (Void), s2 (a))}});
+-- Parens utility parser
+var lParens = memo $ eta (s ("("));
+var rParens = memo $ eta (s (")"));
+fun parens (p) {
+  inbr (lParens, p, rParens)
+}
+
+-- Utility parsers
+var comma = memo $ eta (s (","));
+var semicolon = memo $ eta (s (";"));
+
+-- Decimal expression
+var eDecimal = memo $ eta syntax (
+  loc=pos x=decimal 
+  {fun (a) {
+      fitVal (a, Const (stringInt (x)), loc)
+  }}
+);
+
+-- Identifier expression
+var eIdentifier = memo $ eta syntax (
+  loc=pos x=lident 
+  {fun (a) {
+      fitRef (a, x, loc)
+  }}
+);
+
+-- Read expression
+var eRead = memo $ eta syntax(
+  loc=pos kRead eIdent=parens[exp]
+  {fun (a) {
+    fitVoid (a, Read (eIdent (Ref)), loc)
+  }}
+);
+
+-- Write expression
+var eWrite = memo $ eta syntax(
+  loc=pos kWrite eVal=parens[exp]
+  {fun (a) {
+    fitVoid (a, Write (eVal (Val)), loc)
+  }}
+);
+
+-- Skip expression
+var eSkip = memo $ eta syntax(
+  loc=pos kSkip
+  {fun (a) {
+    fitVoid (a, Skip, loc)
+  }}
+);
+
+-- If expression
+fun halfIf (expr, thenStmt) {
+  fun (elseStmt) {
+    If (expr, thenStmt, elseStmt)
+  }
+}
+fun accum (a) {
+  fun (stmt, halfIf) {
+    halfIf (a) (stmt)
+  }
+}
+var ifP = memo $ eta syntax (
+  kIf e=exp kThen eThen=exp
+  {fun (a) { 
+    halfIf (e (Val), eThen (a)) 
+  }}
+);
+var elifP = memo $ eta syntax (
+  kElif e=exp kThen eThen=exp
+  {fun (a) {
+    halfIf (e (Val), eThen (a)) 
+  }}
+);
+var elseP = memo $ eta syntax (
+  loc=pos s=(-kElse exp)? 
+  {fun (a) {
+    case s of
+      Some (s) -> s (a)
+    | None     -> fitVoid (a, Skip, loc)
+    esac
+  }}
+);
+var eIf = memo $ eta syntax (
+  sThen=ifP sElif=elifP* sElse=elseP kFi 
+  {fun (a) {
+    foldr (accum (a), sElse (a), sThen:sElif)
+  }}
+);
+
+-- While expression
+var eWhile = memo $ eta syntax (
+  loc=pos kWhile eCond=exp kDo eBody=exp kOd 
+  {fun (a) {
+    fitVoid (a, While (eCond (Val), eBody (Void)), loc)
+  }}
+);
+
+-- For expression
+var eFor = memo $ eta syntax (
+  loc=pos kFor eInit=exp comma eCond=exp comma eCounter=exp kDo eBody=exp kOd
+  {fun (a) {
+    var expr = Seq (eInit (Void), 
+                    While (eCond (Val), 
+                           Seq (eBody (Void), 
+                                eCounter (Void))));
+    fitVoid (a, expr, loc)
+  }}
+);
+
+-- Do-While expression
+var eDoWhile = memo $ eta syntax (
+  loc=pos kDo eBody=exp kWhile eCond=exp kOd 
+  {fun (a) {
+    DoWhile (eBody (Void), eCond (Val)) 
+  }}
+);
+
+var primary = memo $ eta syntax (
+  parens[exp]
+| eDecimal
+| eIdentifier
+| eIf
+| eWhile
+| eFor
+| eDoWhile
+| eRead
+| eWrite
+| eSkip
+);
+
+var basic = memo $ eta (expr (binops, primary));
+
+var exp = memo $ eta syntax (
+  basic 
+| s1=basic semicolon s2=exp 
+  {fun (a) {
+      Seq (s1 (Void), s2 (a))
+  }}
+);
+
+-- Full program
+var program = memo $ eta syntax (s=exp -end {s (Void)});
 
 -- Public top-level parser
-public parse = syntax (s=exp {s (Void)});
+public parse = program;
