@@ -15,10 +15,10 @@ $(TESTS): %: %.lama
 	$(LAMAC) $@.lama && cat $@.input | ./$@ > $@.log && diff $@.log orig/$@.log
 
 expr_tests:
-	make -C expressions
-	make -C deep-expressions
+	$(MAKE) -C expressions
+	$(MAKE) -C deep-expressions
 
 clean:
 	$(RM) *.s *.i *~ $(LOGS) $(TESTS) *.run *.sm
-	make -C expressions clean
-	make -C deep-expressions clean
+	$(MAKE) -C expressions clean
+	$(MAKE) -C deep-expressions clean
