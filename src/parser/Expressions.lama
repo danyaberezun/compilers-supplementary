@@ -1,0 +1,227 @@
+import Lexer;
+import ParserUtils;
+import Binops;
+import Context;
+import Ostap;
+import Fun;
+import List;
+import Utils;
+
+-- Decimal expression
+var eDecimal = memo $ eta syntax (
+  loc=pos x=decimal 
+  {fun (a) {
+      fitVal (a, Const (stringInt (x)), loc)
+  }}
+);
+
+-- Identifier expression
+var eIdentifier = memo $ eta syntax (
+  loc=pos x=lident
+  {fun (a) {
+      fitRef (a, x, loc)
+  }}
+);
+
+-- Skip expression
+var eSkip = memo $ eta syntax(
+  loc=pos kSkip
+  {fun (a) {
+    fitVoid (a, Skip, loc)
+  }}
+);
+
+-- If expression
+fun halfIf (expr, thenStmt) {
+  fun (elseStmt) {
+    If (expr, thenStmt, elseStmt)
+  }
+}
+fun accum (a) {
+  fun (stmt, halfIf) {
+    halfIf (a) (stmt)
+  }
+}
+var ifP = memo $ eta syntax (
+  kIf e=exp kThen eThen=scopeExpr
+  {fun (a) { 
+    halfIf (e (Val), eThen (a)) 
+  }}
+);
+var elifP = memo $ eta syntax (
+  kElif e=exp kThen eThen=scopeExpr
+  {fun (a) {
+    halfIf (e (Val), eThen (a)) 
+  }}
+);
+var elseP = memo $ eta syntax (
+  loc=pos s=(-kElse scopeExpr)? 
+  {fun (a) {
+    case s of
+      Some (s) -> s (a)
+    | None     -> fitVoid (a, Skip, loc)
+    esac
+  }}
+);
+var eIf = memo $ eta syntax (
+  sThen=ifP sElif=elifP* sElse=elseP kFi 
+  {fun (a) {
+    foldr (accum (a), sElse (a), sThen:sElif)
+  }}
+);
+
+-- While expression
+var eWhile = memo $ eta syntax (
+  loc=pos kWhile eCond=exp kDo eBody=scopeExpr kOd 
+  {fun (a) {
+    fitVoid (a, While (eCond (Val), eBody (Void)), loc)
+  }}
+);
+
+-- For expression
+var eFor = memo $ eta syntax (
+  loc=pos kFor eInit=scopeExpr comma eCond=exp comma eCounter=exp kDo eBody=scopeExpr kOd
+  {fun (a) {
+    var expr = distributeScope (eInit (Void), fun (init) {
+      Seq (init, 
+        While (eCond (Val), 
+          Seq (eBody (Void), 
+            eCounter (Void))))
+    });
+    fitVoid (a, expr, loc)
+  }}
+);
+
+-- Do-While expression
+var eDoWhile = memo $ eta syntax (
+  loc=pos kDo eBody=scopeExpr kWhile eCond=exp kOd 
+  {fun (a) {
+    distributeScope (eBody (Void), fun (eBody) {
+      fitVoid (a, DoWhile (eBody, eCond (Val)), loc)
+    })
+  }}
+);
+
+-- Function call expression
+var eFunCall = memo $ eta syntax (
+  loc=pos x=lident args=parens[list0 (exp)]
+  {fun (a) {
+    fitVal (a, Call (x, map (fun (arg) { arg (Val) }, args)), loc)
+  }}
+);
+
+-- Function definition
+var dFun = memo $ eta syntax (
+  kFun name=lident args=parens[list0 (lident)] body=braces[scopeExpr]
+  { Fun (name, args, body (Weak)) }
+);
+
+-- Variable definition
+var initializerVar = memo $ eta syntax (
+  eq e=basic 
+  { e (Val) }
+);
+var singleVar = memo $ eta syntax (
+  lident initializerVar?
+);
+var dVar = memo $ eta syntax (
+  kVar ds=list[singleVar] semicolon
+  { Var (ds) }
+);
+
+-- Array literal
+var elArray = memo $ eta syntax (
+  loc=pos args=brackets[list0(exp)]
+  {fun (a) {
+    args := map (fun (el) { el (Val) }, args);
+    fitVal (a, Array (args), loc)
+  }}
+);
+
+-- String literal
+var elString = memo $ eta syntax (
+  loc=pos strv=strlit
+  {fun (a) {
+    fitVal (a, String (strv), loc)
+  }}
+);
+
+-- Character literal
+var elChar = memo $ eta syntax (
+  loc=pos chr=chrlit
+  {fun (a) {
+    fitVal (a, Const (chr), loc)
+  }}
+);
+
+-- S-expression
+var eSexpr = memo $ eta syntax (
+  loc=pos name=uident args=parens[list0(exp)]?
+  {fun (a) {
+    args := case args of None -> {} | Some (args) -> args esac;
+    args := map (fun (el) { el (Val) }, args);
+    fitVal (a, Sexp (name, args), loc)
+  }}
+);
+
+
+var primary = memo $ eta syntax (
+  parens[scopeExpr]
+| eDecimal
+| elArray
+| elString
+| elChar
+| eIdentifier
+| eSexpr
+| eFunCall
+| eIf
+| eWhile
+| eFor
+| eDoWhile
+| eSkip
+);
+
+var postfix = memo $ eta syntax (
+  loc=pos e=primary ps=(i=brackets[exp] {Index (i (Val))})*
+  {fun (a) {
+    foldl (fun (e, p) {
+        case p of Index (i) -> 
+          fun (a) {
+            case a of
+              Ref -> ElemRef (e (Val), i)
+            | _   -> fitVal (a, Elem (e (Val), i), loc)
+            esac
+          }
+        esac
+      }, e, ps) (a)
+  }}
+);
+
+var basic = memo $ eta (expr (binops, postfix));
+
+var exp = memo $ eta syntax (
+  basic 
+| s1=basic semicolon s2=exp 
+  {fun (a) {
+    Seq (s1 (Void), s2 (a))
+  }}
+);
+
+var definition = memo $ eta syntax (
+  dFun
+| dVar
+);
+
+public scopeExpr = memo $ eta syntax (
+  loc=pos ds=definition* e=exp? 
+  {fun (a) {
+    e := case e of 
+      Some (e) -> e (a)
+    | _        -> fitVoid (a, Skip, loc)
+    esac;
+    case ds of
+      {} -> e
+    | _  -> expandScope (ds, e) 
+    esac
+  }}
+);
