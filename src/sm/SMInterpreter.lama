@@ -1,0 +1,132 @@
+import SMInterpreterEnv;
+import SMUtils;
+import State;
+import World;
+import InterpretUtils;
+import Ref;
+import Utils;
+import Lexer;
+import Array;
+import Builtins;
+
+-- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
+-- returns a final configuration
+fun eval (env, world, insns) {
+  -- Global state maps names of global variables to values
+  var globalState = ref (fun (x) {error (sprintf ("name ""%s"" is undefined", x), getLoc (x))});
+  
+  -- Make a fresh local state: a pair of arrays for arguments and local variables;
+  -- takes the numbers of arguments and local variables respectively
+  fun makeState (a, l) {
+    [initArray (a, fun (_) {0}), initArray (l, fun (_) {0})]
+  }
+
+  -- Lookups a location in local/global states
+  fun lookup ([args, locs], loc) {
+    case loc of
+      Arg (i) -> args[i]
+    | Loc (i) -> locs[i]
+    | Glb (x) -> deref (globalState) (x)
+    esac 
+  }
+
+  -- Assigns a value to a location
+  fun assign ([args, locs], loc, v) {
+    case loc of
+      Arg (i) -> args[i] := v
+    | Loc (i) -> locs[i] := v
+    | Glb (x) -> var g = deref (globalState);
+                 globalState ::= fun (y) {if compare (x, y) == 0 then v else g (y) fi}
+    esac
+  }
+
+  fun assignArgs (vst, s, nargs) {
+    case nargs of
+      0 -> vst
+    | _ -> 
+      case vst of v:vst ->
+        assign (s, Arg (nargs - 1), v);
+        assignArgs (vst, s, nargs - 1)
+      esac
+    esac
+  }
+
+  -- cst - control stack
+  -- vst - values stack
+  -- s - state
+  -- w - world
+  fun ev (cst, vst, s, w, ins:insns) {
+    case ins of
+      BINOP (op)   -> case vst of r:l:tail -> ev (cst, opValue (op) (l, r) : tail, s, w, insns) esac
+    | LD    (x)    -> ev (cst, lookup (s, x) : vst, s, w, insns)
+    | LDA   (x)    -> ev (cst, R (x):vst, s, w, insns)
+    | ST    (x)    -> case vst of v:_ -> assign (s, x, v); ev (cst, vst, s, w, insns) esac
+    | CONST (n)    -> ev (cst, n:vst, s, w, insns)
+    | LABEL (_)    -> ev (cst, vst, s, w, insns)
+    | JMP   (l)    -> ev (cst, vst, s, w, fromLabel (env, l))
+    | CJMP  (c, l) ->
+      case vst of head:tail ->
+        if jmpCond (c) (head)
+        then ev (cst, tail, s, w, fromLabel (env, l))
+        else ev (cst, tail, s, w, insns)
+        fi
+      esac
+    | DUP          -> case vst of head:_ -> ev (cst, head:vst, s, w, insns) esac
+    | DROP         -> case vst of _:tail -> ev (cst, tail, s, w, insns) esac
+    | CALL (l, nargs) -> ev ([s, insns]:cst, vst, s, w, fromLabel (env, l))
+    | BEGIN (_, nargs, nlocs) ->
+      case makeState (nargs, nlocs) of s ->
+        case assignArgs (vst, s, nargs) of vst ->
+          ev (cst, vst, s, w, insns)
+        esac
+      esac
+    | END -> 
+      case cst of 
+        [s, insns]:cst -> ev (cst, vst, s, w, insns)
+      | {} -> [cst, vst, s, w]
+      esac
+    | GLOBAL (x) -> assign (s, Glb (x), 0); ev (cst, vst, s, w, insns)
+    | BUILTIN (name, nargs) -> 
+      case take (vst, nargs) of [vst, args] ->
+        case evalBuiltin (name, args, w) of [v, w] ->
+          ev (cst, v:vst, s, w, insns)
+        esac
+      esac
+    | STRING (strv) ->  ev (cst, strv:vst, s, w, insns)
+    | ARRAY (nargs) -> 
+      case take (vst, nargs) of [vst, args] ->
+        ev (cst, (listArray (args)):vst, s, w, insns)
+      esac
+    | ELEM -> 
+      case vst of idx:arr:vst ->
+        var v = case arr of
+                  Sexp (_, arr) -> arr[idx]
+                | _ -> arr[idx]
+                esac;
+        ev (cst, v:vst, s, w, insns)
+      esac
+    | STA -> 
+      case vst of 
+        v:R (name):vst -> 
+        assign (s, name, v); ev (cst, v:vst, s, w, insns)
+      | v:idx:arr:vst ->
+        case arr of 
+          Sexp (_, arr) -> arr[idx] := v
+        | _ -> arr[idx] := v
+        esac;
+        ev (cst, v:vst, s, w, insns)
+      esac
+    | SEXP (name, nargs) -> 
+      case take (vst, nargs) of [vst, args] ->
+        ev (cst, (Sexp (name, listArray (args))):vst, s, w, insns)
+      esac
+    esac
+  }
+
+  getOutput (ev ({}, {}, makeState (0, 0), world, insns) [3])
+}
+
+-- Runs a stack machine for a given input and a given program, returns an output
+public fun evalSM_ (input, insns) {
+  eval (initEvalEnv (insns), createWorld (input), insns)
+}
