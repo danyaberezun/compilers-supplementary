@@ -347,6 +347,25 @@ fun suffix (op) {
   esac
 }
 
+fun getOpType (op) {
+  case op of
+    "/"   -> Div ("/")
+  | "%"   -> Mod ("%")
+  | "<"   -> Cmp ("<")
+  | ">"   -> Cmp (">")
+  | "<="  -> Cmp ("<=")
+  | "=="  -> Cmp ("==")
+  | "!="  -> Cmp ("!=")
+  | ">="  -> Cmp (">=")
+  | "+"   -> Arithm ("+")
+  | "-"   -> Arithm ("-")
+  | "*"   -> Arithm ("*")
+  | "&&"  -> Logical ("&&")
+  | "!!"  -> Logical ("!!")
+  | _     -> failure ("unsupported operator type %s \n", op.string)
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -363,6 +382,63 @@ fun compile (env, code) {
             case env.pop of
               [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
             esac
+        | LD (x) ->
+             case env.allocate of
+               [s, env] -> [env.addGlobal (x), code <+> move (env.loc (x), s)]
+             esac
+        | LDA (x) ->
+             case env.allocate of
+               [s, env] -> if s.memOpnd
+                           then [env.addGlobal (x), code <+ Binop ("^", edx, edx) <+ Lea (env.loc (x), edx) <+> move (edx, s)]
+                           else [env.addGlobal (x), code <+ Lea (env.loc (x), s)]
+                           fi
+             esac
+        | ST (x) ->
+             case env.peek of
+               v -> [env.addGlobal (x), code <+> move (v, env.loc (x))]
+             esac
+        | STI    ->
+             case env.pop of
+               [v, env] ->
+                 case env.peek of
+                   refX -> [env, code <+> move (v, I (0, refX)) <+> move (v, refX)]
+                 esac
+             esac
+        | DROP    -> case env.pop of [_, env] -> [env, code] esac
+        | CONST (n) ->
+                    case env.allocate of
+                      [s, env] -> [env, code <+> move (L (n), s)]
+                    esac
+        | LABEL (l) -> [if env.isBarrier
+                        then env.retrieveStack (l)
+                        else env fi, code <+ Label (l)]
+        | JMP   (l) -> [setBarrier (setStack (env, l)), code <+ Jmp (l)]
+        | CJMP  (c, l) ->
+                    case env.pop of
+                      [s, env] -> [env.setStack (l), code <+ Binop ("^", edx, edx) <+ Binop ("cmp", s, edx) <+ CJmp (c, l)]
+                    esac
+        | BINOP (s) ->
+                    case env.pop2 of
+                      [x, y, env] ->
+                        var allocatedAndEnv = env.allocate;
+                        var allocated = allocatedAndEnv.fst;
+                        var newEnv = allocatedAndEnv.snd;
+                        case s.getOpType of
+                          Arithm  (op) -> [newEnv, code <+ Mov (y, edx) <+ Binop (op, x, edx) <+ Mov (edx, y)
+                                                        <+ Mov (edx, allocated)]
+
+                        | Logical (op) -> [newEnv, code <+ Binop ("^", edx, edx) <+ Binop ("cmp", x, edx) <+ Set ("nz", "%dl")
+                                                        <+ Mov (edx, x) <+ Binop ("^", edx, edx) <+ Binop ("cmp", y, edx)
+                                                        <+ Set ("nz", "%dl") <+ Mov (edx, y) <+ Binop (op, x, edx)
+                                                        <+ Mov (edx, allocated)]
+
+                        | Cmp     (op) -> [newEnv, code <+ Mov (y, edx) <+ Binop ("cmp", x, edx) <+ Mov (L (0), edx)
+                                                        <+ Set (op.suffix, "%dl") <+ Mov (edx, allocated)]
+
+                        | Div     (op) -> [newEnv, code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (eax, allocated)]
+                        | Mod     (op) -> [newEnv, code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (edx, allocated)]
+                        esac
+                    esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
