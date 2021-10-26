@@ -57,10 +57,40 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+fun shouldJump (m, v) {
+  if compare(m, "z") == 0 then
+    v == 0
+  elif compare(m, "nz") == 0 then
+    v != 0
+  else
+    failure("unsupported condition")
+  fi
+}
+
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, conf @ [stack, state, world], insns) {
+  -- printf("%s | %s\n",insns.string, stack.string);
+  case insns of
+      READ      : insns -> eval(env, fun([v, w]) { [v : stack, state, w] } (readWorld(world))      , insns)
+    | WRITE     : insns -> eval(env, [stack.tl, state, writeWorld(stack.hd, world)]                , insns)
+    | DROP      : insns -> eval(env, [stack.tl, state, world]                                      , insns)
+    | BINOP (s) : insns -> eval(env, [fun(r : l : t) { evalOp(s, l, r) : t } (stack), state, world] , insns)
+    | LD    (s) : insns -> eval(env, [state(s) : stack, state, world]                              , insns)
+    | LDA   (s) : insns -> eval(env, [Ref(s) : stack, state, world]                                , insns)
+    | ST    (s) : insns -> eval(env, [stack.tl, state <- [s,stack.hd], world]                      , insns)
+    | STI       : insns -> eval(env, fun (Ref(s) : v : tl) {[v : tl, state <- [s, v], world]} (stack)   , insns)
+    | CONST (n) : insns -> eval(env, [n : stack, state, world]                                     , insns)
+    | LABEL (l) : insns -> eval(env, conf                                                          , insns) 
+    | JMP   (l) : insns -> eval(env, conf, env.fromLabel(l))                                
+    | CJMP(c,l) : insns -> 
+        if shouldJump(c, stack.hd) then
+          eval(env, [stack.tl, state, world], env.fromLabel(l))
+        else
+          eval(env, [stack.tl, state, world], insns)
+        fi
+    | _ -> conf                                       
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -108,13 +138,73 @@ public fun compileSM (stmt) {
     else emptyBuffer ()
     fi
   }
+
+  fun compileAppending (lab, env, stmt, insn) {
+    case env.genLabel of
+          [lab, env] ->
+              case compile(lab, env, stmt) of
+                [labUsed, env, code] -> [false, env, code <+> label(lab, labUsed) <+ insn ]
+              esac
+    esac
+  }
   
   fun compile (lab, env, stmt) {
+    -- printf("%s\n",stmt.string);
     case stmt of
       Skip              -> [false, env, emptyBuffer ()]
     | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
     | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
+    | Read  (x)      -> [false, env, singletonBuffer (READ) <+ ST (x)]
+    | Write (e)      -> compileAppending(lab, env, e, WRITE)
+    | Assn  (x, e)   -> compileAppending(lab, env, Seq(e, x), STI)
+    | Seq   (s1, s2) ->
+        case env.genLabel of
+          [s2Lab, env] ->
+             case compile (s2Lab, env, s1) of
+               [s2LabUsed, env, s1Code] ->
+                  case compile (lab, env, s2) of
+                    [labUsed, env, s2Code] -> [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
+                  esac
+             esac
+        esac
+    | If (cond, s1, s2) -> 
+        case env.genLabel of
+          [nlab, env] ->
+            case compileAppending(lab, env, cond, CJMP("z", nlab)) of
+              [_, env, condCode] ->
+                case compileAppending(lab, env, s1, JMP(lab)) of
+                  [_, env, s1Code] ->
+                    case compile(lab, env, s2) of
+                      [_, env, s2Code] -> [true, env, condCode <+> s1Code <+> label(nlab, true) <+> s2Code]
+                    esac
+                esac
+            esac
+        esac
+    | While (cond, stmt) ->
+        case env.genLabels(2) of
+          [sLabel, cLabel, env] ->
+            case compile(cLabel, env, stmt) of
+              [_, env, sCode] -> 
+                case compileAppending(lab, env, cond, CJMP("nz", sLabel)) of
+                  [_, env, cCode] ->
+                    [false, env, (singletonBuffer (JMP(cLabel)) <+> label(sLabel, true)) <+> sCode <+> label(cLabel, true) <+> cCode]
+                esac
+            esac
+        esac
+    | DoWhile (stmt, cond) ->
+        case env.genLabels(2) of
+          [sLabel, cLabel, env] ->
+            case compile(cLabel, env, stmt) of
+              [cLabelUsed, env, sCode] -> 
+                case compileAppending(lab, env, cond, CJMP("nz", sLabel)) of
+                  [_, env, cCode] ->
+                    [false, env, label(sLabel, true) <+> sCode <+> label(cLabel, cLabelUsed) <+> cCode]
+                esac
+            esac
+        esac
+    | Ignor(e) -> compileAppending(lab, env, e, DROP)
+    | Binop(op, e1, e2) -> compileAppending(lab, env, Seq(e1, e2), BINOP(op))
     | _                 ->  failure ("compileSM not implemented\n")
     esac
   }
