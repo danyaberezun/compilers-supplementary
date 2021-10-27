@@ -5,6 +5,38 @@ import Lexer;
 import List;
 import Fun;
 import Matcher;
+import Ref;
+import Collection;
+-- import World;
+
+-- Signals an error; takes an error message and location info
+fun error (msg, loc) {
+  failure ("%s at %d:%d\n", msg, loc.fst, loc.snd)
+}
+
+-- An attribute-processing functions
+-- Attributes are:
+--   Val  --- a plain value (aka "rvalue")
+--   Ref  --- a reference to a mutable cell (aka "lvalue")
+--   Void --- no value (aka "void"/"unit")
+
+-- Checks if a plain value "val" can be used in the context described by
+-- the attribute "atr".
+fun assertValue (atr, v, loc) {
+  case atr of
+    Ref  -> error ("reference expected", loc)
+  | Void -> Ignore (v)
+  | _    -> v
+  esac
+}
+
+fun assertVoid (atr, v, loc) {
+  case atr of
+    Void -> v
+  | Val  -> error ("value expected", loc)
+  | _    -> error ("reference expected", loc)
+  esac
+}
 
 -- A parser of "something" in brackets; l, r are left and right
 -- brackets as parsers, p --- a parser of "something"
@@ -12,55 +44,88 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
-
-fun convertToBinop([association, opList]) {
-  [association, map (fun (op) {
-      [s(op), fun (l, op, r) { Binop(op, l, r) }]
-    }, opList)]
-    
+fun log(message) {
+  --printf("> %s\n", message)
+  skip
 }
 
--- Primary expression
-var primary = memo $ eta (
-    decimal @ fun(x) { Const (x.stringInt) } 
-  | lident @ fun(x) { Var (x) } 
-  | inbr(s("("), exp, s(")"))
-),
-  exp = memo $ eta expr (map (convertToBinop, {
-      [Left, { "!!" }],
-      [Left, { "&&" }],
-      [Nona, { "<", "<=", "==", "!=", ">=", ">" }],
-      [Left, { "+", "-" }],
-      [Left, { "*", "/", "%"}]
-    }), primary);
-    
-
-var makeIf = memo $ eta syntax (
-  condition=exp kThen branch=sequencer elses=branching { 
-    If (condition, branch, elses)
-  }
-), 
-  branching = memo $ eta syntax (
-    kElse branch=sequencer kFi { branch }
-  | kElif elifBody=makeIf { elifBody }
-  | kFi { Skip }
-),
-  stmt = memo $ eta syntax (
-    kRead x=inbr[s("("), lident, s(")")] { Read (x) }
-  | kWrite e=inbr[s("("), exp, s(")")] { Write (e) }
-  | kSkip { Skip }
-  | x=lident s[":="] e=exp { Assn (x, e) }
-  | kIf ifBody=makeIf { ifBody }
-  | kWhile condition=exp kDo body=sequencer kOd { While (condition, body) }
-  | kDo body=sequencer kWhile condition=exp kOd { DoWhile (body, condition) }
-  | kFor initial=stmt s[","] e=exp s[","] next=stmt kDo body=sequencer kOd {
-      Seq (initial, While (e, Seq (body, next)))
+fun binop (op) {
+  [syntax (pos -s[op]), 
+    fun (l, loc, r) {
+      fun (a) {
+        log("binop " ++ l.string ++ " " ++ op ++ " " ++ r.string);
+        assertValue (a, Binop (op, l (Val), r (Val)), loc)
+      }
     }
+  ]
+}
+
+var primary = memo $ eta syntax (
+    loc=pos x=decimal { fun (a) { 
+      log("decimal " ++ x.string); 
+      assertValue (a, Const (stringInt (x)), loc) 
+    } }
+  | x=lident { fun (a) {
+      log("lident " ++ x.string);
+      case a of
+        Ref  -> Ref (x)
+      | Void -> Ignore (Var (x))
+      | _    -> Var (x)
+      esac
+    } } 
+  | loc=pos kRead x=inbr[s("("), lident, s(")")] { fun(a) { 
+      log("read, " ++ x.string);
+      assertVoid(a, Read (x), loc) 
+    } }
+  | loc=pos kWrite e=inbr[s("("), exp, s(")")] { fun(a) { 
+      log("write " ++ e.string); 
+      assertVoid(a, Write (e (Val)), loc) 
+    } }
+  | loc=pos kSkip { fun(a) { 
+      log("skip");
+      assertVoid(a, Skip, loc)
+    } }
+  | loc=pos kIf condition=exp kThen true_branch=exp elses=branching kFi { fun (a) { 
+      If (condition (Val), true_branch(a), elses(a))
+    } }
+  | loc=pos kWhile condition=exp kDo body=exp kOd { fun(a) { 
+      log("while" ++ condition.string);
+      assertVoid(a, While (condition (Val), body (Void)), loc) 
+    } }
+  | loc=pos kDo body=exp kWhile condition=exp kOd { fun(a) { 
+      log("dowhile " ++ condition.string); 
+      assertVoid(a, DoWhile (body (Void), condition (Val)), loc) 
+    } }
+  | loc=pos kFor initial=exp s[","] e=exp s[","] next=exp kDo body=exp kOd { fun(a) { 
+      log("for " ++ initial.string ++ ", " ++ e.string);
+      assertVoid(a, Seq (initial (Void), While (e (Val), Seq (body (Void), next (Void)))), loc) 
+    } }
+  | inbr[s("("), exp, s(")")]
 ),
- sequencer = memo $ eta syntax (
-   cur=stmt s[";"] next=sequencer { Seq(cur, next) } | stmt
+    branching = memo $ eta syntax (
+      kElif condition=exp kThen true_branch=exp elses=branching { fun (a) { 
+        If (condition (Val), true_branch(a), elses(a))
+      } } 
+    | kElse last_branch=exp { eta (last_branch) }
+    | loc=pos empty {fun (a) { assertVoid (a, Skip, loc) } }
+), 
+    basic  = memo $ eta (expr ({
+      [Right, {[s (":="), fun (l, loc, r) { fun (a) {
+        log("assign " ++ r.string ++ " to " ++ l.string);
+        assertValue (a, Assn (l (Ref), r (Val)), loc) 
+      } }
+      ]}],
+      [Left , map (binop, {"!!"})],
+      [Left , map (binop, {"&&"})],
+      [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
+      [Left , map (binop, {"+", "-"})],
+      [Left , map (binop, {"*", "/", "%"})]
+    }, primary)),
+    exp = memo $ eta syntax (basic | s1=basic s[";"] s2=exp {fun (a) {
+      --log("seq " ++ s1.string);
+      Seq (s1 (Void), s2 (a))
+    } }
 );
 
 -- Public top-level parser
-public parse = sequencer;
-             
+public parse = syntax (s=exp { s (Void) });
