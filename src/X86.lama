@@ -407,6 +407,65 @@ fun suffix (op) {
   esac
 }
 
+fun compileBinop (op, x, y, s) {
+  fun simpleBinop (fir, sec, reg) {
+    move (fir, reg) <+ Binop (op, sec, reg) <+> move (reg, s)
+  }
+  fun divide (divident, divisor, fromReg) {
+    move (divident, eax) <+ Cltd <+ IDiv (divisor) <+> move (fromReg, s)
+  }
+  fun cmp (fir, sec) {
+    move (fir, eax) <+ Binop ("cmp", eax, sec)
+                    <+> move (L (0), eax) <+ Set (suffix (op), "%al") <+> move (eax, s)
+  }
+  fun compileBool (x) {
+    move (L (0), eax) <+ Binop ("cmp", x, eax) <+ Set (suffix ("!="), "%al") <+> move (eax, x)
+  }
+  fun logicBinop (fir, sec) {
+    compileBool (fir) <+> compileBool (sec) <+ Binop (op, fir, eax) <+> move (eax, s)
+  }
+
+  case op of
+    "+"  -> simpleBinop (y, x, edx)
+  | "-"  -> simpleBinop (y, x, edx)
+  | "*"  -> simpleBinop (y, x, edx)
+  | "&&" -> logicBinop (y, x)
+  | "!!" -> logicBinop (y, x)
+  | "/"  -> divide (y, x, eax)
+  | "%"  -> divide (y, x, edx)
+  | "==" -> cmp (x, y)
+  | "<"  -> cmp (x, y)
+  | ">"  -> cmp (x, y)
+  | "!=" -> cmp (x, y)
+  | "<=" -> cmp (x, y)
+  | ">=" -> cmp (x, y)
+  esac
+}
+
+fun retriveArgs (env, nargs) {
+  fun enumFromTo (a, b) {
+    if a > b then {} elif a == b then {b} else a : enumFromTo (a + 1, b) fi
+  }
+  foldl (fun ([env, code], i) { 
+                case env.pop of [s, env] -> [env, code <+ Push (s)] esac 
+         }, [env, emptyBuffer ()], enumFromTo (0, nargs - 1))
+}
+
+fun compileCall (env, lab, nargs) {
+  case liveRegisters (env, nargs) of liveRegs ->
+    case foldl (fun ([push, pop], reg) { 
+                  [push <+ Push (reg), pop <+ Pop (reg)] 
+                }, [emptyBuffer (), emptyBuffer ()], liveRegs) of [pushRegs, popRegs] ->
+      case retriveArgs (env, nargs) of [env, argsCode] ->
+        case env.allocate of [ret, env] ->
+          [env, pushRegs<+> argsCode <+ Call (lab)
+              <+ Binop ("+", L (wordSize * nargs), esp) <+> popRegs <+ Mov (eax, ret)]
+        esac
+      esac
+    esac
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -417,32 +476,55 @@ fun compile (env, code) {
         case i of
           READ ->
             case env.allocate of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
+	            [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
             esac             
         | WRITE ->
             case env.pop of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
+	            [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
             esac
-        (* Assignment *)
-        
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-               
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        (* End *)
+        | BINOP (op) ->
+            case env.pop2 of [x, y, env] -> case env.allocate of [s, env] ->
+                [env, code <+> compileBinop (op, x, y, s)]
+              esac
+            esac
+        | LD     (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (env.loc (x), s)]
+            esac
+        | LDA    (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Lea (env.loc (x), s)]
+            esac
+        | ST     (x) -> [env, code <+> move (env.peek, env.loc (x))]
+        | STI        ->
+            case env.pop of [s, env] -> 
+              case env.peek of top -> [env, code <+> move (s, I (0, top)) <+> move (s, top)] esac
+            esac
+        | DROP       -> case env.pop of [_, env] -> [env, code] esac
+        | DUP        ->
+            case env.peek of top -> 
+              case env.allocate of [s, env] -> [env, code <+ Mov (top, s)] esac
+            esac
+        | CONST  (n) ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Mov (L (n), s)]
+            esac
+        | LABEL  (l) -> [if env.isBarrier then env.retrieveStack (l) else env fi, code <+ Label (l)]
+        | JMP    (l) -> [env.setBarrier (env.setStack (l)), code <+ Jmp (l)]
+        | CJMP   (f, l) ->
+            case pop (env) of
+              [s, env] -> [env.setStack (l), code <+ Mov (L (0), eax) <+ Binop ("cmp", s, eax) <+ CJmp (f, l)]
+            esac
+        | GLOBAL (name)       -> [env.addGlobal (name), code]
+        | CALL (f, n)         -> 
+            case compileCall (env, f, n) of [env, newcode] -> 
+              [env, code <+> newcode]
+            esac
+        | BEGIN (lab, an, ln) -> [env.enterFunction (lab, ln), code <+> prologue (lab)]
+        | END                 ->
+            case epilogue (env) of [env, newcode] ->
+              [env, code <+> newcode]
+            esac
         esac
       }, [env, emptyBuffer ()], code)
   }
