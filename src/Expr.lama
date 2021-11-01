@@ -49,6 +49,7 @@ public fun evalOp (op, l, r) {
 --        Ref     (string)             |
 --        Const   (int)                |
 --        Binop   (string, expr, expr) |
+--        Scope   (def list, expr)     |
 --        Call    (string, expr list)  |
 --        Ignore  (expr)
 
@@ -70,9 +71,20 @@ fun checkFun (state, name) {
   esac
 }
 
+fun checkArgsCount (name, expected, args) {
+  if args.size != expected
+  then error (sprintf ("wrong number of arguments in call of function ""%s""", name), getLoc (name))
+  else args
+  fi
+}
+
 -- Helper function: adds a bunch of regular variables current scope
 fun addNames (state, names) {
   foldl (fun (s, name) {s.addName (name, Var (0))}, state, names)
+}
+
+fun addNamesWithVals (state, names, values) {
+  foldl (fun (s, [name, value]) {s.addName (name, Var (value))}, state, zip (names, values))
 }
 
 -- Helper function: adds a function in current scope
@@ -94,11 +106,60 @@ fun evalList (c, exprs) {
   esac
 }
 
-(* Assignment *)
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Assn    (l, r)         -> case evalList (c, {l, r}) of
+                                [[s, w], {REF (x), v}] -> [[s <- [x, Var (v)], w], v]
+                              esac
+  | Seq     (s1, s2)       -> case eval (c, s1) of
+                                [c, _] -> eval (c, s2)
+                              esac
+
+  | Skip                   -> [c, VOID]
+  | Read    (name)         -> s.checkVar (name);
+                              case readWorld (w) of
+                                [z, w] -> [[s <- [name, Var (z)], w], VOID]
+                              esac
+  | Write   (e)            -> case eval (c, e) of
+                                [[s, w], v] -> [[s, writeWorld (v, w)], VOID]
+                              esac
+  | If      (e, s1, s2)    -> case eval (c, e) of
+                                [c, n] -> if n != 0 then eval (c, s1) else eval (c, s2) fi
+                              esac
+  | wh@While (e, s)        -> case eval (c, e) of
+                                [c, n] -> if n != 0 then case eval (c, s) of [c, v] -> eval (c, wh) esac else [c, VOID] fi
+                              esac
+  | DoWhile  (s, e)        -> eval (c, Seq (s, While (e, s)))
+  | Var      (name)        -> s.checkVar (name);
+                              [c, case s.lookup (name) of Var (x) -> x esac]
+  | Ref      (name)        -> s.checkVar (name);
+                              [c, REF (name)]
+  | Const    (z)           -> [c, z]
+  | Binop    (op, l, r)    -> case evalList (c, {l, r}) of
+                                [c, {w, v}] -> [c, evalOp (op, w, v)]
+                              esac
+  | Scope    (ds, e)       -> var stateWithDefs = foldl (fun (newState, def) {
+                                                            case def of
+                                                              Var (names) -> newState.addNames (names)
+                                                            | Fun (name, args, body) -> newState.addFunction (name, args, body)
+                                                            esac
+                                                         }, s.enterScope, ds);
+                              case eval ([stateWithDefs, w], e) of
+                                [[s, w], v] -> [[s.leaveScope, w], v]
+                              esac
+  | Call     (name, es)    -> case s.lookup (name) of
+                                Fun (args, body) ->
+                                  case evalList (c, es) of
+                                    [[s1, w], vs] -> var state = addNamesWithVals (s1.enterFunction, name.checkArgsCount (vs.size, s.getFuncParams (name)), vs);
+                                                     case eval ([state, w], body) of
+                                                       [[s2, w], v] ->  [[s1.leaveFunction (s2.getGlobal), w], v]
+                                                     esac
+                                  esac
+                              | _                -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
+                              esac
+  | Ignore   (e)           -> case eval (c, e) of [c, _] -> [c, VOID] esac
+  esac
 }
-(* End *)
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
