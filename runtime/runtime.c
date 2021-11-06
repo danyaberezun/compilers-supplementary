@@ -3,9 +3,9 @@
 # include <stdarg.h>
 # include <string.h>
 
-# define UNBOXED(x)  (((int) (x)) &  0x0001)
-# define UNBOX(x)    (((int) (x)) >> 1)
-# define BOX(x)      ((((int) (x)) << 1) | 0x0001)
+# define UNBOXED(x)  (0)
+# define UNBOX(x)    (x)
+# define BOX(x)      (x)
 
 # define STRING_TAG  0x00000001
 # define ARRAY_TAG   0x00000003
