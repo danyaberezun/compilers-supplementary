@@ -71,28 +71,32 @@ fun list (item) {
 -- initializers into assignments
 fun expandScope (defs, expr) {
   fun expandDefs (defs, expr) {
-    foldr (fun ([defs, expr], def) {     
-             case def of
-                [ident, None]         -> [ident : defs, expr]
-             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Assn (Ref (ident), value)), expr)]
-             esac
-           },
-           [{}, expr],
-           defs)
+    foldr (
+      fun ([defs, expr], def) {    
+        case def of
+          [ident, None]         -> [ident : defs, expr]
+        | [ident, Some (value)] -> [ident : defs, Seq (Ignore (Assn (Ref (ident), value)), expr)]
+        esac
+      },
+      [{}, expr],
+      defs
+    )
   }
 
   case 
-    foldr (fun ([defs, expr], def) {
-             case def of
-               f@Fun (_, _, _) -> [f : defs, expr]
-             | Var (ds)      ->
-                 case expandDefs (ds, expr) of
-                   [ds, expr] -> [Var (ds) : defs, expr]
-                 esac
-             esac
-           },
-           [{}, expr],
-           defs) of
+    foldr (
+      fun ([defs, expr], def) {
+        case def of
+          f@Fun (_, _, _) -> [f : defs, expr]
+        | Var (ds)        ->
+            case expandDefs (ds, expr) of
+              [ds, expr] -> [Var (ds) : defs, expr]
+            esac
+        esac
+      },
+      [{}, expr],
+      defs
+    ) of
     [defs, expr] -> Scope (defs, expr)
   esac  
 }
@@ -129,14 +133,14 @@ var
     } |
 
     -- only if
-    kIf cond=exp kThen body=exp kFi { 
+    loc=pos kIf cond=exp kThen body=scopeExpr kFi { 
       fun (a) {
-        If (cond (Val), body (a), Skip)
+        If (cond (Val), body (a), assertVoid (a, Skip, loc))
       }
     } |
 
     -- if and else or elif
-    kIf cond=exp kThen body=exp chained=elifOrElse kFi {
+    kIf cond=exp kThen body=scopeExpr chained=elifOrElse kFi {
       fun (a) {
         If (cond (Val), body (a), chained (a))
       }
@@ -157,21 +161,21 @@ var
     } |
 
     -- while do
-    loc=pos kWhile cond=exp kDo body=exp kOd {
+    loc=pos kWhile cond=exp kDo body=scopeExpr kOd {
       fun (a) {
         assertVoid (a, While (cond (Val), body (Void)), loc)
       }
     } |
 
     -- do while
-    loc=pos kDo body=exp kWhile cond=exp kOd {
+    loc=pos kDo body=scopeExpr kWhile cond=exp kOd {
       fun (a) {
-        assertVoid (a, DoWhile (body (Void), cond (Val)), loc)
+        assertVoid (a, distributeScope (body (Void), fun (e) { DoWhile (e, cond (Val)) }), loc)
       }
     } |
 
-    -- expression in braces
-    inbr[s ("("), exp, s (")")] |
+    -- scope in braces
+    inbr[s ("("), scopeExpr, s (")")] |
 
     -- skip
     loc=pos kSkip {
@@ -181,18 +185,15 @@ var
     } |
 
     -- for
-    loc=pos kFor ini=exp s[","] cond=exp s[","] step=exp kDo body=exp kOd {
+    loc=pos kFor ini=scopeExpr s[","] cond=exp s[","] step=exp kDo body=scopeExpr kOd {
       fun (a) {
-        assertVoid (a,
-          Seq (
+        assertVoid (
+          a,
+          distributeScope (
             ini (Void),
-            While (
-              cond (Val),
-              Seq (
-                body (Void),
-                step (Void)
-              )
-            )
+            fun (e) {
+              Seq (e, While (cond (Val), Seq (body (Void), step (Void))))
+            }
           ),
           loc
         )
@@ -202,21 +203,21 @@ var
 
   elifOrElse = memo $ eta syntax (
     -- else
-    kElse body=exp {
+    kElse body=scopeExpr {
       fun (a) {
         body (a)
       }
     } |
 
     -- chained elif
-    kElif cond=exp kThen body=exp chained=elifOrElse {
+    kElif cond=exp kThen body=scopeExpr chained=elifOrElse {
       fun (a) {
         If (cond (Val), body (a), chained (a))
       }
     } |
 
     -- last elif
-    kElif cond=exp kThen body=exp {
+    kElif cond=exp kThen body=scopeExpr {
       fun (a) {
         If (cond (Val), body (a), Skip)
       }
@@ -233,24 +234,39 @@ var
                                       [Left , map (binop, {"*", "/", "%"})]
                                      },
                                      primary)),
-      scopeExpr  = memo $ eta syntax (ds=definition* e=exp? {fun (a) {fun (e) {
-                                                                        case ds of
-                                                                          {} -> e
-                                                                        | _  -> expandScope (ds, e) 
-                                                                        esac
-                                                                      } (case e of 
-                                                                           Some (e) -> e (a)
-                                                                         | _        -> Skip
-                                                                         esac)
-                                                                      }}),
-      definition = memo $ eta syntax (kVar ds=list[syntax (lident (s["="] e=basic {e (Val)})?)] s[";"] {Var (ds)} |
-                                      kFun name=lident
-                                           args=inbr[s("("), list0 (lident), s(")")]
-                                           body=inbr[s("{"), scopeExpr, s("}")] {
-                                           Fun (name, args, body (Weak))
-                                      }
-                                     ),                                    
-      exp        = memo $ eta syntax (basic | s1=basic s[";"] s2=exp {fun (a) {Seq (s1 (Void), s2 (a))}});
+
+  scopeExpr = memo $ eta syntax (
+    ds=definition* e=exp? {
+      fun (a) {
+        fun (e) {
+          case ds of
+            {} -> e
+          | _  -> expandScope (ds, e) 
+          esac
+        } (
+            case e of 
+                Some (e) -> e (a)
+              | _        -> Skip
+            esac
+          )
+      }
+    }
+  ),
+
+  definition = memo $ eta syntax (
+    kVar ds=list[syntax (lident (s["="] e=basic {e (Val)})?)] s[";"] {
+      Var (ds)
+    } |
+
+    kFun name=lident args=inbr[s("("), list0 (lident), s(")")] body=inbr[s("{"), scopeExpr, s("}")] {
+      Fun (name, args, body (Weak))
+    }
+  ),                                  
+
+  exp = memo $ eta syntax (
+    basic | s1=basic s[";"] s2=exp {fun (a) {Seq (s1 (Void), s2 (a))}}
+  )
+;
 
 -- Public top-level parser
 public parse = syntax (s=scopeExpr {s (Void)});
