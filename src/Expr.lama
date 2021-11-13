@@ -64,7 +64,7 @@ public fun evalOp (op, l, r) {
 fun lookupVal (state, name) {
   case state.lookup (name) of
     x@Val (_) -> x
-  | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
+  | _         -> error (sprintf ("expr: the name ""%s"" does not designate a variable", name), getLoc (name))
   esac
 }
 
@@ -86,7 +86,7 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -101,8 +101,136 @@ fun evalList (c, exprs) {
   esac
 }
 
+
+fun processDefs(state, defs) {
+  case defs of
+    {} -> state
+   | h:tail -> case h of
+         Fun (name, args, body) -> processDefs(state.addFunction(name, args, body), tail)
+        | Var (names) -> processDefs(state.addNames(names), tail)
+        | Val (names) -> processDefs(state.addNames(names), tail)
+        esac
+  esac
+}
+
+
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+   Assn (lhs, rhs) -> (
+     case evalList(c, {lhs, rhs}) of
+       [c@[s, w], { Ref (lhs), rhs} ] -> (
+            var newConf = [s <- [lhs, Val (rhs)], w];
+            [newConf, rhs]
+       )
+     | [c, { ElemRef (lhs, indx), rhs} ] -> (
+        lhs[indx] := rhs;
+        [c, rhs]
+     )
+     esac
+   )
+  | Seq (st, stR) -> case eval(c, st) of
+        [newConf, v] -> eval (newConf, stR)
+        esac
+  | Skip -> [c, Void]
+
+  | If (cond, tb, fb) ->  case eval(c, cond) of
+        [newConf, condR] -> if condR then eval(newConf, tb)
+                            else eval(newConf, fb)
+                            fi
+        esac
+  | While (cond, stt) -> case eval(c, cond) of
+        [newConf, condR] -> if condR then (
+                                var blockR = eval(newConf, stt);
+                                eval(blockR.fst, While (cond, stt))
+                            ) else [newConf, Void]
+                            fi
+        esac
+  | DoWhile (stt, cond) -> case eval(c, stt) of
+        [newConf, blockR] -> case eval(newConf, cond) of
+                [newConf, condR] -> if condR then (
+                                    eval(newConf, While (cond, stt))
+                                    ) else [newConf, Void]
+                                    fi
+                esac
+        esac
+  | Ref (x) -> [c, Ref (x)]
+--  | Var (x) -> case s.lookup(x) of
+  | Var (x) -> case lookup(s, x) of
+     Val (x) -> [c, x]
+   esac
+
+  | Const (x) -> [c, x]
+  | Binop (op, x, y) -> (
+     case evalList(c, {x, y}) of
+        [newConf, {l, r}] -> [newConf, evalOp(op, l, r)]
+      esac
+  )
+  | Ignore (ex) -> [eval(c, ex).fst, Void]
+  | Scope(defs, ex) ->
+    case processDefs(enterScope(s), defs) of newState ->
+          case eval([newState, w], ex) of
+                [[newState, w], res] -> (
+                    var newConf = [leaveScope(newState), w];
+                    [newConf, res]
+                )
+          esac
+    esac
+  | String (str_) -> [c, str_]
+  | Set (lhs, x) -> case eval(c, x) of
+    [newConf@[s, w], res] -> (
+        var newConf = [s <- [lhs, Val (res)], w];
+        [newConf, res]
+    )
+    esac
+  | Sexp (exp, data) -> case evalList(c, data) of
+        [newConf, elems] -> [newConf, Sexp (exp, listArray(elems))]
+    esac
+  | Elem (containerExpr, indx) -> case evalList(c, { containerExpr, indx } ) of
+          [newConf, {Sexp (ex, lhs), ind}] -> [newConf, lhs[ind]]
+        | [newConf, {container, ind} ] -> [newConf, container[ind]]
+    esac
+  | ElemRef (containerExpr, indx) -> case evalList(c, { containerExpr, indx } ) of
+         [newConf, {container, ind} ] -> [newConf, ElemRef (container, ind)]
+    esac
+  | Array (contElements) -> case evalList(c, contElements) of
+        [newConf, actElements] -> [newConf, listArray(actElements) ]
+      esac
+  | Call (func, args) -> case func of
+    "write" -> case eval(c, args.fst) of
+     [newConf@[s, w], res] -> [[s, writeWorld(res, w)], Void]
+     esac
+   | "read" -> case readWorld(w) of
+                       [v, newW] -> (
+                           var newConf = [s, newW];
+                           [newConf, v]
+                       )
+     esac
+--   | "length" -> case eval(c, args.fst) of
+--    [c, res] ->  [c, length(res)]
+--    esac
+    | _ -> case s.lookup(func) of
+      Fun (fArgs, External) -> case evalList(c, args) of
+            [c@[s, w], evaluatedArgs] -> case evalBuiltin(func, evaluatedArgs, w) of
+                     [res, w] -> [[s, w], res]
+                esac
+      esac
+    | Fun (fArgs, body) -> case evalList(c, args) of
+            [c@[st, w], evaluatedArgs] -> (
+                var updState = enterFunction(st);
+                var newState = foldl(fun (s, [arg, v]) { addName(s, arg, Val (v) ) }, updState, zip(fArgs, evaluatedArgs));
+--                printf("%s ", updState);
+                case eval([newState, w], body) of
+                    [c@[newSt, w], res] -> (
+                        var newConf = [st.leaveFunction(getGlobal(newSt)), w];
+                        [newConf, res]
+                    )
+                esac
+            )
+            esac
+        esac
+    esac
+  | _ -> failure("expr: not implemented for %s\n", expr.string)
+  esac
 }
 
 
