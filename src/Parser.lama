@@ -74,7 +74,7 @@ fun expandScope (defs, expr) {
     foldr (fun ([defs, expr], def) {     
              case def of
                 [ident, None]         -> [ident : defs, expr]
-             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
+             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Assn (Ref (ident), value)), expr)]
              esac
            },
            [{}, expr],
@@ -83,7 +83,7 @@ fun expandScope (defs, expr) {
 
   fun expandValDefs (defs, expr) {
     foldr (fun ([defs, expr], [ident, value]) {     
-             [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
+             [ident : defs, Seq (Ignore (Assn (Ref (ident), value)), expr)]
            },
            [{}, expr],
            defs)
@@ -116,38 +116,93 @@ fun distributeScope (expr, exprConstructor) {
   | _                   -> exprConstructor (expr)
   esac
 }
+
+fun isBuiltin (f) {
+  case f of
+    "stringval" -> true
+  | "length"    -> true
+  | "read"      -> true
+  | "write"     -> true
+  | _           -> false
+  esac
+}
+
  
 var primary    = memo $ eta syntax (
-                                      -- array constant
-                                      loc=pos x=inbr[s("["), list0(syntax (e=exp {e(Val)})), s("]")] {fun (a) {assertValue (a, Array (x), loc)}}    |
-                                      
-                                      -- string constant
-                                      loc=pos x=strlit                                               {fun (a) {assertValue (a, String (x), loc)}}   |
-                                      
-                                      -- character literal
-                                      loc=pos x=chrlit                                               {fun (a) {assertValue (a, Const (x), loc)}}    |
-                                      
-                                      -- decimal constant
-                                      loc=pos x=decimal                                              {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
+      -- array constant
+      loc=pos x=inbr[s("["), list0(syntax (e=exp {e(Val)})), s("]")] {fun (a) {assertValue (a, Array (x), loc)}}    |
+      
+      -- string constant
+      loc=pos x=strlit                                               {fun (a) {assertValue (a, String (x), loc)}}   |
+      
+      -- character literal
+      loc=pos x=chrlit                                               {fun (a) {assertValue (a, Const (x), loc)}}    |
+      
+      -- decimal constant
+      loc=pos x=decimal                                              {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
 
-                                      -- identifier
-                                      x=lident args=inbr[s("("), list0(syntax(e=exp {e(Val)})), s(")")]? {fun (a) {
-                                                                                                            case args of
-                                                                                                              None -> case a of
-                                                                                                                        Ref  -> Ref (x)
-                                                                                                                      | Void -> Ignore (Var (x))
-                                                                                                                      | _    -> Var (x)
-                                                                                                                      esac
-                                                                                                            | Some (args) -> assertValue (a, Call (x, args))
-                                                                                                            esac
-                                                                                                         }} |
+      -- identifier
+      x=lident args=inbr[s("("), list0(syntax(e=exp {e(Val)})), s(")")]? {fun (a) {
+                                                                            case args of
+                                                                              None -> case a of
+                                                                                        Ref  -> Ref (x)
+                                                                                      | Void -> Ignore (Var (x))
+                                                                                      | _    -> Var (x)
+                                                                                      esac
+                                                                            | Some (args) -> if isBuiltin (x)
+                                                                                             then assertValue (a, Builtin (x, args))
+                                                                                             else assertValue (a, Call (x, args))
+                                                                                             fi
+                                                                            esac
+                                                                          }} |
 
-                                      -- S-expression
-                                      loc=pos x=uident args=inbr[s("("), list0(syntax(e=exp {e(Val)})), s(")")]? {fun (a) {assertValue (a, Sexp (x, case args of
-                                                                                                                                                      None        -> {}
-                                                                                                                                                    | Some (args) -> args
-                                                                                                                                                    esac), loc)}} |
-                                      $(failure ("the rest of primary parsing in not implemented\n"))),
+      -- S-expression
+      loc=pos x=uident args=inbr[s("("), list0(syntax(e=exp {e(Val)})), s(")")]? {fun (a) {assertValue (a, Sexp (x, case args of
+                                                                                                                      None        -> {}
+                                                                                                                    | Some (args) -> args
+                                                                                                                    esac), loc)}} |
+      
+      -- expr in brackets
+      loc=pos e=inbr[s("("), scopeExpr, s(")")]           { e                                                         } |
+      
+      -- skip-expression
+      loc=pos kSkip                                       {fun (a) { assertVoid (a, Skip, loc)                       }} |
+
+      -- while-expression
+      loc=pos kWhile e=exp kDo s=scopeExpr kOd            {fun (a) { assertVoid (a, While (e (Val), s (Void)), loc)  }} |
+
+      -- if-expression
+      loc=pos kIf e=exp kThen s=scopeExpr kFi             {fun (a) { assertVoid (a, If (e (Val), s (a), Skip), loc)  }} |
+
+      -- if-expression
+      loc=pos kIf e=exp kThen s=scopeExpr alts=elifs kFi  {fun (a) { If (e (Val), s (a), alts (a))                   }} |
+
+      -- do-while-expression
+      loc=pos kDo s=scopeExpr kWhile e=exp kOd            {fun (a) { assertVoid (
+                                                                      a,
+                                                                      distributeScope
+                                                                        (s (Void),
+                                                                         fun (ex) { DoWhile (ex, e (Val)) }),
+                                                                      loc)                                           }} |
+
+      -- for-expression
+      loc=pos kFor s1=scopeExpr s[","] e=exp s[","] s2=exp kDo s3=scopeExpr kOd
+                                                          {fun (a) { assertVoid (
+                                                                      a,
+                                                                      distributeScope 
+                                                                        (s1 (Void), 
+                                                                         fun (ex) { Seq (ex,
+                                                                                    While (e (Val),
+                                                                                           Seq (s3 (Void), s2 (Void)))) }),
+                                                                        loc) }}),
+
+      -- if-expression: else-branch
+      elifs = memo $ eta syntax (
+        kElif e=exp kThen s=scopeExpr alts=elifs          {fun (a) { If (e (Val), s (a), alts (a))}} |
+        kElif e=exp kThen s=scopeExpr                     {fun (a) { If (e (Val), s (a), Skip)    }} |
+        kElse s=scopeExpr                                 { s                                      }
+      ),
+
       basic      = memo $ eta (expr ({[Right, {[s (":="),
                                                 fun (l, loc, r) {
                                                   fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
