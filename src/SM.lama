@@ -172,7 +172,7 @@ fun eval (env, w, insns) {
             [state, rest]:cstack -> eval([stack, cstack, state, world], rest)
             | {} -> c
        esac
-      | CALL(fname, args) -> eval ([stack, [state, rest]:cstack, state, world], env.fromLabel(fname))
+      | CALL(fname, n) -> eval ([stack, [state, rest]:cstack, state, world], env.fromLabel(fname))
       | BEGIN (fname, argc, varc) ->
             case take (stack, argc) of
                 [stack, args] ->
@@ -180,8 +180,28 @@ fun eval (env, w, insns) {
                   var state = assignArgs(newState, args);
                   eval([stack, cstack, state, world], rest)
             esac
-       esac
+      | STA -> case stack of
+          v : i : Sexp (name, exprs) : stack -> exprs[i] := v; eval ([v : stack, cstack, state, world], rest)
+        | v : i : a : stack                  -> a[i] := v; eval ([v : stack, cstack, state, world], rest)
+      esac
+      | ELEM -> case stack of
+        i : Sexp (name, exprs) : stack -> eval([exprs[i]:stack, cstack, state, world], rest)
+        | i : arr : stack                -> eval([  arr[i]:stack, cstack, state, world], rest)
+      esac
+      | ARRAY (n) -> case take (stack, n) of
+        [stack, a] -> eval ([listArray(a):stack, cstack, state, world], rest)
+      esac
+      | STRING (x) -> eval([x:stack, cstack, state, world], rest)
+      | SEXP (name, n) -> case take (stack, n) of
+        [stack, a] -> eval ([Sexp (name, listArray(a)):stack, cstack, state, world], rest)
+      esac
+      | BUILTIN (f, n) -> case take(stack, n) of
+        [stack, a] -> case evalBuiltin (f, a, w) of
+          [v, world] -> eval([v:stack, cstack, state, world], rest)
+        esac
+      esac
       | {} -> c
+    esac
     esac
   }
   (* End *)
@@ -462,22 +482,33 @@ public fun compileSM (stmt) {
   fun compile (env, stmt) {
     case stmt of
        Assn(x, e) -> case compile(env, x) of [env, xs] -> case compile (env, e) of [env, xe] -> [env, xs +++ xe +++ {STI}] esac esac
-       | Var (s) -> [env, {LD (lookupVar(env, s))}]
+       | Var (s) -> [env, {LD (lookupVal(env, s))}]
        | Const (i) -> [env, {CONST(i)}]
        | Binop (s, e1, e2) -> case compile(env, e1) of
              [env, s1] -> case compile(env, e2) of
                  [env, s2] -> [env, s1 +++ s2 +++ {BINOP(s)}]
                  esac esac
        | Skip -> [env, {}]
+       | String (s) -> [env, {String(s)}]
+       | Elem (e, idx) -> case compileList (env, {e, idx}) of
+          [env, code] -> [env, code +++ {ELEM}]
+        esac
+       | ElemRef (e, idx) -> compileList(env, {e, idx})
+       | Array (a) -> case compileList (env, a) of
+          [env, arg] -> [env, arg +++ {Array (size(a))}]
+        esac
+       | Set (name, expr) -> case compile(env, expr) of
+          [env, code] -> [env, {LDA (lookupVar(env, name))} +++ code +++ {STI}]
+        esac
        | Ref (x) -> [env, {LDA (lookupVar(env, x))}]
        | Seq (s1, s2) -> case compile(env, s1) of
             [env1, st1] -> case compile(env1, s2) of
                  [env2, st2] -> [env2, st1 +++ st2]
                  esac
             esac
-       | Read (s) -> [env, {READ, ST(lookupVar(env, s)), DROP}]
-       | Write (e) -> case compile(env, e) of
-             [env, s] -> [env, s +++ {WRITE}] esac
+       | Sexp (name, exprs) -> case compileList(env, exprs) of
+          [env, code] -> [env, code +++ {SEXP(name, size(exprs))}]
+        esac
        | If (e, s1, s2) -> case genLabels (env, 2) of
            [lfls, lend, env1] -> case compile(env1, e) of
                [env2, es] -> case compile(env2, s1) of
@@ -504,8 +535,10 @@ public fun compileSM (stmt) {
        esac
        | Call (f, args) -> case compileList(env, args) of
            [env, code] -> case lookupFun(env, f) of
-               Fun(fLabel, n) -> [env, code +++ {CALL(fLabel, n)}]
-           esac
+               Fun(fLabel, n) -> case fLabel[0] of
+                '$' -> [env, code +++ {BUILTIN (f, n)}] -- TODO are f and '$'+fLabel always equal?
+                | _ -> [env, code +++ {CALL(fLabel, n)}]
+           esac esac
        esac
        | Fun (fLabel, args, body, state) -> case compile(addArgs(beginFun(env, state), args), body) of
            [env, code] -> [env, {LABEL(fLabel), BEGIN(fLabel, size(args), getLocals(env))} +++ code +++ {END}]
