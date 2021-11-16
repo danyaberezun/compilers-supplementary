@@ -522,24 +522,48 @@ fun popN (env, n) {
   esac
 }
 
-fun compileCall (env, lab, nargs) {
-  case liveRegisters (env, nargs) of
-    regs ->
-      case popN (env, nargs) of
-        [vars, env] ->
-          case allocate (env) of
-            [s, env] ->
-              -- printf ("Here!\n");
-              [env,
-                mapToBuffer (regs, fun (x) { Push (x) })
-                <+> mapToBuffer(vars, fun (x) { Push (x) })
-                <+ Call (lab)
-                <+> singletonBuffer (Binop ("+", L (wordSize * nargs), esp))
-                <+> mapToBuffer (regs, fun (x) { Pop (x) })
-                <+> move (eax, s)
-              ]
-          esac
+fun compileCall (env, lab, nargs, codeOther) {
+  fun enumArgs (env, nargs) {
+    fun range (a, b) {
+      if a > b then {} elif a == b then {b} else a : range (a + 1, b) fi
+    }
+
+    foldl (
+      fun ([env, code], i) {
+        case env.pop of [s, env] -> [env, code <+ Push (s)] esac 
+      },
+      [env, emptyBuffer ()],
+      range (0, nargs - 1)
+    )
+  }
+
+  fun compilePushPop (regs) {
+    foldl (
+      fun ([push, pop], reg) { 
+        [push <+ Push (reg), singletonBuffer (Pop (reg)) <+> pop] 
+      },
+      [emptyBuffer (), emptyBuffer ()],
+      regs
+    )
+  }
+
+  var callSize = nargs + size (getBuffer (codeOther));
+
+  case compilePushPop (liveRegisters (env, nargs)) of [pushRegs, popRegs] ->
+    case enumArgs (env, nargs) of [env, argsCode] ->
+      case allocate (env) of [ret, env] ->
+        [
+          env,
+          pushRegs
+            <+> argsCode
+            <+> codeOther
+            <+ Call (lab)
+            <+ Binop ("+", L (wordSize * callSize), esp)
+            <+> popRegs
+            <+ Mov (eax, ret)
+        ]
       esac
+    esac
   esac
 }
 
@@ -605,6 +629,36 @@ fun compile (env, code) {
       | CALL (lab, nargs) ->
           case compileCall (env, lab, nargs) of
             [env, codeCall] -> [env, code <+> codeCall]
+          esac
+      | BUILTIN (name, nargs) -> 
+          case compileCall (env, "L" ++ name, nargs, emptyBuffer ()) of [env, newcode] -> 
+            [env, code <+> newcode]
+          esac
+      | ARRAY (n) ->
+          case compileCall (env, "Barray", n, singletonBuffer (Push (L (n)))) of [env, newcode] -> 
+            [env, code <+> newcode]
+          esac
+      | STRING (s) ->
+          case addString (env, s) of [env, name] ->
+            case env.allocate of [s, env] ->
+              case compileCall (env, "Bstring", 1, emptyBuffer ()) of [env, codeCall] ->
+                [env, code <+> move (M ("$" ++ name), s) <+> codeCall]
+              esac
+            esac
+          esac
+      | ELEM -> 
+          case compileCall (env, "Belem", 2, emptyBuffer ()) of [env, newcode] ->
+            [env, code <+> newcode]
+          esac
+      | STA  ->             
+          case compileCall (env, "Bsta", 3, emptyBuffer ()) of [env, newcode] ->
+            [env, code <+> newcode]
+          esac
+      | SEXP (name, n) ->
+          case env.allocate of [s, env] ->
+            case compileCall (env, "Bsexp", n + 1, singletonBuffer (Push (L (n + 1)))) of [env, codeCall] ->
+              [env, code <+> move (L (tagHash (name)), s) <+> codeCall]
+            esac
           esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac

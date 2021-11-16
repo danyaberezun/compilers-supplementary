@@ -106,12 +106,14 @@ fun eval (env, w, insns) {
 
   -- Lookups a location in local/global states
   fun lookup ([args, locs], loc) {
-    case loc of
+    var res = case loc of
       Arg (i) -> args[i]
     | Loc (i) -> locs[i]
     | Loc (i) -> locs[i]
     | Glb (x) -> deref (globalState) (x)
-    esac 
+    esac;
+    -- printf ("lookup loc: %s == %s\n", loc.string, res.string);
+    res
   }
 
   -- Assigns a value to a location
@@ -182,6 +184,14 @@ fun eval (env, w, insns) {
                 esac,
                 cst, state, world, insns
               )
+          | STA ->
+              case take (stack, 3) of [stack, { arr, idx, value }] ->
+                case arr of 
+                  Sexp (_, arr) -> arr[idx] := value
+                | _             -> arr[idx] := value
+                esac;
+                ev (value : stack, cst, state, world, insns)
+              esac
           | CONST (n) -> ev (n : stack, cst, state, world, insns)
           | LABEL (s) -> ev (stack, cst, state, world, insns)
           | JMP (l) -> ev (stack, cst, state, world, fromLabel (env, l))
@@ -221,6 +231,33 @@ fun eval (env, w, insns) {
                     [state, _] -> ev (stack, cst, state, world, insns)
                   esac
               esac
+          | SEXP (name, n) ->
+              case take (stack, n) of [stack, elems] ->
+                ev ((Sexp (name, listArray (elems))):stack, cst, state, world, insns)
+              esac
+          | STRING (s) -> ev (s : stack, cst, state, world, insns)
+          | ARRAY (n) ->
+              case take (stack, n) of [stack, items] ->
+                ev ((listArray (items)) : stack, cst, state, world, insns)
+              esac
+          | ELEM ->
+              -- printf ("ELEM\n");
+              case take (stack, 2) of [stack, { arr, idx }] ->
+                -- printf ("arr: %s\n, idx: %s", arr.string, idx.string);
+                ev (
+                  case arr of
+                    Sexp (_, arr) -> arr[idx]
+                  | _             -> arr[idx]
+                  esac : stack,
+                  cst, state, world, insns
+                )
+              esac
+          | BUILTIN (fname, nargs) ->
+              case take (stack, nargs) of [stack, args] ->
+                case evalBuiltin (fname, args, world) of [value, world] ->
+                  ev (value : stack, cst, state, world, insns)
+                esac
+              esac
           esac
       | {} -> [stack, cst, state, world]
       esac
@@ -230,8 +267,7 @@ fun eval (env, w, insns) {
 
     ev (stack, cst, state, world, insns)
   }
-  
-  
+
   eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
 }
 
@@ -308,6 +344,7 @@ fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
     case lookup (state, name) of
       Loc (i, true) -> Loc (i)
     | Glb (x, true) -> Glb (x)
+    | Arg (i)       -> Arg (i)
     | _             -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
     esac
   }
@@ -503,13 +540,13 @@ public fun compileSM (stmt) {
     else emptyBuffer ()
     fi
   }
-  
+
   fun compile (lab, env, stmt) {
     case stmt of
-      Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
+      Skip       -> [false, env, emptyBuffer ()]
+    | Var    (x) -> [false, env, singletonBuffer (LD (lookupVar (env, x)))]
+    | Ref    (x) -> [false, env, singletonBuffer (LDA (lookupVar (env, x)))]
+    | Const  (n) -> [false, env, singletonBuffer (CONST (n))]
     | Ignore (e) ->
         case genLabel (env) of
           [lab, env] ->
@@ -531,27 +568,21 @@ public fun compileSM (stmt) {
                 esac
             esac
         esac
-    | Read (x) -> [false, env, singletonBuffer (READ) <+ ST (lookupVar (env, x)) <+ DROP]
-    | Write (e) ->
-        case genLabel (env) of
-          [endLab, env] ->
-            case compile (endLab, env, e) of
-              [labUsed, env, code] -> [false, env, code <+> label (endLab, labUsed) <+ WRITE]
-            esac
-        esac
+    | Set (x, e) -> compile (lab, env, Assn (Ref (x), e))
     | Assn (x, e) ->
-        case genLabels (env, 2) of
-          [endLabX, endLabE, env] ->
-            case compile (endLabX, env, x) of
-              [endUsedX, env, codeX] ->
-                case compile (endLabE, env, e) of
-                  [endUsedE, env, codeE] -> 
-                    [false, env,
-                     codeX <+> label (endLabX, endUsedX) <+> 
-                     codeE <+> label (endLabE, endUsedE) <+ 
-                     STI]
-                esac
+        case genLabels (env, 2) of [endLabX, endLabE, env] ->
+          case compile (endLabX, env, x) of [endUsedX, env, codeX] ->
+            case compile (endLabE, env, e) of [endUsedE, env, codeE] -> 
+              [
+                false, env,
+                codeX
+                  <+> label (endLabX, endUsedX)
+                  <+> codeE
+                  <+> label (endLabE, endUsedE)
+                  <+ case x of ElemRef (_, _) -> STA | _ -> STI esac
+              ]
             esac
+          esac
         esac
     | Seq (s1, s2) ->
         case genLabel (env) of
@@ -638,12 +669,33 @@ public fun compileSM (stmt) {
           esac
         esac
     | Call (fname, args) ->
-        case compileFunArgs (env, args) of [env, code] ->
-          case lookupFun (env, fname) of Fun (lab, nargs) ->
-            [false, env,
-             code <+ CALL (lab, nargs)]
+        case compileListExprs (env, args) of [env, code] ->
+          case fname of
+            "read"   -> [false, env, code <+ BUILTIN (fname, 0)]
+          | "write"  -> [false, env, code <+ BUILTIN (fname, 1)]
+          | "length" -> [false, env, code <+ BUILTIN (fname, 1)]
+          | _        -> case lookupFun (env, fname) of Fun (lab, nargs) ->
+                          [false, env, code <+ CALL (lab, nargs)]
+                        esac
           esac
         esac
+    | Array (elemExprs) ->
+        case compileListExprs (env, elemExprs) of [env, code] ->
+          [false, env, code <+ ARRAY (elemExprs.size)]
+        esac
+    | String (s) -> [false, env, singletonBuffer (STRING (s))]
+    | Elem (arrExpr, idxExpr) ->
+        case compileListExprs (env, { arrExpr, idxExpr }) of [env, code] ->
+          [false, env, code <+ ELEM]
+        esac
+    | ElemRef (arrExpr, idxExpr) ->
+        case compileListExprs (env, { arrExpr, idxExpr }) of [env, code] ->
+          [false, env, code]
+        esac
+    | Sexp (name, argExprs)  ->
+        case compileListExprs (env, argExprs) of [env, code] ->
+          [false, env, code <+ SEXP (name, argExprs.size)]
+        esac 
     esac
   }
 
@@ -671,7 +723,7 @@ public fun compileSM (stmt) {
     )
   }
 
-  fun compileFunArgs (env, args) {
+  fun compileListExprs (env, args) {
     foldl (
       fun ([env, code], arg) {
         case env.genLabel of [lab, env] ->
@@ -713,7 +765,7 @@ public fun compileSM (stmt) {
          [endLabUsed, env, code] -> getBuffer $
               singletonBuffer (LABEL ("main")) <+ BEGIN ("main", 0, getLocals (env)) 
                 <+> code <+> label (endLab, endLabUsed) <+ END 
-                <+> (case env.getFuns of [funs, env] -> compileFuns (env, funs) [1] esac)
+                <+> (case env.getFuns of [funs, env] -> compileFuns (env, funs) [1] esac) 
        esac
   esac
 }
