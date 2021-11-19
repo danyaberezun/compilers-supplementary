@@ -92,6 +92,10 @@ fun list (item) {
   listBy (item, s(","))
 }
 
+fun separated (item, sep) {
+  listBy (item, sep)
+}
+
 -- Helper AST function: expands a "raw" scope expression, reifying
 -- initializers into assignments
 fun expandScope (defs, expr) {
@@ -186,13 +190,36 @@ fun reifyPatternBindings (matched, brs) {
   )
 }
 
-var
-  primary = memo $ eta syntax (
-    -- array constant
-    loc=pos x=inbr[s("["), list0(syntax (e=exp {e(Val)})), s("]")] {
+
+fun debug (s) {
+  var file = fopen ("Hello.txt", "a");
+  fprintf (file, "%s\n", s.string);
+  fclose (file);
+  s
+}
+
+fun parseSexp (inner) {
+  memo $ eta syntax (
+    loc=pos x=uident args=inbr[s("("), list0(syntax(e=inner {e (Val)})), s(")")]? {
+        fun (a) {
+          assertValue (a, case args of
+                            None        -> returnST $ Sexp (x, {})
+                          | Some (args) -> chainST (args) => fun (args) {Sexp (x, args)}
+                          esac, loc)}
+      }
+  )
+}
+
+fun parseArray (inner) {
+  memo $ eta syntax (
+    loc=pos x=inbr[s("["), list0(syntax (e=inner {e (Val)})), s("]")] {
       fun (a) {assertValue (a, chainST (x) => fun (x) {Array (x)}, loc)}
-    } |
-                                      
+    }
+  )
+}
+
+var
+  constant = memo $ eta syntax (
     -- string constant
     loc=pos x=strlit {
       fun (a) {assertValue (a, returnST $ String (x), loc)}
@@ -206,7 +233,14 @@ var
     -- decimal constant
     loc=pos x=decimal {
       fun (a) {assertValue (a, returnST $ Const (stringInt (x)), loc)}
-    } |
+    }
+  ),
+  
+  primary = memo $ eta syntax (
+    -- array constant
+    parseArray[exp] |
+                                      
+    constant |
                                       
     -- identifier
     loc=pos x=lident args=inbr[s("("), list0(syntax(e=exp {e(Val)})), s(")")]? {
@@ -222,13 +256,7 @@ var
     } |
 
     -- S-expression
-    loc=pos x=uident args=inbr[s("("), list0(syntax(e=exp {e (Val)})), s(")")]? {
-      fun (a) {
-        assertValue (a, case args of
-                          None        -> returnST $ Sexp (x, {})
-                        | Some (args) -> chainST (args) => fun (args) {Sexp (x, args)}
-                        esac, loc)}
-    } |
+    parseSexp[exp] |
   
     -- ( expression )
     inParentheses[scopeExpr] |
@@ -283,7 +311,67 @@ var
             }
           }
         }, loc)
+    } } |
+
+    -- Case
+    loc=pos kCase scrut=exp kOf brs=branches kEsac { fun (a) {
+      assertValue (a,
+        freshName =>> fun (name) {
+          scrut (Val) =>> fun (scrut) {
+            brs (a) => fun (brs) {
+              Scope (
+                { Var ({ name }) },
+                Seq ( 
+                  Ignore (Assn (Ref (name), scrut)),
+                  Case (name, reifyPatternBindings (name, brs))
+                )
+              )
+            }
+          }
+        }, loc)
     } }
+  ),
+
+  branches = memo $ eta syntax (
+    loc=pos brs=separated[branch, s("|")] {
+      fun (a) {
+        assertValue (a, chainST (map (fun (b) { b (a) }, brs)), loc)
+      }
+    }
+  ),
+
+  branch = memo $ eta syntax (
+    loc=pos pat=pattern s["->"] expr=scopeExpr {
+      fun (a) {
+        assertValue (a, expr (a) =>> fun (e) { 
+          pat (Val) =>> fun (pat) {
+            returnST $ [pat, e] 
+          }
+        }, loc)
+      }
+    }
+  ),
+
+  pattern = memo $ eta syntax (
+    constant |
+
+    loc=pos s["_"] { fun (a) { assertValue (a, returnST $ Wildcard, loc) } } |
+
+    parseArray[pattern] |
+
+    parseSexp[pattern] |
+
+    loc=pos name=lident pat=(-s["@"] pattern)? {
+      fun (a) {
+        assertValue (a,
+          case pat of
+            None     -> returnST $ Named (name, None)
+          | Some (p) -> pat (Val) =>> fun (p) { Named (name, Some (p)) }
+          esac,
+          loc
+        )
+      }
+    }
   ),
    
   elseBranch = memo $ eta syntax (
