@@ -70,7 +70,7 @@ char* de_hash (int n) {
   return ++p;
 }
 
-int Llength (void *p) {
+int Blength (void *p) {
   data *a = TO_DATA(p);
   return BOX(LEN(a->tag));
 }
@@ -206,11 +206,11 @@ extern int Bstring_patt (void *x, void *y) {
   }
 }
 
-void Lwrite (int x) {
+void Bwrite (int x) {
   printf ("%d\n", UNBOX (x));
 }
 
-int Lread () {
+int Bread () {
   int result;
 
   scanf  ("%d", &result);
