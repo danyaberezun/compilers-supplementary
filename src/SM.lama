@@ -67,7 +67,7 @@ fun initEvalEnv (insns) {
           fun ([m, insns]) {
             case insns of
               {}                  -> m
-            | LABEL (lab, _) : tl -> rec ([addMap (m, lab, insns), tl])
+            | LABEL (lab) : tl -> rec ([addMap (m, lab, insns), tl])
             | _ : tl              -> rec ([m, tl])
             esac
           }
@@ -203,6 +203,24 @@ fun eval (env, w, insns) {
     | SEXP (name, n) -> case take (stack, n) of [stack, elems] ->
                           [[(Sexp (name, listArray (elems))):stack, cstack, st, w], tail]
                         esac
+    | PATT (name, n) -> case stack of h:t ->
+                          var res = case name of
+                            "[]" -> case h of 
+                                      arr@#array -> n == length (arr)
+                                    | _    -> 0 
+                                    esac
+                          | _    -> case h of
+                                      Sexp (name2, args) -> compare (name, name2) == 0 && n == length (args)
+                                    | _    -> 0
+                                    esac
+                          esac;
+
+                          [[res : t, cstack, st, w], tail]
+                        esac
+    | META (value) -> case value of
+                        "Match failure." -> failure (value)
+                      | _                -> skip
+                      esac
     esac
   }
   
@@ -586,10 +604,76 @@ public fun compileSM (stmt) {
     | Sexp (name, elems)  ->  case compileStmts (env, elems) of [env, code] ->
                                 [false, env, code <+ SEXP (name, elems.size)]
                               esac 
+    | Case (name, branches)  -> case lookupVar (env, name) of scrut ->
+                                  var res = foldl (fun ([env, code], branch) {
+                                    case compileBranch (env, branch, lab) of [env, newcode] ->
+                                      [env, code <+> newcode]
+                                    esac
+                                  }, [env, emptyBuffer ()], branches);
+
+                                  [true, res[0], singletonBuffer (LD (scrut)) <+> res[1] <+ META ("Match failure.")]
+                                esac
     esac
   }
 
-  fun compileDef ([env, globals, funs], def) {
+  fun compileBranch (env, branch@[pattern, expr], successLabel) {
+    fun labelWithDepth (lab, depth) {
+      if depth > 0 then sprintf ("%s_DROP_%d", lab, depth) elif depth == 0 then lab else failure ("Incorrect depth.") fi
+    }
+
+    fun enumerateUntil (start, end) {
+      if start >= end then {} else start : enumerateUntil (start + 1, end) fi
+    }
+
+    fun drops (lab, depth) {
+      foldl (fun (code, i) {
+          code <+ LABEL (labelWithDepth (lab, depth - i)) <+ DROP
+      }, emptyBuffer (), enumerateUntil (0, depth))
+    }
+
+    fun compilePattern (env, pattern, depth, endLab) {
+      case pattern of
+        Wildcard -> [env, emptyBuffer (), depth]
+      | Const (x) -> [env, singletonBuffer (DUP)  <+ CONST (x) <+ BINOP ("==") 
+                                                  <+ CJMP ("z", labelWithDepth (endLab, depth)), depth]
+      | Named (_, pattern) -> case pattern of
+                                None -> [env, emptyBuffer (), depth]
+                              | Some (pattern) -> compilePattern (env, pattern, depth, endLab)
+                              esac
+      | Sexp (name, args)  -> case compilePatterns (env, args, depth, endLab) of [env, argsCode, maxDepth] ->
+                                [env, 
+                                 singletonBuffer (DUP) <+ PATT (name, size (args)) 
+                                                       <+ CJMP ("z", labelWithDepth (endLab, depth)) <+> argsCode, 
+                                 maxDepth]
+                              esac
+      | Array (args) -> compilePattern (env, Sexp ("[]", args), depth, endLab)
+      esac
+    }
+
+    fun compilePatterns (env, patterns, depth, endLab) {
+      var res = foldl (fun ([env, code, maxDepth, i], pattern) {
+        case compilePattern (env, pattern, depth + 1, endLab) of [env, newcode, newdepth] ->
+          [env, 
+           code <+ DUP <+ CONST (i) <+ ELEM <+> newcode <+ DROP, 
+           if newdepth > maxDepth then newdepth else maxDepth fi, 
+           i + 1]
+        esac
+      }, [env, emptyBuffer (), depth, 0], patterns);
+
+      [res[0], res[1], res[2]]
+    }
+
+    case genLabels (env, 2) of [patLab, exprLab, env] ->
+      case compilePattern (env, pattern, 0, patLab) of [env, patternCode, maxDepth] ->
+        case compile (exprLab, env, expr) of [labUsed, env, exprCode] ->
+          [env, patternCode <+ DROP <+> exprCode <+> label (exprLab, labUsed) 
+                            <+ JMP (successLabel) <+> drops (patLab, maxDepth) <+ LABEL (patLab)]
+        esac
+      esac
+    esac
+  }
+
+  fun compileDef (c@[env, globals, funs], def) {
     case def of
       Var (names)            -> case addVars (env, names) of env ->
                                   if isGlobal (env)
@@ -597,6 +681,7 @@ public fun compileSM (stmt) {
                                   else [env, globals, funs]
                                   fi
                                 esac
+    | Val (names)            -> compileDef (c, Var (names))
     | Fun (name, args, body) -> case genFunLabel (env, name) of [lab, env] ->
                                   case env.addFun (name, lab, size (args)) of env ->
                                     [env, globals, Fun (lab, args, body) : funs]
