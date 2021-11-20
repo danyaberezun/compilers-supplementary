@@ -107,7 +107,9 @@ fun insnString (insn) {
   | Dec   (s)          -> sprintf ("\tdecl\t%s\n", opndString (s))
   | Or1   (s)          -> sprintf ("\torl\t$0x0001,\t%s\n", opndString (s))
   | Sal1  (s)          -> sprintf ("\tsall\t%s\n", opndString (s))
-  | Sar1  (s)          -> sprintf ("\tsarl\t%s\n", opndString (s))    
+  | Sar1  (s)          -> sprintf ("\tsarl\t%s\n", opndString (s))
+  | Inc   (s)          -> sprintf ("\tincl\t%s\n", opndString (s))
+  | Dec   (s)          -> sprintf ("\tdecl\t%s\n", opndString (s))
   esac
 }
 
@@ -515,7 +517,7 @@ fun compile (env, code) {
         | SEXP   (name, n) -> case allocate (env) of
                                 [s, env] ->
                                   case compileCall (env, "Bsexp", n + 1) of
-                                    [env, sexpCode] -> [env, code <+> move (L (tagHash (name)), s) <+> sexpCode]
+                                    [env, sexpCode] -> [env, code <+> move (L (makeBox (tagHash (name))), s) <+> sexpCode]
                                   esac
                               esac
         | STA            -> case compileCall (env, "Bsta", 3) of
@@ -529,21 +531,32 @@ fun compile (env, code) {
               [x, y, env] ->
                 case allocate (env) of
                   [s, env] -> case getOpType (op) of
-                                Arithm  (op) -> [env, code <+ Mov (y, edx) <+ Binop (op, x, edx)
-                                                           <+ Mov (edx, y) <+ Mov (edx, s)]
+                                Arithm  ("+") -> [env, code <+ Mov (y, edx) <+ Binop (op, x, edx)
+                                                            <+ Dec (edx) <+ Mov (edx, y) <+ Mov (edx, s)]
+                              | Arithm  ("-") -> [env, code <+ Mov (y, edx) <+ Binop (op, x, edx)
+                                                            <+ Inc (edx) <+ Mov (edx, y) <+ Mov (edx, s)]
+                              | Arithm  ("*") -> [env, code <+ Mov (y, edx) <+ Sar1 (edx) <+ Sar1 (x)
+                                                            <+ Binop (op, x, edx) <+> toFixedNum (edx)
+                                                            <+ Mov (edx, y) <+ Mov (edx, s)]
 
-                              | Logical (op) -> [env, code <+ Binop ("^", edx, edx) <+ Binop ("cmp", x, edx)
-                                                           <+ Set ("nz", "%dl") <+ Mov (edx, x) <+ Binop ("^", edx, edx)
-                                                           <+ Binop ("cmp", y, edx) <+ Set ("nz", "%dl") <+ Mov (edx, y)
-                                                           <+ Binop (op, x, edx) <+ Mov (edx, s)]
+                              | Logical (op) -> [env, code <+ Sar1 (x) <+ Binop ("^", edx, edx) <+ Binop ("cmp", x, edx)
+                                                           <+ Set ("nz", "%dl") <+ Mov (edx, x)
+                                                           <+ Sar1 (y) <+ Binop ("^", edx, edx) <+ Binop ("cmp", y, edx)
+                                                           <+ Set ("nz", "%dl") <+ Binop (op, x, edx)
+                                                           <+> toFixedNum (edx) <+ Mov (edx, s)]
 
-                              | Cmp     (op) -> [env, code <+ Mov (y, edx) <+ Binop ("cmp", x, edx) <+ Mov (L (0), edx)
-                                                           <+ Set (suffix (op), "%dl") <+ Mov (edx, s)]
+                              | Cmp     (op) -> [env, code <+ Sar1 (x) <+ Sar1 (y) <+ Mov (y, edx)
+                                                           <+ Binop ("cmp", x, edx) <+ Mov (L (0), edx)
+                                                           <+ Set (suffix (op), "%dl") <+> toFixedNum (edx)
+                                                           <+ Mov (edx, s)]
 
-                              | Div     (op) -> [env, code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (eax, s)]
-                              | Mod     (op) -> [env, code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (edx, s)]
+                              | Div     (op) -> [env, code <+ Sar1 (x) <+ Sar1 (y) <+ Mov (y, eax) <+ Cltd
+                                                           <+ IDiv (x) <+> toFixedNum (eax) <+ Mov (eax, s)]
+                              | Mod     (op) -> [env, code <+ Sar1 (x) <+ Sar1 (y) <+ Mov (y, eax) <+ Cltd
+                                                           <+ IDiv (x) <+> toFixedNum (edx) <+ Mov (edx, s)]
                               esac
                 esac
+            esac
         
         | LD (x)           -> case allocate (env) of
                                 [s, env] -> [env, code <+> move (loc (env, x), s)]
@@ -551,21 +564,22 @@ fun compile (env, code) {
         | LDA (x)          -> case allocate (env) of
                                 [s, env] -> if memOpnd (s)
                                             then [env, code <+ Binop ("^", edx, edx)
-                                                       <+ Lea (loc (env, x), edx) <+ Mov (edx, s)]
+                                                            <+ Lea (loc (env, x), edx)
+                                                            <+ Mov (edx, s)]
                                             else [env, code <+ Lea (loc (env, x), s)]
                                             fi
                               esac
         | ST (x)           -> case peek (env) of
                                 v -> [env, code <+> move (v, loc (env, x))]
                               esac
-        | STI              -> case pop (env) of
-                                [v, env] ->
-                                  case peek (env) of
-                                    refX -> [env, code <+> move (v, I (0, refX)) <+> move (v, refX)]
-                                  esac
-                              esac
+--        | STI              -> case pop (env) of
+--                                [v, env] ->
+--                                  case peek (env) of
+--                                    refX -> [env, code <+> move (v, I (0, refX)) <+> move (v, refX)]
+--                                  esac
+--                              esac
         | CONST (n)        -> case allocate (env) of
-                                [s, env] -> [env, code <+> move (L (n), s)]
+                                [s, env] -> [env, code <+> move (L (makeBox (n)), s)]
                               esac
         | LABEL (l)        -> [if isBarrier (env)
                                then retrieveStack (env, l)
@@ -573,8 +587,8 @@ fun compile (env, code) {
         | JMP   (l)        -> [setBarrier (setStack (env, l)), code <+ Jmp (l)]
         | GLOBAL (x)       -> [addGlobal (env, x), code]
         | CJMP  (c, l)     -> case pop (env) of
-                                [s, env] -> [env.setStack (l), code <+ Binop ("^", edx, edx)
-                                                               <+ Binop ("cmp", s, edx) <+ CJmp (c, l)]
+                                [s, env] -> [env.setStack (l), code <+ Sar1 (s) <+ Binop ("^", edx, edx)
+                                                                    <+ Binop ("cmp", s, edx) <+ CJmp (c, l)]
                               esac
         | CALL   (f, n_a)  -> case compileCall (env, prepareName (f), n_a) of
                                 [env, callCode] -> [env, code <+> callCode]
@@ -587,6 +601,11 @@ fun compile (env, code) {
                               esac
         | DROP             -> case pop (env) of
                                 [_, env] -> [env, code]
+                              esac
+        | DUP              -> case peek (env) of
+                                v -> case allocate (env) of
+                                       [s, env] -> [env, code <+> move (v, s)]
+                                     esac
                               esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
@@ -608,14 +627,14 @@ fun compileCall (env, fLabel, n_a) {
       case allocate (env) of
         [s, env] -> [env, listBuffer (map (fun (reg) {Push (reg)}, regsToSave))
                           <+> listBuffer (map (fun (arg) {Push (arg)}, reverse (args)))
-                          <+> if actualArgsCount > n_a then singletonBuffer (Push (L (n_a))) else emptyBuffer () fi
+                          <+> if actualArgsCount > n_a then singletonBuffer (Push (L (makeBox (n_a)))) else emptyBuffer () fi
                           <+ Call (fLabel)
                           <+ Binop ("+", L (wordSize * actualArgsCount), esp)
                           <+> listBuffer (map (fun (reg) {Pop (reg)}, reverse (regsToSave)))
                           <+ Mov (eax, s)]
       esac
   esac
-
+}
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
 public fun compileX86 (args, code) {
