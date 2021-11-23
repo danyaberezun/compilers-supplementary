@@ -13,6 +13,10 @@ import Expr;
 import Builtins;
 import Buffer;
 
+public fun range(a, b) {
+    if a >= b then {} else a : range(a+1, b) fi
+}
+
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
 public fun showSMInsn (i) {
@@ -56,6 +60,17 @@ public fun showSMInsn (i) {
 
 public fun showSM (prg) {
   map (fun (i) {showSMInsn (i) ++ "\n"}, prg).stringcat
+}
+
+fun showValue(s) {
+  case s of
+    Sexp (name, as) -> sprintf("%s (%s)", name, showList(arrayList (as)))
+  | _ -> s.string
+  esac
+}
+
+fun showList(lst) {
+  map (fun (i) {showValue(i)}, lst).string
 }
 
 -- Evaluation environment: keeps a mapping between labels and (sub)programs
@@ -158,7 +173,7 @@ fun eval (env, w, insns) {
                 esac
       | BINOP (s) -> case stack of
                       y:(x:t) -> eval ([evalOp(s, x, y) : t, calls, state, world], p)
-                    esac
+                     esac
       | LABEL (s, _) -> eval (c, p)
       | JMP (l) -> eval (c, fromLabel(env, l) )
       | CJMP (c, l) -> case stack of
@@ -189,12 +204,32 @@ fun eval (env, w, insns) {
           {} -> c
         | [state, p]:calls -> eval([stack, calls, state, world], p)
         esac
+      | PATT ([name, na]) -> case stack of h:t ->  
+          var v = case name of
+            "[]" -> 
+              case h of
+                #array -> length(h) == na
+                | _ -> 0
+              esac
+          | _ ->  
+            case h of
+              Sexp (x, as) -> compare(name, x) == 0 && length(as) == na
+            | _ -> 0
+            esac
+          esac;
+
+          eval([v:t, calls, state, world], p)
+        esac
+      | META(v) -> case v of
+          "Match failure" -> failure(v)
+        | _ -> skip
+        esac
       esac
     esac
   }
   
 
-  -- printf ("%s\n", showSM (insns));
+  --printf ("%s\n", showSM (insns));
   
   eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
 }
@@ -430,7 +465,7 @@ fun addVals (env, names) {
   foldl (fun (env, name) {addVal (env, name)}, env, names)
 }
 
-fun addDef([env, globals, funs], def) {
+fun addDef(c@[env, globals, funs], def) {
   case def of
     Var (ns) -> 
       [
@@ -438,6 +473,7 @@ fun addDef([env, globals, funs], def) {
         if isGlobal(env) then ns else {} fi +++ globals,
         funs
       ]
+  | Val (ns) -> addDef(c, Var (ns))
   | Fun (n, as, b) -> 
       case genFunLabel (env, n) of [lab, env] ->
         [
@@ -456,6 +492,10 @@ fun addDefs(env, defs) {
       globals
     ]
   esac
+}
+
+public infixr +> after $ (x, b) {
+  singletonBuffer(x) <+> b
 }
 
 -- Compiles an expression into a stack machine code.
@@ -495,6 +535,7 @@ public fun compileSM (stmt) {
     | Ref    (x)     -> [false, env, singletonBuffer (LDA (lookupVar(env, x) ))]
     | Const  (n)     -> [false, env, singletonBuffer (CONST (n))]
     | String (s)     -> [false, env, singletonBuffer (STRING (s))]
+    | Set (x, e) -> compile(lab, env, Assn (Ref (x), e))
     | Assn (x, e) -> 
       case compileExprs (env, {x, e}) of
         [env, code] -> [false, env, code <+ STA]
@@ -528,9 +569,9 @@ public fun compileSM (stmt) {
              case compile(checkLabel, env, act) of
                [_, env, actCode] -> 
                    [false, env,
-                     singletonBuffer (JMP (checkLabel))
-                     <+ LABEL (actLabel, true) 
-                     <+> actCode
+                     JMP (checkLabel)
+                     +> LABEL (actLabel, true) 
+                     +> actCode
                      <+ LABEL (checkLabel, false) 
                      <+> condCode
                      <+> label (endLabel, endLabelUsed)
@@ -545,8 +586,8 @@ public fun compileSM (stmt) {
           case compileExprs(env, {act, cond}) of
             [env, code] ->
               [false, env, 
-                singletonBuffer (LABEL (actLabel, true))
-                <+> code
+                LABEL (actLabel, true)
+                +> code
                 <+ CJMP ("nz", actLabel)
               ]
           esac
@@ -596,7 +637,70 @@ public fun compileSM (stmt) {
       case compileExprs(env, {a, i}) of
         [env, code] -> [false, env, code]
       esac
-    | _ -> failure ("compileSM not implemented\n")
+    | Case (x, bs) ->
+      case lookupVar (env, x) of x ->
+        case compileList(fun (env, b) { compileBranch(env, b, lab) }, env, bs) of 
+          [env, code] -> [true, env, LD (x) +> code <+ META ("Match failure")]
+        esac
+      esac
+    --| _ -> failure ("compileSM not implemented\n")
+    esac
+  }
+
+  fun compileBranch(env, [pt, a], successLab) {
+
+    fun depthLab(base, depth) {
+      if depth > 0 then sprintf("%s_%s", base, depth.string) else base fi
+    }
+
+    fun compilePattern(env, pt, depth, failLab) {
+      var exit = depthLab(failLab, depth);
+      case pt of
+        Wildcard -> [env, emptyBuffer (), depth]
+      | Const (n) -> [env, singletonBuffer(DUP) <+ CONST (n) <+ BINOP ("==") <+ CJMP ("z", exit), depth]
+      | Named (_, pt) -> compilePattern(env, pt, depth, failLab)
+      | Array (es) -> compilePattern(env, Sexp ("[]", es), depth, failLab)
+      | Sexp (name, es) -> case compilePatterns(env, es, depth, failLab) of
+          [env, esCode, totalDepth] -> [env, DUP +> PATT ([name, size(es)]) +> CJMP ("z", exit) +> esCode, totalDepth]
+        esac
+      esac
+    }
+
+    fun compilePatterns(env, pts, depth, failLab) {
+      fun compileElem(env, [pt, i], totalDepth) {
+        case compilePattern(env, pt, depth + 1, failLab) of
+          [env, code, newDepth] -> 
+            if newDepth > totalDepth then totalDepth := newDepth fi; 
+            [
+              env, 
+              DUP +> CONST (i) +> ELEM +> code <+ DROP, 
+              if newDepth > totalDepth then newDepth else totalDepth fi
+            ]
+        esac
+      }
+      foldl(fun ([env, code, totalDepth], e) {
+        case compileElem(env, e, totalDepth) of
+          [env, newCode, totalDepth] -> [env, code <+> newCode, totalDepth]
+        esac
+      }, [env, emptyBuffer (), depth], zip(pts, range(0, size(pts))))
+    }
+
+    fun dropLeftover(env, lab, totalDepth) {
+      compileList(fun(env, i) {
+        [env, singletonBuffer(LABEL (depthLab(lab, totalDepth - i), false)) <+ DROP]
+      }, env, range(0, totalDepth))
+    }
+
+    case genLabel(env) of 
+      [lab, env] ->
+        case compilePattern(env, pt, 0, lab) of
+          [env, ptCode, totalDepth] ->
+            case compile(successLab, env, a) of
+              [_, env, aCode] -> case dropLeftover(env, lab, totalDepth) of
+                [env, drops] -> [env, ptCode <+ DROP <+> aCode <+ JMP (successLab) <+> drops <+ LABEL (lab, false)]
+              esac
+            esac
+        esac
     esac
   }
 
@@ -624,7 +728,7 @@ public fun compileSM (stmt) {
     fun compileFun(env, Fun (flab, as, b, s)) {
       case genLabel(addArgs(beginFun(env, s), as)) of
         [lab, env] -> case compile(lab, env, b) of
-          [labUsed, env, code] -> [env, singletonBuffer (LABEL (flab, false)) <+ BEGIN (flab, size (as), getLocals(env)) <+> code <+> label (lab, labUsed) <+ END]
+          [labUsed, env, code] -> [env, LABEL (flab, false) +> BEGIN (flab, size (as), getLocals(env)) +> code <+> label (lab, labUsed) <+ END]
         esac
       esac
     }
@@ -644,7 +748,7 @@ public fun compileSM (stmt) {
     [endLab, env] ->
        case compile (endLab, env, stmt) of
          [endLabUsed, env, code] -> 
-            getBuffer $ singletonBuffer(LABEL ("main", false)) <+ BEGIN ("main", 0, getLocals(env)) <+> code <+> label (endLab, endLabUsed) <+ END <+> compileFuns(env)
+            getBuffer $ LABEL ("main", false) +> BEGIN ("main", 0, getLocals(env)) +> code <+> label (endLab, endLabUsed) <+ END <+> compileFuns(env)
        esac
   esac
 }
