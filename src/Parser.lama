@@ -31,6 +31,18 @@ fun freshName (env) {
   env [0] ()
 }
 
+fun getState () {
+  fun (state) {
+    [state, state]
+  }
+}
+
+fun putState (env) {
+  fun (state) {
+    [env, Unit]
+  }
+}
+
 -- Attribute-processing functions
 -- Attributes are:
 --   Val  --- a plain value (aka "rvalue")
@@ -225,9 +237,143 @@ var
                         | Some (args) -> chainST (args) => fun (args) {Sexp (x, args)}
                         esac, loc)}
     } |
-  
-    $(failure ("the rest of primary parsing in not implemented\n"))),
-   
+
+    e=inbr[s ("("), scopeExpr, s (")")] |
+
+    loc=pos -kSkip {
+      fun (a) {
+        assertVoid (a, returnST $ Skip, loc)
+      }
+    } |
+
+    -kIf cond=exp -kThen trueBranch=scopeExpr falseBranch=elsePart {
+      fun (a) {
+        cond (Val) =>> fun (cond) {
+          trueBranch (a) =>> fun (trBr) {
+            falseBranch (a) => fun (flBr) {
+              If (cond, trBr, flBr)
+            }
+          }
+        }
+      }
+    } |
+
+    loc=pos -kWhile cond=exp -kDo body=scopeExpr -kOd {
+      fun (a) {
+        assertVoid (a,
+          cond (Val) =>> fun (cond) {
+            body (Void) => fun (body) {
+              While (cond, body)
+            }
+          }, loc)
+      }
+    } |
+
+    loc=pos -kDo body=scopeExpr -kWhile cond=exp -kOd {
+      fun (a) {
+        assertVoid (a,
+          body (Void) =>> fun (body) {
+            cond (Val) => fun (cond) {
+              distributeScope (body, fun (s) {
+                DoWhile (s, cond)
+              })
+            }
+          }
+        , loc)
+      }
+    } |
+
+    loc=pos -kFor init=scopeExpr -s[","] cond=exp -s[","] step=exp -kDo body=scopeExpr -kOd {
+      fun (a) {
+        assertVoid (a,
+          chainST ({init (Void), cond (Val), body (Void), step (Void)}) =>
+            fun ({init, cond, body, step}) {
+              distributeScope (init, fun (init) {
+                Seq (init , While (cond, Seq (body, step)))
+              })
+            }, loc)
+      }
+    } |
+
+    -kCase loc=pos scrut=exp -kOf brs=listBy[caseBranch, s("|")] -kEsac {
+       fun (a) {
+         scrut (Val) =>> fun (scrut) {
+           chainST (map (fun (cbr) { cbr (a) }, brs)) =>> fun (brs) {
+             getState () =>> fun (state) {
+               case freshName (state) of
+                 [state, name] -> putState (state) => fun (_) {
+                   addLoc (name, loc);
+                   expandScope ({Val ({[name, scrut]})}, Case (name, reifyPatternBindings (name, brs)))
+                 }
+               esac
+             }
+           }
+         }
+       }
+    }),
+
+  caseBranch = memo $ eta syntax (
+    pat=pattern -s["->"] exp=scopeExpr {
+      fun (a) {
+        exp (a) => fun (br) {
+          [pat, br]
+        }
+      }
+    }
+  ),
+
+  pattern = memo $ eta syntax (
+    -- number
+    x=decimal {
+      Const (stringInt (x))
+    } |
+    -- wildcardloc
+    -s["_"] {
+      Wildcard
+    } |
+    -- array constant
+    loc=pos x=inbr[s("["), list0(pattern), s("]")] {
+      Array (x)
+    } |
+    -- S-expression
+    loc=pos x=uident args=inbr[s("("), list0(pattern), s(")")]? {
+      case args of
+        None        -> Sexp (x, {})
+      | Some (args) -> Sexp (x, args)
+      esac
+    } |
+    -- named pattern or single lident
+    name=lident pat=(-s["@"] pattern)? {
+      Named (name,
+        case pat of
+          None       -> Wildcard
+        | Some (pat) -> pat
+        esac
+      )
+    }
+  ),
+
+  elsePart = memo $ eta syntax (
+    -kElif cond=exp -kThen trueBranch=scopeExpr falseBranch=elsePart {
+      fun (a) {
+        cond (Val) =>> fun (cond) {
+          trueBranch (a) =>> fun (trBr) {
+            falseBranch (a) => fun (flBr) {
+              If (cond, trBr, flBr)
+            }
+          }
+        }
+      }
+    } |
+
+    -kElse scopeExpr -kFi |
+
+    loc=pos -kFi {
+      fun (a) {
+        assertVoid (a, returnST $ Skip, loc)
+      }
+    }
+  ),
 
   basic = memo $ eta (
     expr ({[Right, {[s (":="), fun (l, loc, r) {
