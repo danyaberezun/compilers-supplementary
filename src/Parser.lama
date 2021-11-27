@@ -182,7 +182,6 @@ fun reifyPatternBindings (matched, brs) {
   )
 }
 
-var
   primary = memo $ eta syntax (
     -- array constant
     loc=pos x=inbr[s("["), list0(syntax (e=exp {e(Val)})), s("]")] {
@@ -228,34 +227,115 @@ var
 
     inbr[s ("("), scopeExpr, s (")")] |
     inbr[s ("{"), scopeExpr, s ("}")] |
-    loc=pos kSkip {fun (a) {assertVoid (a, Skip, loc)}}|
-    loc=pos kWhile e = exp s = inbr[kDo, scopeExpr, kOd] {fun (a) {assertVoid (a, While (e (Val), s (Void)), loc)}} |
-    loc=pos kDo s = scopeExpr kWhile e = exp kOd { fun (a) {assertVoid (a,
-      distributeScope(s(Void), fun(s1) {
-          DoWhile (s1, e (Val))}), loc)}
-      } |
-    loc=pos kIf cond=exp kThen thenP=scopeExpr elseP=parseElse  {fun (a) {If (cond(Val), thenP(a), elseP(a))}} |
+    loc=pos kSkip {fun (a) {assertVoid (a, returnST(Skip), loc)}}|
+    loc=pos kWhile cond=exp kDo body=scopeExpr kOd {
+      fun (a) {
+        assertVoid (a, body(Void) =>> fun (body) {
+          cond (Val) => fun (cond) {
+            While(cond, body)
+          }
+        }, loc)
+      }
+    }|
+    loc=pos kDo s = scopeExpr kWhile e = exp kOd { fun (a) {
+      assertVoid (a, 
+      s(Void) =>> fun (s) {
+        e(Val) => fun(e) {
+          distributeScope (s, fun (s) {DoWhile (s, e)})
+        }
+      }, loc)}
+    } |
+    loc=pos kIf cond=exp kThen thenP=scopeExpr elseP=parseElse  {
+      fun (a) {
+        cond(Val) =>> fun (cond) {
+          thenP (a) =>> fun (thenP) {
+            elseP (a) => fun (elseP) {
+              If (cond, thenP, elseP)
+            }
+          }
+        }
+      }
+    } |
     loc=pos kFor s1 = scopeExpr s[","] e = exp s[","] s2 = exp kDo s3=scopeExpr kOd {fun (a) {
-      distributeScope(s1(Void), fun (s1) {
-          assertVoid (a, Seq (s1, While (e(Val), Seq (s3(Void), s2(Void)))), loc)
+      assertVoid (a, s1(Void) =>> fun (s1) {
+        e(Val) =>> fun (e) {
+          s3 (Void) =>> fun (s3) {
+            s2 (Void) => fun (s2) {
+              distributeScope(s1, fun (s1) {
+                Seq (s1, While (e, Seq (s3, s2)))
+              })
+            }
+          }
+        }
       }
     )}} |
-    loc=pos patExp = exp kOf branches = list0By[syntax(pattern=primary s["->"] e=exp {[pattern(Val), e]}), s("|")] kEsac {
-      fun (a) {
-         Case (patExp(Val), foldr (
-          fun (res, [pattern, e]) {[pattern, e(a)]:res},
-          {},
-          branches))
+    loc=pos kCase scr = exp kOf brs = brs kEsac { fun (a) {
+      freshName =>> fun (name) {
+        scr (Val) =>> fun (scr) {
+          brs (a) => fun (brs) { Scope (
+            {Var({name})},
+            Seq (
+              Ignore (Assn (Ref (name), scr)),
+              Case (name, reifyPatternBindings(name, brs))
+            ))}
+        }
       }
-    }
+    }}
+    ),
+    br = memo $ eta syntax (
+      loc=pos pattern=pattern s["->"] scr=scopeExpr {fun(a) {
+        pattern(Val) =>> fun (pattern) {
+          scr (a) =>> fun (scr) {
+            returnST([pattern, scr])
+          }
+        }
+      }}
+    ),
+    brs = memo $ eta syntax (
+      loc=pos brs=listBy[br, s("|")] {fun(a) {
+          chainST (map (fun(br) {br (a)}, brs))
+      }}
+    ),
+    pattern = memo $ eta syntax (
+        loc=pos s["_"] {
+          fun (a) {
+            returnST $ Wildcard
+          }
+        }
+         | loc=pos pats=inbr[s("["), list0(syntax (e=pattern {e(Val)})), s("]")] {fun(a) {
+           assertValue(a, chainST(pats) => fun(pats) { Array(pats)}, loc)}}
+
+        | loc=pos x=uident pats=inbr[
+            s("("),
+            list0(syntax(e=pattern {e(Val)})),
+            s(")")
+          ] ? {fun(a) {
+            var st = chainST(case pats of Some (pats) -> pats | None -> {} esac);
+            assertValue(a, st => fun (pats) {Sexp (x, pats)}, loc)
+          }}
+         | loc=pos name=lident p=(-s["@"] pattern)? {
+            fun (a) {
+              p := case p of
+                None     -> returnST $ Wildcard
+              | Some (p) -> p (a)
+              esac;
+              p => fun (p) { Named (name, p) }
+            }
+          }  
     ),
     parseElse = memo $ eta syntax (
-       kElif e=exp kThen s1=scopeExpr s2=parseElse {fun (a) {If (e(Val), s1(a), s2(a))}} |
-       kElse s=scopeExpr kFi {fun (a) {s(a)}} |
-       kFi {fun (a) {assertVoid (a, Skip, loc)}}
+        kElif e=exp kThen s1=scopeExpr s2=parseElse {
+          fun (a) {
+            e(Val) =>> fun (e) {
+              s1(a) =>> fun (s1) {
+                s2(a) => fun (s2) {If (e, s1, s2)}
+              }
+            }
+          }
+        } |
+       -kElse scopeExpr -kFi |
+       loc=pos kFi {fun (a) {assertVoid (a, returnST(Skip), loc)}}
     ),
-
-
   basic = memo $ eta (
     expr ({[Right, {[s (":="), fun (l, loc, r) {
                                  fun (a) {assertValue (a, l (Ref) =>> fun (l) {
@@ -273,7 +353,6 @@ var
           },
           postfix)
   ),
-
   postfix = memo $ eta syntax (
     loc=pos e=primary ps=(i=inbr[s("["), exp, s("]")] {Index (i (Val))})* {
       fun (a) {
