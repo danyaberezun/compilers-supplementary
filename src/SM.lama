@@ -259,10 +259,37 @@ fun eval (env, w, insns) {
             eval(newConf, t)
         )
        esac
+     | META (v) -> case v of
+            "Case failed" -> failure(v)
+            | _ -> skip
+        esac
+     | PATT ([lhs, sz]) -> case top_s of
+            head:tail -> (
+                var matchResult = doMatching([lhs, sz], head);
+                var newConf = [matchResult:tail, cst, st, w];
+                eval(newConf, t)
+            )
+        esac
      | _ -> failure("instruction %s is not implemented\n", ins.string)
      esac
    | {} -> c
    esac
+  }
+
+  fun doMatching(pt@[bindingName, sz], head) {
+    case bindingName of
+        "" -> case head of
+            #array -> sz == length(head)
+            | _ -> 0
+         esac
+       | _ -> case head of
+            Sexp (lhs, data) -> (
+                var matchNames = compare(bindingName, lhs) == 0;
+                if matchNames then sz == length(data) else 0 fi
+            )
+            | _ -> 0
+         esac
+    esac
   }
   
 
@@ -671,8 +698,60 @@ public fun compileSM (stmt) {
             esac
         esac
      esac
+    | Case (exp, ways) -> case lookupVar(env, exp) of
+        v -> var matchedLabel = genLabel(env);
+          case compileCaseElems(snd(matchedLabel), fst(matchedLabel), ways) of
+             [env, code] -> [false, env, singletonBuffer(LD (v)) <+> code <+ META ("Case failed") <+ LABEL (fst(matchedLabel), true) ]
+          esac
+     esac
     | _                ->  failure ("%s compileSM not implemented\n", stmt.string)
     esac
+  }
+
+
+  fun compileCasePatt(env, currLevel, casePat, lab) {
+    var barrierLab = if currLevel == 0 then lab else sprintf("%s_%s", casePat, string(currLevel)) fi;
+--    printf("inside compileCasePatt %s\n", barrierLab.string);
+    case casePat of
+       Const (x) -> [env, singletonBuffer(DUP) <+ CONST (x) <+ BINOP ("==") <+ CJMP ("z", barrierLab), currLevel]
+      | Named (n, None) -> [env, emptyBuffer(), currLevel]
+      | Named (n, Some (p)) -> compileCasePatt(env, currLevel, p, lab)
+      | Array (data) -> compileCasePatt(env, currLevel, Sexp ("", data), lab)
+      | Sexp (n, exps) -> --printf("found sexp pattern\n");
+       (
+        case foldl(fun ([env, code, patternCounter, level], pattern) {
+            case compileCasePatt(env, level + 1, pattern, lab) of
+                [env, codeR, lvl] -> var nextLevel = if lvl > level then lvl else level fi;
+                                    [env, code <+ DUP <+ CONST(patternCounter) <+ ELEM <+> codeR <+ DROP, patternCounter + 1, nextLevel]
+            esac
+        },
+         [env, emptyBuffer(), 0, currLevel], exps
+        ) of
+           [newEnv, fullCode, patN, reachedLevel] -> [newEnv,
+                                    singletonBuffer(DUP) <+ PATT ([n, size(exps)]) <+ CJMP ("z", barrierLab) <+> fullCode, reachedLevel]
+       esac
+     )
+    esac
+  }
+
+  fun compileCaseElem(env, matchedLabel, level, caseElem@[pattern, rhs]) {
+    case genLabels(env, 2) of
+        [matchLab, rhsLab, env] -> case compileCasePatt(env, level, pattern, matchLab) of
+            [env, code, lvl] -> --printf("compiled pattern!\n");
+                case compile(rhsLab, env, rhs) of
+                [matchedUsed, env, rhsCode] -> [env, code <+ DROP <+> rhsCode <+ JMP (matchedLabel) <+ LABEL(matchLab, false)]
+                esac
+      esac
+    esac
+  }
+
+  fun compileCaseElems(env, matchedLabel, caseWays) {
+    foldl(
+       fun([env, codeBase], caseElem) {
+         case compileCaseElem(env, matchedLabel, 0, caseElem) of
+            [env, codeR] -> [env, codeBase <+> codeR]
+         esac
+       }, [env, emptyBuffer()], caseWays)
   }
 
 
@@ -709,7 +788,8 @@ public fun compileSM (stmt) {
                 fi
         )
         | Val (names) -> (
-               var newEnv = addVals(env, names);
+--               var newEnv = addVals(env, names);
+               var newEnv = addVars(env, names);
                if isGlobal(env)
                then case traverseDefs(newEnv, tail) of
                        [newEnv, f, d] -> [newEnv, f, foldl (fun (l, v) {GLOBAL (v): l }, d, names)]
