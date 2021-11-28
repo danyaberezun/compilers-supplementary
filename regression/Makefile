@@ -1,5 +1,6 @@
 TESTS=$(sort $(basename $(wildcard test*.lama)))
 LOGS=$(TESTS:=.log)
+EXES=$(TESTS:=.run)
 
 LAMAC=lamac
 RM=rm -rf
@@ -18,4 +19,4 @@ $(TESTS): %: %.lama
 	./$@ > $@.s && gcc -g -m32 -o $@.run ../runtime/runtime.o $@.s && cat $@.input | ./$@.run > $@.log && diff $@.log orig/$@.log
 
 clean:
-	$(RM) *.s *.i *~ $(LOGS) $(TESTS)
+	$(RM) tmp.sm *.s *.i *~ $(LOGS) $(TESTS) $(EXES)
