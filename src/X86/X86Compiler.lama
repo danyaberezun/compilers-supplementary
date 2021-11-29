@@ -53,52 +53,39 @@ fun liveRegistersProc (env, nargs) {
   esac
 }
 
-fun compileCall (env, lab, nargs) {
+fun genericCall (env, lab, nargs, nAdditionalArgs, beforeArgs, afterArgs) {
   case liveRegistersProc (env, nargs) of [pushRCode, popRCode] ->
     case pushArgs (env, nargs) of [env, argsCode] ->
       case allocate (env) of [ret, env] ->
         [env, pushRCode
+                <+> beforeArgs
                 <+> listBuffer (argsCode) 
-                <+ Call (lab) 
-                <+ Binop ("+", L (wordSize * nargs), esp) 
-                <+> popRCode 
+                <+> afterArgs
+                <+ Call (lab)
+                <+ Binop ("+", L (wordSize * (nargs + nAdditionalArgs)), esp)
+                <+> popRCode
                 <+ Mov (eax, ret)]
       esac
     esac
   esac
+}
+
+fun compileCall (env, lab, nargs) {
+  genericCall (env, lab, nargs, 0, emptyBuffer (), emptyBuffer ())
 }
 
 fun compileArr (env, nargs) {
-  case liveRegistersProc (env, nargs) of [pushRCode, popRCode] ->
-    case pushArgs (env, nargs) of [env, argsCode] ->
-      case allocate (env) of [ret, env] ->
-        [env, pushRCode 
-                <+> listBuffer (argsCode) 
-                <+ Push (imOp (nargs)) 
-                <+ Call ("Barray") 
-                <+ Binop ("+", L (wordSize * nargs), esp) 
-                <+> popRCode 
-                <+ Mov (eax, ret)]
-      esac
-    esac
-  esac
+  genericCall (env, "Barray", nargs, 1,
+               emptyBuffer (),
+               singletonBuffer (Push (imOp (nargs)))
+  )
 }
 
 fun compileSexp (env, name, nargs) {
-  case liveRegistersProc (env, nargs) of [pushRCode, popRCode] ->
-    case pushArgs (env, nargs) of [env, argsCode] ->
-      case allocate (env) of [ret, env] ->
-        [env, pushRCode 
-                <+ Push (imOp (tagHash (name))) 
-                <+> listBuffer (argsCode) 
-                <+ Push (imOp (nargs + 1)) 
-                <+ Call ("Bsexp") 
-                <+ Binop ("+", L (wordSize * nargs), esp) 
-                <+> popRCode 
-                <+ Mov (eax, ret)]
-      esac
-    esac
-  esac
+  genericCall (env, "Bsexp", nargs, 2,
+               singletonBuffer (Push (imOp (tagHash (name)))),
+               singletonBuffer (Push (imOp (nargs + 1)))
+  )
 }
 
 fun checkBarrier (env, label) {
@@ -110,85 +97,118 @@ fun checkBarrier (env, label) {
 
 fun compileIns([env, code], i) {
   code := code <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-  case i of
-    LD (x) ->
-    case allocate (env) of [s, env] ->
-      [env, code <+> move (locate (env, x), s)]
+  if isBarrier (env)
+  then 
+    case i of
+      LABEL (l) -> [checkBarrier (env, l), code <+ Label (l)]
+    | _ -> [env, code]
     esac
-  | LDA (x) ->
-    case allocate (env) of [s, env] ->
-      [env, code <+> lea (locate (env, x), s)]
-    esac
-  | ST (x) ->
-    case peek (env) of s -> 
-      [env, code <+> move (s, locate (env, x))]
-    esac
-  | STI ->
-    case pop (env) of [value, env] ->
-      case peek (env) of addr ->
-        [env, code <+> move (value, I (0, addr)) <+> move (value, addr)]
+  else
+    case i of
+      LD (x) ->
+      case allocate (env) of [s, env] ->
+        [env, code <+> move (locate (env, x), s)]
       esac
-    esac
-  | CONST (n) ->
-    case allocate (env) of [s, env] -> 
-      [env, code <+ Mov (imOp (n), s)]
-    esac
-  | BINOP (s) -> compileBinop (s, env, code)
-  | LABEL (l) -> [checkBarrier (env, l), code <+ Label (l)]
-  | JMP (l) -> [setBarrier (env, setStack (env, l)), code <+ Jmp (l)]
-  | CJMP (c, l) ->
-    case pop (env) of [s, env] ->
-      [setStack (env, l), code <+ Binop ("cmp", imOp (0), s) <+ CJmp (c, l)]
-    esac
-  | DUP ->
-    case peek (env) of value ->
-      case allocate (env) of [top, env] ->
-        [env, code <+> move (value, top)]
+    | LDA (x) ->
+      case allocate (env) of [s, env] ->
+        [env, code <+> lea (locate (env, x), s)]
       esac
-    esac
-  | DROP ->
-    case pop (env) of [_, env] ->
-      [env, code]
-    esac
-  | CALL (lab, nargs) -> 
-    case compileCall (env, lab, nargs) of [env, cCode] ->
-      [env, code <+> cCode]
-    esac
-  | BEGIN (lab, nargs, nlocs) -> [enterFunctionX86 (env, lab, nlocs), code <+> prologue (lab)]
-  | END ->
-    case epilogue (env) of [env, epCode] ->
-      [env, code <+> epCode]
-    esac
-  | GLOBAL (x) -> [addGlobal (env, x), code]
-  | BUILTIN (name, nargs) -> 
-    case compileCall (env, "L"++name, nargs) of [env, cCode] -> 
-      [env, code <+> cCode]
-    esac
-  | ARRAY (n) ->
-    case compileArr (env, n) of [env, aCode] -> 
-      [env, code <+> aCode]
-    esac
-  | STRING (s) ->
-    case addString (env, s) of [env, name] ->
-      case allocate (env) of [reg, env] ->
-        case compileCall (env, "Bstring", 1) of [env, cCode] -> 
-          [env, code <+> move (M ("$" ++ name), reg) <+> cCode]
+    | ST (x) ->
+      case peek (env) of s -> 
+        [env, code <+> move (s, locate (env, x))]
+      esac
+    | STI ->
+      case pop (env) of [value, env] ->
+        case peek (env) of addr ->
+          [env, code <+> move (value, I (0, addr)) <+> move (value, addr)]
+        esac
+      esac
+    | CONST (n) ->
+      case allocate (env) of [s, env] -> 
+        [env, code <+ Mov (imOp (n), s)]
+      esac
+    | BINOP (s) -> compileBinop (s, env, code)
+    | LABEL (l) -> [checkBarrier (env, l), code <+ Label (l)]
+    | JMP (l) -> [setBarrier (setStack (env, l)), code <+ Jmp (l)]
+    | CJMP (c, l) ->
+      case pop (env) of [s, env] ->
+        [setStack (env, l), code <+ Binop ("cmp", imOp (0), s) <+ CJmp (c, l)]
+      esac
+    | DUP ->
+      case peek (env) of value ->
+        case allocate (env) of [top, env] ->
+          [env, code <+> move (value, top)]
+        esac
+      esac
+    | DROP ->
+      case pop (env) of [_, env] ->
+        [env, code]
+      esac
+    | CALL (lab, nargs) -> 
+      case compileCall (env, lab, nargs) of [env, cCode] ->
+        [env, code <+> cCode]
+      esac
+    | BEGIN (lab, nargs, nlocs) -> [enterFunctionX86 (env, lab, nlocs), code <+> prologue (lab)]
+    | END ->
+      case epilogue (env) of [env, epCode] ->
+        [env, code <+> epCode]
+      esac
+    | GLOBAL (x) -> [addGlobal (env, x), code]
+    | BUILTIN (name, nargs) -> 
+      case compileCall (env, "L"++name, nargs) of [env, cCode] -> 
+        [env, code <+> cCode]
+      esac
+    | ARRAY (n) ->
+      case compileArr (env, n) of [env, aCode] -> 
+        [env, code <+> aCode]
+      esac
+    | STRING (s) ->
+      case addString (env, s) of [env, name] ->
+        case allocate (env) of [reg, env] ->
+          case compileCall (env, "Bstring", 1) of [env, cCode] -> 
+            [env, code <+> move (M ("$" ++ name), reg) <+> cCode]
+          esac
+        esac
+      esac
+    | ELEM -> 
+      case compileCall (env, "Belem", 2) of [env, cCode] ->
+        [env, code <+> cCode]
+      esac
+    | STA ->             
+      case compileCall (env, "Bsta", 3) of [env, cCode] ->
+        [env, code <+> cCode]
+      esac
+    | SEXP (name, n) -> 
+      case compileSexp (env, name, n) of [env, cCode] -> 
+        [env, code <+> cCode]
+      esac
+    | PATT (name, n) ->
+      case name of 
+        "array" -> 
+        case allocate (env) of [sizeReg, env] ->
+          case compileCall (env, "Barray_patt", 2) of [env, newcode] ->
+            [env, code <+> move (imOp (n), sizeReg) <+> newcode]
+          esac
+        esac
+      | _    -> 
+        case allocate (env) of [nameReg, env] ->
+          case allocate (env) of [sizeReg, env] ->
+            case compileCall (env, "Btag", 3) of [env, newcode] ->
+              [env, code <+> move (imOp (tagHash (name)), nameReg) <+> move (imOp (n), sizeReg) <+> newcode]
+            esac
+          esac
+        esac
+      esac
+    | FAILURE -> 
+      case addString (env, "Match failure. ") of [env, name] ->
+        case allocate (env) of [reg, env] ->
+          case compileCall (env, "Lfailure", 1) of [env, cCode] ->
+            [setBarrier (env), code <+> move (M ("$" ++ name), reg) <+> cCode]
+          esac
         esac
       esac
     esac
-  | ELEM -> 
-    case compileCall (env, "Belem", 2) of [env, cCode] ->
-      [env, code <+> cCode]
-    esac
-  | STA ->             
-    case compileCall (env, "Bsta", 3) of [env, cCode] ->
-      [env, code <+> cCode]
-    esac
-  | SEXP (name, n) -> 
-    case compileSexp (env, name, n) of [env, cCode] -> 
-      [env, code <+> cCode]
-    esac
-  esac
+  fi
 }
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment

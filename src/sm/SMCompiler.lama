@@ -179,7 +179,117 @@ fun compile (lab, env, stmt) {
   | Sexp (name, args) ->
     case compileArgs (env, args) of [env, code] ->
       [false, env, code <+ SEXP (name, args.size)]
-    esac 
+    esac
+  | Case (name, branches) -> 
+    case lookupVar (env, name) of scrut ->
+      case compileBranches (env, branches, lab) of [env, code, wasWilcard] ->
+        [
+          true, 
+          env,
+          singletonBuffer (LD (scrut)) 
+            <+> code 
+            <+> if wasWilcard
+                then emptyBuffer ()
+                else singletonBuffer (FAILURE)
+                fi
+        ]
+      esac
+    esac
+  esac
+}
+
+fun compileBranches (env, branches, successLabel) {
+  foldl (
+    fun (a@[env, code, wasWilcard], branch) {
+      if wasWilcard
+      then a
+      else case compileBranch (env, branch, successLabel) of [env, brCode, wasWilcard] ->
+             [env, code <+> brCode, wasWilcard]
+           esac
+      fi
+    },
+    [env, emptyBuffer (), false],
+    branches
+  )
+}
+
+fun compileBranch (env, branch@[pattern, expr], successLabel) {
+  case genLabel (env) of [failureLabel, env] ->
+    var isWildcard = case pattern of 
+                       Wildcard -> true 
+                     | PNamed(_, Wildcard) -> true 
+                     | _ -> false 
+                     esac;
+
+    fun dropLabel (depth) {
+      if depth == 0
+      then failureLabel
+      else sprintf ("%s_DROP_%d", failureLabel, depth)
+      fi
+    }
+
+    fun dropCode (depth) {
+      if depth == 0
+      then if isWildcard 
+           then emptyBuffer () 
+           else singletonBuffer (LABEL (failureLabel)) 
+           fi
+      else singletonBuffer (LABEL (dropLabel (depth))) <+ DROP <+> dropCode (depth - 1)
+      fi
+    }
+
+    fun compilePattern (env, pattern, depth) {
+      case pattern of
+        Wildcard -> [env, emptyBuffer (), depth]
+      | PConst (x) -> 
+        [
+          env, 
+          singletonBuffer (DUP) <+ CONST (x) <+ BINOP ("==") <+ CJMP ("z", dropLabel (depth)), 
+          depth
+        ]
+      | PNamed (_, pattern) -> compilePattern (env, pattern, depth)
+      | PSexp (name, args) -> 
+        case compileElemPatterns (env, args, depth) of [env, argsCode, maxDepth] ->
+          [
+            env, 
+            singletonBuffer (DUP) <+ PATT (name, size (args)) <+ CJMP ("z", dropLabel (depth)) <+> argsCode,
+            maxDepth
+          ]
+        esac
+      | PArray (args) -> compilePattern (env, PSexp ("array", args), depth)
+      esac
+    }
+
+    fun compileElemPatterns (env, patterns, depth) {
+      case foldl (
+        fun ([env, code, maxDepth, index], pattern) {
+          case compilePattern (env, pattern, depth + 1) of 
+            [env, {}, _] -> [env, code, maxDepth, index + 1]
+          | [env, elemCode, depth] ->
+              [
+                env,
+                code <+ DUP <+ CONST (index) <+ ELEM <+> elemCode <+ DROP,
+                if depth > maxDepth then depth else maxDepth fi, 
+                index + 1
+              ]
+          esac
+        }, 
+        [env, emptyBuffer (), depth, 0], 
+        patterns
+      ) of [env, code, depth, _] -> [env, code, depth] esac
+    }
+
+    case genLabel (env) of [exprLabel, env] ->
+      case compilePattern (env, pattern, 0) of [env, patternCode, maxDepth] ->
+        case compile (successLabel, env, expr) of [_, env, exprCode] ->
+          [
+            env, 
+            patternCode <+ DROP <+> exprCode <+ JMP (successLabel) <+> dropCode (maxDepth),
+            isWildcard
+          ]
+        esac
+      esac
+    esac
   esac
 }
 
