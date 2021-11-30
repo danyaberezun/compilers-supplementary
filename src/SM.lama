@@ -67,7 +67,7 @@ fun initEvalEnv (insns) {
           fun ([m, insns]) {
             case insns of
               {}                  -> m
-            | LABEL (lab) : tl -> rec ([addMap (m, lab, insns), tl])
+            | LABEL (lab, _) : tl -> rec ([addMap (m, lab, insns), tl])
             | _ : tl              -> rec ([m, tl])
             esac
           }
@@ -164,7 +164,7 @@ fun eval (env, w, insns) {
         | LD     (x)    -> eval ([lookup (s, x) : st, cst, s, w], insns)
         | LDA    (x)    -> eval ([Ref (x) : st, cst, s, w], insns)
         | CONST  (n)    -> eval ([n : st, cst, s, w], insns)
-        | LABEL  (_)    -> eval (c, insns)
+        | LABEL  (_,_)  -> eval (c, insns)
         | JMP    (l)    -> eval (c, fromLabel (env, l))
         | CJMP  (cond, l) ->
               case st of
@@ -200,7 +200,17 @@ fun eval (env, w, insns) {
                                 v : st -> eval ([v : v : st, cst, s, w], insns)
                               esac
         | PATT (p)         -> case st of
-                                v : st -> eval ([if matchAll ({p}, {v}) then 1 else 0 fi : v : st, cst, s, w], insns)
+                                v : st -> var match = case p of
+                                            Array (n)     -> case v of
+                                                               #array -> n == length (v)
+                                                             |  _     -> 0
+                                                             esac
+                                          | Sexp  (c1, n) -> case v of
+                                                               Sexp (c2, arr) -> n == length (arr) && compare (c1, c2) == 0
+                                                             | _              -> 0
+                                                             esac
+                                          esac;
+                                          eval ([match : st, cst, s, w], insns)
                               esac
         | META ([pos, loc]) -> error (sprintf ("Match failure for value %s", lookup (s, pos).string), loc)
         esac
@@ -478,7 +488,7 @@ fun addVals (env, names) {
 public fun compileSM (scopeExpr) {
   fun label (lab, labUsed) {
     if labUsed
-    then singletonBuffer (LABEL (lab))
+    then singletonBuffer (LABEL (lab, false))
     else emptyBuffer ()
     fi
   }
@@ -576,7 +586,7 @@ public fun compileSM (scopeExpr) {
                     case compile (lab, env, fBranch) of
                       [_, env, fCode] -> [true, env, condCode <+> label (condLab, condLabUsed)
                                                               <+ CJMP ("z", fLab)
-                                                              <+> tCode <+ JMP (lab) <+ LABEL (fLab)
+                                                              <+> tCode <+ JMP (lab) <+ LABEL (fLab, false)
                                                               <+> fCode]
                     esac
                 esac
@@ -589,8 +599,8 @@ public fun compileSM (scopeExpr) {
               [endCondLabUsed, env, condCode] ->
                 case compile (begCondLab, env, body) of
                   [_, env, bodyCode] -> [false, env, singletonBuffer (JMP (begCondLab))
-                                                     <+ LABEL (bodyLab) <+> bodyCode
-                                                     <+ LABEL (begCondLab) <+> condCode
+                                                     <+ LABEL (bodyLab, true) <+> bodyCode
+                                                     <+ LABEL (begCondLab, false) <+> condCode
                                                      <+> label (endCondLab, endCondLabUsed)
                                                      <+ CJMP ("nz", bodyLab)]
                 esac
@@ -602,21 +612,21 @@ public fun compileSM (scopeExpr) {
             case compile (endCondLab, env, cond) of
               [endCondLabUsed, env, condCode] ->
                 case compile (begCondLab, env, body) of
-                  [begCondLabUsed, env, bodyCode] -> [false, env, singletonBuffer (LABEL (bodyLab))
+                  [begCondLabUsed, env, bodyCode] -> [false, env, singletonBuffer (LABEL (bodyLab, true))
                                                                   <+> bodyCode <+> label (begCondLab, begCondLabUsed)
                                                                   <+> condCode <+> label (endCondLab, endCondLabUsed)
                                                                   <+ CJMP ("nz", bodyLab)]
                 esac
             esac
         esac
-    | Case   (scr, brs, loc) ->
-                                case genLabel (env) of
+    | Case   (scr, brs, loc) -> case genLabel (env) of
                                   [endCaseLab, env] ->
                                     case compileBranches (endCaseLab, env, brs) of
                                       [env, brsCode] -> var scrV = lookupVal (env, scr);
                                                         [false, env, singletonBuffer (LD (scrV))
-                                                                     <+> brsCode <+ META ([scrV, loc])
-                                                                     <+ DROP <+ LABEL (endCaseLab)]
+                                                                     <+> brsCode <+ DROP
+                                                                     <+ META ([scrV, loc])
+                                                                     <+ LABEL (endCaseLab, false)]
                                     esac
                                 esac
 
@@ -625,12 +635,55 @@ public fun compileSM (scopeExpr) {
 
   -- Compiles list of pair [pattern, branch]
   fun compileBranches (endCaseLab, env, brs) {
+    fun genNestedLab (lab) {
+      sprintf ("%s_", lab)
+    }
+    -- Compile pattern
+    fun compilePattern (failLab, pat, failCode, patCode) {
+      case pat of
+        Wildcard       -> [failCode, patCode]
+      | Const (n)      -> [failCode, patCode <+ DUP <+ CONST (n) <+ BINOP ("==") <+ CJMP ("z", failLab)]
+      | Named (_, pat) -> compilePattern (failLab, pat, failCode, patCode)
+      | Array (ps)     -> case genNestedLab (failLab) of
+                            nestedFailLab ->
+                              case compilePatternList (nestedFailLab, ps) of
+                                [nestedFailCode, pattsCode, _] ->
+                                  [nestedFailCode <+ DROP <+> failCode, patCode <+ DUP <+ PATT (Array (size (ps)))
+                                                                        <+ CJMP ("z", failLab) <+> pattsCode]
+                              esac
+                          esac
+      | Sexp  (c, ps)  -> case genNestedLab (failLab) of
+                            nestedFailLab ->
+                              case compilePatternList (nestedFailLab, ps) of
+                                [nestedFailCode, pattsCode, _] ->
+                                  [nestedFailCode <+ DROP <+> failCode, patCode <+ DUP <+ PATT (Sexp (c, size (ps)))
+                                                                        <+ CJMP ("z", failLab) <+> pattsCode]
+                              esac
+                          esac
+      esac
+    }
+
+    fun compilePatternList (failLab, ps) {
+      foldl (fun ([curFailCode, patCode, i], pat) {
+        case compilePattern (failLab, pat, singletonBuffer (LABEL (failLab, false)), patCode <+ DUP <+ CONST (i) <+ ELEM) of
+          [failCode, patCode] ->
+            [if size (getBuffer (failCode)) > size (getBuffer (curFailCode))
+             then failCode
+             else curFailCode fi, patCode <+ DROP, i + 1]
+        esac
+      },
+      [emptyBuffer (), emptyBuffer (), 0],
+      ps)
+    }
+
     foldl (fun ([env, code], [p, br]) {
         case genLabel (env) of
           [endBrLab, env] ->
-            case compile (endCaseLab, env, br) of
-              [_, env, brCode] -> [env, code <+ PATT (p) <+ CJMP ("z", endBrLab) <+ DROP
-                                             <+> brCode <+ JMP (endCaseLab) <+ LABEL (endBrLab)]
+            case compilePattern (endBrLab, p, singletonBuffer (LABEL (endBrLab, false)), emptyBuffer ()) of
+              [failCode, pattCode] ->
+                case compile (endCaseLab, env, br) of
+                  [_, env, brCode] -> [env, code <+> pattCode <+ DROP <+> brCode <+ JMP (endCaseLab) <+> failCode]
+                esac
             esac
         esac
     },
@@ -641,12 +694,12 @@ public fun compileSM (scopeExpr) {
   -- Compiles list of functions
   fun compileFuns (env, funcs, code) {
       case funcs of
-        {} -> [env, code] -- be careful in future! maybe the function must return both code and new env
+        {} -> [env, code]
       | Fun (fLabel, args, body, state) : funcs ->
            case genLabel (addArgs (beginFun (env, state), args)) of [endFuncLab, env] ->
                case compile (endFuncLab, env, body) of [labUsed, env, bCode] ->
                    case getFuns (env) of [fs, env] ->
-                     compileFuns (env, funcs +++ fs, code <+ LABEL (fLabel)
+                     compileFuns (env, funcs +++ fs, code <+ LABEL (fLabel, false)
                                                      <+ BEGIN (fLabel, size (args), getLocals (env))
                                                      <+> bCode <+> label (endFuncLab, labUsed)
                                                      <+ END)
@@ -665,7 +718,7 @@ public fun compileSM (scopeExpr) {
            case getFuns (env) of
              [funcs, env] ->
                case compileFuns (env, funcs, emptyBuffer ()) of
-                 [_, funcsCode] -> getBuffer $ singletonBuffer (LABEL ("main"))
+                 [_, funcsCode] -> getBuffer $ singletonBuffer (LABEL ("main", false))
                                                <+ BEGIN ("main", 0, getLocals (env))
                                                <+> code <+> label (endLab, endLabUsed)
                                                <+ END <+> funcsCode
