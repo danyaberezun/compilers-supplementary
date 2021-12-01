@@ -70,6 +70,15 @@ fun lookupVal (state, name) {
 
 -- Helper function: checks that given name designates a function in
 -- a given state
+fun checkFun (state, name) {
+  case lookup (state, name) of
+    Fun (_, _) -> skip
+  | _          -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
+  esac
+}
+
+-- Helper function: checks that given name designates a function in
+-- a given state
 fun lookupFun (state, name) {
   case state.lookup (name) of
     x@Fun (_, _) -> x
@@ -101,8 +110,164 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+-- For builtin functions only (length).
+-- Convert all Sexp (name, args) to list args.
+-- not very nice solution...
+fun sexps2List (xs) {
+  map (fun (x) {
+    case x of
+      Sexp (_, l) -> listArray (l)
+    | _           -> x
+    esac
+  }, xs)
+}
+
+fun eval (c@[state, world], expr) {
+  fun evalDef (s, def) {
+      case def of
+        Var (ds)               -> addNames (s, ds)
+      | Val (ds)               -> addNames (s, ds)
+      | Fun (name, args, body) -> addFunction (s, name, args, body)
+      esac
+    }
+
+    -- returns first successful branch in case-expression
+    fun findMatched (x, brs) {
+      fun checkMatchedList (xs, ys) {
+        case [xs, ys] of
+          [{}, {}] -> true
+        | [x : xs, y : ys] -> checkMatched (x, y) && checkMatchedList (xs, ys)
+        | _ -> false
+        esac
+      }
+
+      fun checkMatched (v, pat) {
+        case pat of
+          WildPtrn         -> true
+        | NamedPtrn (_, p) -> checkMatched (v, p)
+        | VarPtrn (_)      -> true
+        | NumPtrn (n)      -> v == n
+        | SexpPtrn (pname, pargs) ->
+            case v of
+              Sexp (vname, vargs) -> compare (vname, pname) == 0 && checkMatchedList (vargs, pargs)
+            | _                   -> false
+            esac
+        | ArrayPtrn (xs)          -> checkMatchedList (arrayList (v), xs)
+        | _                       -> failure ("strange pattern %s\n", string (pat))
+        esac
+      }
+
+      case brs of
+        {}           -> failure (sprintf ("couldn't match value ""%s""\n", string (x)))
+      | [p, e] : brs -> if checkMatched (x, p) then e else findMatched (x, brs) fi
+      esac
+    }
+
+  case expr of
+    Scope (ds, e) ->
+      case eval ([foldl (evalDef, enterScope (state), ds), world], e) of
+        [[state, world], vs] -> [[leaveScope (state), world], vs]
+      esac
+
+    | Assn (l, r) ->
+        case evalList (c, {l, r}) of
+          [[state, world], {Ref (x), v}]        -> [[state <- [x, v], world], v]
+        | [[state, world], {ElemRef (a, i), v}] -> a[i] := v; [[state, world], v]
+        esac
+
+    | Set (x, e) -> eval (c, Assn (Ref (x), e))
+
+    | Seq (e1, e2) ->
+        case eval (c, e1) of
+          [c, _] -> eval (c, e2)
+        esac
+
+    | Skip         -> [c, Bot]
+
+    | If (e, s1, s2) ->
+        case eval (c, e) of
+          [c, v] -> if v == 0 then eval (c, s2) else eval (c, s1) fi
+        esac
+
+    | While (e, s) ->
+        case eval (c, e) of
+          [c, v] -> if v == 0
+                     then [c, Bot]
+                     else case eval (c, s) of
+                             [c, _] -> eval (c, While (e, s))
+                           esac
+                     fi
+        esac
+
+    | DoWhile (s, e) -> eval (c, Seq (s, While (e, s)))
+
+    | Var     (v) -> [c, lookup (state, v)]
+
+    | Ref     (r) -> [c, Ref (r)]
+
+    | Const   (n) -> [c, n]
+
+    | Binop   (op, l, r) ->
+        case evalList (c, {l, r}) of
+          [c, {w, v}] -> [c, evalOp (op, w, v)]
+        esac
+
+    | Ignore (e) ->
+        case eval (c, e) of
+          [cc, _] -> [cc, Bot]
+        esac
+
+    | Call (fname, argsCall) ->
+        checkFun (state, fname);
+        case lookupFun (state, fname) of
+          Fun (argsDef, External) -> eval (c, Builtin (fname, argsCall))
+        | Fun (argsDef, body) ->
+            case evalList (c, argsCall) of
+              [[s, w], vals] ->
+                var state = foldl (fun (s, [name, v]) {addName (s, name, v)},
+                                   enterFunction (s),
+                                   zip (argsDef, vals));
+                case eval ([state, w], body) of
+                  [[state, w], v] -> [[leaveFunction (s, getGlobal (state)), w], v]
+                esac
+            esac
+        esac
+
+    | String (s) -> [c, s]
+
+    | Array (es) ->
+          case evalList (c, es) of
+              [c, vs] -> [c, listArray (vs)]
+          esac
+
+    | Elem (e, i) ->
+        case evalList (c, {e, i}) of
+          [c, {Sexp (_, l), v}] -> [c, listArray (l) [v]]
+        | [c, {l, v}]           -> [c, l [v]]
+        esac
+
+    | ElemRef (e, i) ->
+        case evalList (c, {e, i}) of
+          [c, {l, v}] -> [c, ElemRef (l, v)]
+        esac
+
+    | Builtin (fname, args) ->
+        case evalList (c, args) of
+          [[state, world], vals] ->
+            case evalBuiltin (fname, sexps2List (vals), world) of
+              [res, world] -> [[state, world], res]
+            esac
+        esac
+
+    | Sexp (name, args) ->
+        case evalList (c, args) of
+          [c, vals] -> [c, Sexp (name, vals)]
+        esac
+
+    | Case (s, brs) ->
+        var matched = findMatched (lookup (state, s), brs);
+        eval (c, matched)
+    esac
 }
 
 
