@@ -7,35 +7,7 @@ import Fun;
 import Matcher;
 import Ref;
 import Collection;
-
--- Signals an error; takes an error message and location info
-fun error (msg, loc) {
-  failure ("%s at %d:%d\n", msg, loc.fst, loc.snd)
-}
-
--- An attribute-processing functions
--- Attributes are:
---   Val  --- a plain value (aka "rvalue")
---   Ref  --- a reference to a mutable cell (aka "lvalue")
---   Void --- no value (aka "void"/"unit")
-
--- Checks if a plain value "val" can be used in the context described by
--- the attribute "atr".
-fun assertValue (atr, v, loc) {
-  case atr of
-    Ref  -> error ("reference expected", loc)
-  | Void -> Ignore (v)
-  | _    -> v
-  esac
-}
-
-fun assertVoid (atr, v, loc) {
-  case atr of
-    Void -> v
-  | Val  -> error ("value expected", loc)
-  | _    -> error ("reference expected", loc)
-  esac
-}
+import Array;
 
 -- A parser of "something" in brackets; l, r are left and right
 -- brackets as parsers, p --- a parser of "something"
@@ -43,40 +15,201 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
-fun binop (op) {
-  [syntax (pos -s[op]), fun (l, loc, r) {
-                          fun (a) {
-                            assertValue (a, Binop (op, l (Val), r (Val)), loc)
-                          }
-                        }
-  ]
+var pPrimary =
+      memo $ eta syntax ( x=decimal {Const (stringInt (x))}
+                        | x=lident  {Var (x)}
+                        | inbr[s("("), pExp, s(")")]),
+    pElif =
+      memo $ eta syntax ( -kElif e=pExp -kThen t=pExp -kElse f=pExp -kFi { If (e, t, f) }
+                        | -kElif e=pExp -kThen t=pExp f=pElif { If (e, t, f) }
+                        ),
+    pIf =
+      memo $ eta syntax ( -kIf e=pExp -kThen t=pExp -kFi { If (e, t, Skip) }
+                        | -kIf e=pExp -kThen t=pExp f=pElif { If (e, t, f) }
+                        | -kIf e=pExp -kThen t=pExp -kElse f=pExp -kFi { If (e, t, f) }
+                        ),
+    pBinopArg = pPrimary | pIf,
+
+    --
+    -- Следующий код в нормальном языке должен бы выглядеть вот так:
+    --
+    -- pHighPrecOp =
+    --   foldl
+    --     ( fun (high, pop) {
+    --         var ret = memo $ eta syntax (high | x=ret op=pop y=high { Binop (op, x, y) });
+    --         ret
+    --       }
+    --     , pPrimary
+    --     , binops
+    --     ),
+    --
+    -- Либо, если участие в замыкании не продлевает жизнь переменной (то есть если в языке нет GC),
+    -- то есть какой-то способ продлить эту жизнь руками.
+    --
+    -- Однако в ламе это сегфолт, и никакими манипуляциями с Ref и Lazy я не справился исправить
+    -- положение. Причины вполне ясны, но я делаю вывод, что утверждение, что лама поддерживает
+    -- замыкания, крайне самонадеянное.
+    --
+    -- Буду рад оказаться неправ, потому что от кода ниже меня тошнит. Если есть способ это побороть,
+    -- расскажите мне о нём, пожалуйста?
+    --
+    binopsA = listArray (binops),
+    pBinop0 = binopsA[0],
+    pBinop1 = binopsA[1],
+    pBinop2 = binopsA[2],
+    pBinop3 = binopsA[3],
+    pHighPrecOp0 =
+       memo $ eta syntax (pBinopArg | x=pHighPrecOp0 op=pBinop0 y=pBinopArg { Binop (op, x, y) }),
+    pHighPrecOp1 =
+       memo $ eta syntax (pHighPrecOp0 | x=pHighPrecOp1 op=pBinop1 y=pHighPrecOp0 { Binop (op, x, y) }),
+    pHighPrecOp2 =
+       memo $ eta syntax (pHighPrecOp1 | x=pHighPrecOp2 op=pBinop2 y=pHighPrecOp1 { Binop (op, x, y) }),
+    pHighPrecOp3 =
+       memo $ eta syntax (pHighPrecOp2 | x=pHighPrecOp3 op=pBinop3 y=pHighPrecOp2 { Binop (op, x, y) }),
+    pHighPrecOp =
+      pHighPrecOp3,
+    
+    pRead =
+      memo $ eta syntax (-kRead x=inbr[s("("), pExp, s(")")] { Read (x) }),
+    pWrite =
+      memo $ eta syntax (-kWrite e=inbr[s("("), pExp, s(")")] { Write (e) }),
+    pSkip =
+      memo $ eta syntax (-kSkip { Skip }),
+    pWhile =
+      memo $ eta syntax (-kWhile e=pExp -kDo s=pExp -kOd { While (e, s) }),
+    pDoWhile =
+      memo $ eta syntax (-kDo s=pExp -kWhile e=pExp -kOd { DoWhile (s, e) }),
+    pFor =
+      memo $ eta syntax (-kFor ini=pExp -s[","] cond=pExp -s[","] fini=pExp -kDo act=pExp -kOd
+                             { Seq (ini, While (cond, Seq (act, fini))) }),
+    pAssnArg =
+      memo $ pHighPrecOp | pRead | pWrite | pSkip | pWhile | pDoWhile | pFor,
+    pAssn =
+      memo $ eta syntax ( pAssnArg
+                        | x=pAssnArg -s[":="] e=pAssn { Assn (x, e) }
+                        ),
+    pSeqArg =
+      pAssn,
+    pSeq =
+      memo $ eta syntax ( pSeqArg
+                        | lhs=pSeqArg -s[";"] rhs=pSeq { Seq (lhs, rhs) }
+                        ),
+    pExp =
+      pSeq;
+
+
+fun typecheck (p) {
+  fun work (p, typ) {
+     case typ of
+       Void ->
+         case p of
+           Var (x) ->
+             Succ (Ignore (Var (x)))
+         | Const (n) ->
+             Succ (Ignore (Const (n)))
+         | Binop (op, lhs, rhs) ->
+             case {work (lhs, Val), work (rhs, Val)} of
+               {Succ (lhs), Succ (rhs)} -> Succ (Ignore (Binop (op, lhs, rhs)))
+             | _                        -> Fail
+             esac
+         | Assn (x, e) ->
+             case {work (x, Ref), work (e, Val)} of
+               {Succ (x), Succ (e)} -> Succ (Ignore (Assn (x, e)))
+             | _                    -> Fail
+             esac
+         | Read (x) ->
+             case work (x, Ref) of
+               Succ (x) -> Succ (Read (x))
+             | _        -> Fail
+             esac
+         | Skip -> Succ (Skip)
+         | Write (e) ->
+             case work (e, Val) of
+               Succ (e) -> Succ (Write (e))
+             | _        -> Fail
+             esac
+         | Seq (lhs, rhs) ->
+             case {work (lhs, Void), work (rhs, Void)} of
+               {Succ (lhs), Succ (rhs)} -> Succ (Seq (lhs, rhs))
+             | _                        -> Fail
+             esac
+         | If (e, t, f) ->
+             case {work (e, Val), work (t, Void), work (f, Void)} of
+               {Succ (e), Succ (t), Succ (f)} -> Succ (If (e, t, f))
+             | _                              -> Fail
+             esac
+         | While (e, s) ->
+             case {work (e, Val), work (s, Void)} of
+               {Succ (e), Succ (s)} -> Succ (While (e, s))
+             | _                    -> Fail
+             esac
+         | DoWhile (s, e) ->
+             case {work (s, Void), work (e, Val)} of
+               {Succ (s), Succ (e)} -> Succ (DoWhile (s, e))
+             | _                    -> Fail
+             esac
+         | _ -> Fail
+         esac
+     | Ref ->
+         case p of
+           Var (x) ->
+             Succ (Ref (Var (x)))
+         | Seq (lhs, rhs) ->
+             case {work (lhs, Void), work (rhs, Ref)} of
+               {Succ (l), Succ (r)} -> Succ (Seq (l, r))
+             | _                    -> Fail
+             esac
+         | If (e, t, f) ->
+             case {work (e, Val), work (t, Ref), work (f, Ref)} of
+               {Succ (e), Succ (t), Succ (f)} -> Succ (If (e, t, f))
+             | a                              -> Fail
+             esac
+         | _ -> Fail
+         esac
+     | Val ->
+         case p of
+           Var (x) ->
+             Succ (Var (x))
+         | Const (n) ->
+             Succ (Const (n))
+         | Binop (op, lhs, rhs) ->
+             case {work (lhs, Val), work (rhs, Val)} of
+               {Succ (lhs), Succ (rhs)} -> Succ (Binop (op, lhs, rhs))
+             | _                        -> Fail
+             esac
+         | Assn (x, e) ->
+             case {work (x, Ref), work (e, Val)} of
+               {Succ (x), Succ (e)} -> Succ (Assn (x, e))
+             | _                    -> Fail
+             esac
+         | Seq (lhs, rhs) ->
+             case {work (lhs, Void), work (rhs, Val)} of
+               {Succ (lhs), Succ (rhs)} -> Succ (Seq (lhs, rhs))
+             | _                        -> Fail
+             esac
+         | If (e, t, f) ->
+             case {work (e, Val), work (t, Val), work (f, Val)} of
+               {Succ (e), Succ (t), Succ (f)} -> Succ (If (e, t, f))
+             | _                              -> Fail
+             esac
+         | _ -> Fail
+         esac
+     esac
+  }
+
+  var res = work (p, Void);
+  -- printf ("%s\n", p.string);
+  -- printf ("%s\n", res.string);
+
+  fun (k) {
+    fun (s) {
+      k (case res of
+           Succ (p) -> Succ (p, s)
+         | Fail     -> Fail ("typecheck failed", 0, 0)
+         esac)
+    }
+  }
 }
 
-var primary  = memo $ eta syntax (
-                                  -- decimal constant
-                                  loc=pos x=decimal                                 {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
-
-                                  -- identifier
-                                  x=lident                                          {fun (a) {
-                                                                                       case a of
-                                                                                         Ref  -> Ref (x)
-                                                                                       | Void -> Ignore (Var (x))
-                                                                                       | _    -> Var (x)
-                                                                                       esac
-                                                                                    }} |
-                                  $(failure ("the rest of primary parsing in not implemented\n"))),
-    basic    = memo $ eta (expr ({[Right, {[s (":="),
-                                            fun (l, loc, r) {
-                                              fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
-                                            }]}],
-                                  [Left , map (binop, {"!!"})],
-                                  [Left , map (binop, {"&&"})],
-                                  [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
-                                  [Left , map (binop, {"+", "-"})],
-                                  [Left , map (binop, {"*", "/", "%"})]
-                                 },
-                                 primary)),
-    exp      = memo $ eta syntax (basic | s1=basic s[";"] s2=exp {fun (a) {Seq (s1 (Void), s2 (a))}});
-
 -- Public top-level parser
-public parse = syntax (s=exp {s (Void)});
+public parse = pExp |> typecheck;

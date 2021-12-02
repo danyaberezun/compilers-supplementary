@@ -350,25 +350,130 @@ fun suffix (op) {
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  fun compile (env, code) {
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        case i of
-          READ ->
+  fun compileBinop (env, code, op) {
+    var opType =
+      case op of
+        "+"  -> Asm
+      | "-"  -> Asm
+      | "*"  -> Asm
+      | "&&" -> Logic
+      | "!!" -> Logic
+      | "/"  -> Div
+      | "%"  -> Div
+      | "<"  -> Cmp
+      | "<=" -> Cmp
+      | "==" -> Cmp
+      | "!=" -> Cmp
+      | ">=" -> Cmp
+      | ">"  -> Cmp
+      | _    -> failure ("binop %s is not supported", op)
+      esac;
+    case opType of
+        Asm ->
+        case env.pop2 of
+          [y, x, env] ->
             case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+              [s, env] -> [env, code <+> move (x, eax) <+ Binop (op, y, eax) <+> move (eax, s)]
             esac
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
-      }, [env, emptyBuffer ()], code)
+      | Logic ->
+        case env.pop2 of
+          [y, x, env] ->
+            case env.allocate of
+              [s, env] -> [env, code <+  Binop ("^", eax, eax)
+                                     <+  Binop ("cmp", x, eax)
+                                     <+  Set ("ne", "%al")
+                                     <+  Binop ("^", edx, edx)
+                                     <+  Binop ("cmp", y, edx)
+                                     <+  Set ("ne", "%dl")
+                                     <+  Binop (op, edx, eax)
+                                     <+> move (eax, s)]
+            esac
+        esac
+      | Div ->
+        var ansLoc =
+          case op of
+            "/" -> eax
+          | "%" -> edx
+          esac;
+        case env.pop2 of
+          [y, x, env] ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (x, eax) <+ Cltd <+ IDiv (y) <+> move (ansLoc, s)]
+            esac
+        esac
+      | Cmp ->
+        case env.pop2 of
+          [y, x, env] ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (x, edx)
+                                     <+  Binop ("^", eax, eax)
+                                     <+  Binop ("cmp", y, edx)
+                                     <+  Set (suffix (op), "%al")
+                                     <+> move (eax, s)]
+            esac
+        esac
+    esac
   }
 
-  compile (env, code) 
+  foldl (
+    fun ([env, scode], i) {
+      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      case i of
+        READ ->
+          case env.allocate of
+            [s, env] -> [env, code <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Mov (eax, s)]
+          esac             
+      | WRITE ->
+          case env.pop of
+            [s, env] -> [env, code <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx)]
+          esac
+      | BINOP (op) -> compileBinop (env, code, op)
+      | LD (x) ->
+          var newEnv = env.addGlobal (x);
+          case newEnv.allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac
+      | LDA (x) ->
+          (var newEnv = env.addGlobal (x);
+           case newEnv.allocate of
+             [s, env] -> [env, code <+ Lea (env.loc (x), s)]
+           esac)
+      | ST (x) ->
+          var newEnv = env.addGlobal (x);
+          case newEnv.pop of
+            [s, env] -> [env, code <+> move (s, env.loc (x))]
+          esac
+      | STI ->
+          case env.pop2 of
+            [y, x, env] ->
+              case env.allocate of
+                [z, env] -> [env, code <+> move (y, I (0, x)) <+> move (y, z)]
+              esac
+          esac
+      | CONST (x) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (L (x), s)]
+          esac
+      | LABEL (s) ->
+          (var newEnv = env.retrieveStack(s).setStack(s);
+           [newEnv, code <+ Label (s)])
+      | JMP (l) ->
+          (var newEnv = env.setStack(l).setBarrier;
+           [newEnv, code <+ Jmp (l)])
+      | CJMP (c, l) ->
+          case env.pop of
+            [x, env] ->
+              [env.setStack (l), code <+  Binop ("^", edx, edx)
+                                      <+  Binop ("cmp", x, edx)
+                                      <+  CJmp (c, l)]
+          esac
+      | DROP ->
+        case env.pop of
+          [_, env] -> [env, code]
+        esac
+      esac
+    }, [env, emptyBuffer ()], code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
