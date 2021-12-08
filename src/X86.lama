@@ -465,17 +465,17 @@ fun move (from, to) {
 
 fun getOpType (op) {
   case op of
-    "/"   -> Div ("/")
-  | "%"   -> Mod ("%")
+    "/"   -> DivMod (true)
+  | "%"   -> DivMod (false)
   | "<"   -> Cmp ("<")
   | ">"   -> Cmp (">")
   | "<="  -> Cmp ("<=")
   | "=="  -> Cmp ("==")
   | "!="  -> Cmp ("!=")
   | ">="  -> Cmp (">=")
-  | "+"   -> Arithm ("+")
-  | "-"   -> Arithm ("-")
-  | "*"   -> Arithm ("*")
+  | "+"   -> PlusMinus (true)
+  | "-"   -> PlusMinus (false)
+  | "*"   -> Mul
   | "&&"  -> Logical ("&&")
   | "!!"  -> Logical ("!!")
   | _     -> failure ("unsupported operator type %s \n", op.string)
@@ -515,6 +515,74 @@ fun compile (args, env, code) {
       '$' -> "L" ++ substring (funcName, 1, length (funcName) - 1)
     | _   -> funcName
     esac
+  }
+
+  fun compileBinop (op, x, y, res) {
+      case getOpType (op) of
+        PlusMinus (isPlus) -> compilePlusMinusOp (isPlus, x, y, res)
+      | other -> singletonBuffer (Sar1 (y)) <+ Sar1 (x)
+                 <+> case other of
+                       Mul             -> singletonBuffer (Mov (y, edx))
+                                          <+ Binop (op, x, edx)
+                                          <+ Mov (edx, res)
+                     | Logical (op)    -> compileLogic (op, x, y, res)
+                     | Cmp     (op)    -> compileCmp (op, x, y, res)
+                     | DivMod  (isDiv) -> compileDivMod (isDiv, x, y, res)
+                     esac
+                 <+> toFixedNum (res)
+      esac
+  }
+
+  fun compilePlusMinusOp (isPlus, x, y, res) {
+    if isPlus
+    then
+      singletonBuffer (Mov (y, edx))
+      <+ Binop ("+", x, edx)
+      <+ Dec (edx)
+      <+ Mov (edx, y)
+      <+ Mov (edx, res)
+    else
+      singletonBuffer (Mov (y, edx))
+      <+ Binop ("-", x, edx)
+      <+ Inc (edx)
+      <+ Mov (edx, y)
+      <+ Mov (edx, res)
+    fi
+  }
+
+  fun compileLogic (op, x, y, res) {
+    singletonBuffer (Binop ("^", edx, edx))
+    <+ Binop ("cmp", x, edx)
+    <+ Set ("nz", "%dl")
+    <+ Mov (edx, x)
+    <+ Binop ("^", edx, edx)
+    <+ Binop ("cmp", y, edx)
+    <+ Set ("nz", "%dl")
+    <+ Binop (op, x, edx)
+    <+ Mov (edx, res)
+  }
+
+  fun compileCmp (op, x, y, res) {
+    singletonBuffer (Mov (y, edx))
+    <+ Binop ("cmp", x, edx)
+    <+ Mov (L (0), edx)
+    <+ Set (suffix (op), "%dl")
+    <+ Mov (edx, res)
+  }
+
+  fun compileDivMod (isDiv, x, y, res) {
+    if isDiv
+    then
+      singletonBuffer (Mov (y, eax))
+      <+ Cltd
+      <+ IDiv (x)
+      <+ Mov (eax, res)
+    else
+      singletonBuffer (Mov (y, eax))
+      <+ Cltd
+      <+ IDiv (x)
+      <+ Mov (edx, res)
+    fi
   }
 
   fun compile (env, code) {
@@ -562,37 +630,13 @@ fun compile (args, env, code) {
           | ELEM           -> case compileCall (env, "Belem", 2) of
                                 [env, elemCode] -> [env, code <+> elemCode]
                               esac
-          | BINOP (op) ->
-              case pop2 (env) of
-                [x, y, env] ->
-                  case allocate (env) of
-                    [s, env] -> case getOpType (op) of
-                                  Arithm  ("+") -> [env, code <+ Mov (y, edx) <+ Binop (op, x, edx)
-                                                              <+ Dec (edx) <+ Mov (edx, y) <+ Mov (edx, s)]
-                                | Arithm  ("-") -> [env, code <+ Mov (y, edx) <+ Binop (op, x, edx)
-                                                              <+ Inc (edx) <+ Mov (edx, y) <+ Mov (edx, s)]
-                                | Arithm  ("*") -> [env, code <+ Mov (y, edx) <+ Sar1 (edx) <+ Sar1 (x)
-                                                              <+ Binop (op, x, edx) <+> toFixedNum (edx)
-                                                              <+ Mov (edx, y) <+ Mov (edx, s)]
 
-                                | Logical (op) -> [env, code <+ Sar1 (x) <+ Binop ("^", edx, edx) <+ Binop ("cmp", x, edx)
-                                                             <+ Set ("nz", "%dl") <+ Mov (edx, x)
-                                                             <+ Sar1 (y) <+ Binop ("^", edx, edx) <+ Binop ("cmp", y, edx)
-                                                             <+ Set ("nz", "%dl") <+ Binop (op, x, edx)
-                                                             <+> toFixedNum (edx) <+ Mov (edx, s)]
-
-                                | Cmp     (op) -> [env, code <+ Sar1 (x) <+ Sar1 (y) <+ Mov (y, edx)
-                                                             <+ Binop ("cmp", x, edx) <+ Mov (L (0), edx)
-                                                             <+ Set (suffix (op), "%dl") <+> toFixedNum (edx)
-                                                             <+ Mov (edx, s)]
-
-                                | Div     (op) -> [env, code <+ Sar1 (x) <+ Sar1 (y) <+ Mov (y, eax) <+ Cltd
-                                                             <+ IDiv (x) <+> toFixedNum (eax) <+ Mov (eax, s)]
-                                | Mod     (op) -> [env, code <+ Sar1 (x) <+ Sar1 (y) <+ Mov (y, eax) <+ Cltd
-                                                             <+ IDiv (x) <+> toFixedNum (edx) <+ Mov (edx, s)]
-                                esac
-                  esac
-              esac
+          | BINOP (op)     -> case pop2 (env) of
+                                [x, y, env] ->
+                                  case allocate (env) of
+                                    [s, env] -> [env, code <+> compileBinop (op, x, y, s)]
+                                  esac
+                              esac
 
           | LD (x)           -> case allocate (env) of
                                   [s, env] -> [env, code <+> move (loc (env, x), s)]
@@ -663,34 +707,35 @@ fun compile (args, env, code) {
                                                       esac
                                                   esac
                                 esac
-          | META ([pos, [line, col]])  -> [env, code]
---                                          case allocate (env) of
---                                            [v, env] ->
---                                              case addString (env, args.getBaseName ++ ".lama") of
---                                                [env, name] ->
---                                                  case allocate (env) of
---                                                    [fname, env] ->
---                                                      case compileCall (env, "Bstring", 1) of
---                                                        [env, sCode] ->
---                                                          case allocate (env) of
---                                                            [l, env] ->
---                                                              case allocate (env) of
---                                                                [c, env] ->
---                                                                  case compileCall (env, "Bmatch_failure", 4) of
---                                                                    [env, callCode] ->
---                                                                      [env, code <+> move (loc (env, pos), v)
---                                                                                 <+> move (M ("$" ++ name), fname)
---                                                                                 <+> sCode
---                                                                                 <+> move (L (makeBox (line)), l)
---                                                                                 <+> move (L (makeBox (col)), c)
---                                                                                 <+> callCode]
---                                                                  esac
---                                                              esac
---                                                          esac
---                                                      esac
---                                                  esac
---                                              esac
---                                          esac
+          | META ([pos, [line, col]])  -> case allocate (env) of
+                                            [v, env] ->
+                                              case addString (env, args.getBaseName ++ ".lama") of
+                                                [env, name] ->
+                                                  case allocate (env) of
+                                                    [fname, env] ->
+                                                      case compileCall (env, "Bstring", 1) of
+                                                        [env, sCode] ->
+                                                          case allocate (env) of
+                                                            [l, env] ->
+                                                              case allocate (env) of
+                                                                [c, env] ->
+                                                                  case compileCall (env, "Bmatch_failure", 4) of
+                                                                    [env, callCode] ->
+                                                                      case pop (env) of
+                                                                        [_, env] -> [env, code <+> move (loc (env, pos), v)
+                                                                                               <+> move (M ("$" ++ name), fname)
+                                                                                               <+> sCode
+                                                                                               <+> move (L (makeBox (line)), l)
+                                                                                               <+> move (L (makeBox (col)), c)
+                                                                                               <+> callCode]
+                                                                      esac
+                                                                  esac
+                                                              esac
+                                                          esac
+                                                      esac
+                                                  esac
+                                              esac
+                                            esac
           | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
           esac
         fi
@@ -704,7 +749,7 @@ fun compile (args, env, code) {
 
 fun compileCall (env, fLabel, n_a) {
   var regsToSave = liveRegisters (env, n_a);
-  var actualArgsCount = case fLabel of "Barray" -> n_a + 1 | "Bsexp" -> n_a + 1 | _ -> n_a esac;
+  var isArrOrSexp = case fLabel of "Barray" -> true | "Bsexp" -> true | _ -> false esac;
   case foldlArray (fun ([env, args], _) {
                      case pop (env) of
                        [x, env] -> [env, x : args]
@@ -714,9 +759,9 @@ fun compileCall (env, fLabel, n_a) {
       case allocate (env) of
         [s, env] -> [env, listBuffer (map (fun (reg) {Push (reg)}, regsToSave))
                           <+> listBuffer (map (fun (arg) {Push (arg)}, reverse (args)))
-                          <+> if actualArgsCount > n_a then singletonBuffer (Push (L (makeBox (n_a)))) else emptyBuffer () fi
+                          <+> if isArrOrSexp then singletonBuffer (Push (L (makeBox (n_a)))) else emptyBuffer () fi
                           <+ Call (fLabel)
-                          <+ Binop ("+", L (wordSize * actualArgsCount), esp)
+                          <+ Binop ("+", L (wordSize * (n_a + if isArrOrSexp then 1 else 0 fi)), esp)
                           <+> listBuffer (map (fun (reg) {Pop (reg)}, reverse (regsToSave)))
                           <+ Mov (eax, s)]
       esac
