@@ -459,7 +459,7 @@ extern const size_t __gc_data_end, __gc_data_start;
 
 // @L__gc_init is defined in runtime/runtime.s
 //   it sets up stack bottom and calls init_pool
-//   it is called from the main function (see src/X86.ml function genasm)
+//   it is called from the main function (see src/X86.lama function compileX86)
 extern void L__gc_init ();
 // @__gc_root_scan_stack (you have to define it in runtime/runtime.s)
 //   finds roots in program stack and calls @gc_test_and_copy_root for each found root
