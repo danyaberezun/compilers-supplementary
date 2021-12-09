@@ -2,6 +2,15 @@
 # include <stdlib.h>
 # include <stdarg.h>
 # include <string.h>
+# include <sys/mman.h>
+# include <assert.h>
+
+#define NIMPL fprintf (stderr, "Internal error: "			\
+		       "function %s at file %s, line %d is not implemented yet", \
+		       __func__, __FILE__, __LINE__);			\
+  exit(1);
+
+extern void nimpl (void) { NIMPL }
 
 # define UNBOXED(x)  (((int) (x)) &  0x0001)
 # define UNBOX(x)    (((int) (x)) >> 1)
@@ -131,11 +140,15 @@ void* Barray (int n0, ...) {
 void* Bstring (void *p) {
   int   n = strlen (p);
   data *s;
-  
+
+  __pre_gc ();
+  push_extra_root (&p);
   s = (data*) malloc (n + 1 + sizeof (int));
   s->tag = STRING_TAG | (n << 3);
+  pop_extra_root (&p);
 
   strncpy (s->contents, p, n + 1);
+  __post_gc ();
   return s->contents;
 }
 
@@ -399,3 +412,152 @@ extern void Bmatch_failure (void *v, char *fname, int line, int col) {
   failure ("match failure at %s:%d:%d, value '%s'\n",
 	   fname, UNBOX(line), UNBOX(col), stringBuf.contents);
 }
+
+
+/* ======================================== */
+/*         GC: Mark-and-Copy                */
+/* ======================================== */
+
+/* Heap is devided on two semi-spaces called active (to-) space and passive (from-) space. */
+/* Each space is a continuous memory area (aka pool, see @pool). */
+/* Note, it have to be no external fragmentation after garbage collection. */
+/* Memory is allocated by function @alloc. */
+/* Garbage collection has to be performed by memory allocator if there is not enough space to */
+/* allocate the requested size memory area. */
+
+/* The section implements stop-the-world mark-and-copy garbage collection. */
+/* Formally, it consists of 4 stages: */
+/* 1. Root set constraction */
+/* 2. Mark phase */
+/*   I.e. marking each reachable from the root set via a chain of pointers object as alive. */
+/* 3. Copy */
+/*   I.e. copying each alive object from active space into passive space. */
+/* 4. Fix pointers. */
+/* 5. Swap spaces */
+/*   I.e. active space becomes passive and vice versa. */
+/* In the implementation, the first four steps are performed together. */
+/* Where root can be found in: */
+/* 1) Static area. */
+/*   Globals @__gc_data_end and @__gc_data_start are used to idenfity the begin and the end */
+/*   of the static data area. They are defined while generating X86 code in src/X86.ml */
+/*   (function genasm). */
+/* 2) Program stack. */
+/*   Globals @__gc_stack_bottom and @__gc_stack_top (see runctime/gc_runtime.s) have to be set */
+/*   as the begin and the end of program stack or its part where roots can be found. */
+/* 3) Traditionally, roots can be also found in registers but our compiler always saves all */
+/*   registers on program stack before any external function call. */
+/* You have to implement functions that perform traverse static area (@gc_root_scan_data) */
+/* and program stack (@__gc_root_scan_stack, see runtime/gc_runtime.s) as well as a function */
+/* (@gc_test_and_copy_root) that checks if a word is a valid heap pointer, and, if so, */
+/* call copy-function. Copy-function (@gc_copy) has to move an object into passive semi-space, */
+/* rest a forward pointer instead of the object, scan object for pointers, call copying */
+/* for each found pointer. */
+
+
+// The begin and the end of static area (are specified in src/X86.ml fucntion genasm)
+extern const size_t __gc_data_end, __gc_data_start;
+
+// @L__gc_init is defined in runtime/runtime.s
+//   it sets up stack bottom and calls init_pool
+//   it is called from the main function (see src/X86.ml function genasm)
+extern void L__gc_init ();
+// @__gc_root_scan_stack (you have to define it in runtime/runtime.s)
+//   finds roots in program stack and calls @gc_test_and_copy_root for each found root
+extern void __gc_root_scan_stack ();
+
+// You also have to define two functions @__pre_gc and @__post_gc in runtime/gc_runtime.s.
+// These auxiliary functions have to be defined in oder to correctly set @__gc_stack_top.
+// Note that some of our functions (from runtime.c) activation records can be on top of the
+// program stack. These activation records contain usual values and thus we do not have a
+// way to distinguish pointers from non-pointers. And some of these values may accidentally be
+// equal to pointers into active semi-space but maybe not to the begin of an object.
+// Calling @gc_copy on such values leads to undefined behavior.
+// Thus, @__gc_stack_top has to point before these activation records. 
+// Note, you also have to find a correct place(-s) for @__pre_gc and @__post_gc to be called.
+// @__pre_gc  sets up @__gc_stack_top if it is not set yet
+// NB: make sure you calls __pre_gc everywhere when necessary (see Bstring for example)
+extern void __pre_gc  ();
+// @__post_gc sets @__gc_stack_top to zero if it was set by the caller
+extern void __post_gc ();
+
+/* memory semi-space */
+typedef struct {
+  size_t * begin;
+  size_t * end;
+  size_t * current;
+  size_t   size;
+} pool;
+
+static pool   from_space; // From-space (active ) semi-heap
+static pool   to_space;   // To-space   (passive) semi-heap
+static size_t *current;   // Pointer to the free space begin in active space
+
+// initial semi-space size
+static size_t SPACE_SIZE = 128;
+# define POOL_SIZE (2*SPACE_SIZE)
+
+// swaps active and passive spaces
+static void gc_swap_spaces (void) { NIMPL }
+
+// checks if @p is a valid pointer to the active (from-) space
+# define IS_VALID_HEAP_POINTER(p)\
+  (!UNBOXED(p) &&		 \
+   from_space.begin <= p &&	 \
+   from_space.end   >  p)
+
+// checks if @p points to the passive (to-) space
+# define IN_PASSIVE_SPACE(p)	\
+  (to_space.begin <= p	&&	\
+   to_space.end   >  p)
+
+// chekcs if @p is a forward pointer
+# define IS_FORWARD_PTR(p)			\
+  (!UNBOXED(p) && IN_PASSIVE_SPACE(p))
+
+extern size_t * gc_copy (size_t *obj);
+
+// @copy_elements
+//   1) copies @len words from @from to @where
+//   2) calls @gc_copy for those of these words which are valid pointers to from_space
+static void copy_elements (size_t *where, size_t *from, int len) { NIMPL }
+
+// @extend_spaces extends size of both from- and to- spaces
+static void extend_spaces (void) { NIMPL }
+
+// @gc_copy takes a pointer to an object, copies it
+//   (i.e. moves from from_space to to_space)
+//   , rests a forward pointer, and returns new object location.
+extern size_t * gc_copy (size_t *obj) { NIMPL }
+
+// @gc_test_and_copy_root checks if pointer is a root (i.e. valid heap pointer)
+//   and, if so, calls @gc_copy for each found root
+extern void gc_test_and_copy_root (size_t ** root) { NIMPL }
+
+// @gc_root_scan_data scans static area for root
+//   for each root it calls @gc_test_and_copy_root
+extern void gc_root_scan_data (void) { NIMPL }
+
+// @init_pool is a memory pools initialization function
+//   (is called by L__gc_init from runtime/gc_runtime.s)
+extern void init_pool (void) { NIMPL }
+
+// @free_pool frees memory pool p
+static int free_pool (pool * p) { NIMPL }
+
+// @gc performs stop-the-world mark-and-copy garbage collection
+//   and extends pools (i.e. calls @extend_spaces) if necessarily
+// @size is a size of the block that @alloc failed to allocate
+// returns a pointer the new free block
+// I.e.
+//   1) call @gc_root_scan_data (finds roots in static memory
+//        and calls @gc_test_and_copy_root for each found root)
+//   2) call @__gc_root_scan_stack (finds roots in program stack
+//        and calls @gc_test_and_copy_root for each found root)
+//   3) extends spaces if there is not enough space to be allocated after gc
+static void * gc (size_t size) { NIMPL }
+
+// @alloc allocates @size memory words
+//   it enaibles garbage collection if out-of-memory,
+//   i.e. calls @gc when @current + @size > @from_space.end
+// returns a pointer to the allocated block of size @size
+extern void * alloc (size_t size) { NIMPL }
