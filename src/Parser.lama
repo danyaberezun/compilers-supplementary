@@ -67,129 +67,726 @@ fun list (item) {
   listBy (item, s(","))
 }
 
--- Helper AST function: expands a "raw" scope expression, reifying
--- initializers into assignments
-fun expandScope (defs, expr) {
-  fun expandVarDefs (defs, expr) {
-    foldr (fun ([defs, expr], def) {     
-             case def of
-                [ident, None]         -> [ident : defs, expr]
-             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
-             esac
-           },
-           [{}, expr],
-           defs)
-  }
-
-  fun expandValDefs (defs, expr) {
-    foldr (fun ([defs, expr], [ident, value]) {     
-             [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
-           },
-           [{}, expr],
-           defs)
-  }
-
-  case 
-    foldr (fun ([defs, expr], def) {
-             case def of
-               f@Fun (_, _, _) -> [f : defs, expr]
-             | Val (ds) ->
-                 case expandValDefs (ds, expr) of
-                   [ds, expr] -> [Val (ds) : defs, expr]
-                 esac
-             | Var (ds) ->             
-                 case expandVarDefs (ds, expr) of
-                   [ds, expr] -> [Var (ds) : defs, expr]
-                 esac
-             esac
-           },
-           [{}, expr],
-           defs) of
-    [defs, expr] -> Scope (defs, expr)
-  esac  
-}
-
--- Helper AST function: distributes a scope through an expression
-fun distributeScope (expr, exprConstructor) {
-  case expr of
-    Scope (defs, sexpr) -> Scope (defs, exprConstructor (sexpr))
-  | _                   -> exprConstructor (expr)
+fun listOrNothing (lst) {
+  case lst of
+    None -> {}
+  | Some (args) -> args
   esac
 }
+
+-- VDefn =
+--   | VDefnEmpty (x)
+--   | VDefnAssn (x, e)
+--
+-- RawProgram =
+--   | Const (n)
+--   | String (s)
+--   | Array ({elem})
+--   | Sexp (c, {arg})
+--   | Var (x)
+--   | Skip
+--   | Scoped (e)
+--   | If (c, t, {[c, t]}, f)
+--   | Call (f, {a})
+--   | Subscript (a, i)
+--   | Read (e)
+--   | Write (e)
+--   | Binop (l, {[op, r]})
+--   | While (c, a)
+--   | DoWhile (a, c)
+--   | For (i, c, f, a)
+--   | Seq ({e})
+--   | VDefn ({d})
+--   | FunDefn (f, {x}, b)
+
+var
+  pConst =
+    memo $ eta syntax ( n=decimal { Const (stringInt (n)) }
+                      | x=chrlit  { Const (x) } ),
+  pString =
+    memo $ eta syntax ( s=strlit { String (s) } ),
+  pArray =
+    memo $ eta syntax ( x=inbr[s("["), list0 (pProgram), s("]")] { Array (x) } ),
+  pSexp =
+    memo $ eta syntax ( c=uident args=inbr[s("("), list (pProgram), s(")")]? { Sexp (c, listOrNothing (args)) } ),
+  pVar =
+    memo $ eta syntax ( x=lident { Var (x) } ),
+  pSkip =
+    memo $ eta syntax ( kSkip { Skip } ),
+  pScoped =
+    memo $ eta syntax ( s=inbr [s("("), pProgram, s(")")] { Scoped (s) } ),
+  pElif =
+    memo $ eta syntax ( -kElif e=pProgram -kThen a=pProgram { [e, a] } ),
+  pIf =
+    memo $ eta syntax ( -kIf e=pProgram -kThen t=pProgram es=pElif* -kElse f=pProgram -kFi { If (e, t, es, f) }
+                      | -kIf e=pProgram -kThen t=pProgram es=pElif* -kFi { If (e, t, es, Skip) } ),
+  pCall =
+    memo $ eta syntax ( f=lident xs=inbr [s("("), list0 (pProgram), s(")")] { Call (f, xs) } ),
+  pSubscript =
+    memo $ eta syntax ( a=$(pVar | pSubscript) i=inbr[s("["), pProgram, s("]")] { Subscript (a, i) } ),
+  pBinopArg =
+    memo $ pConst | pString | pArray | pSexp | pVar | pScoped | pIf | pCall | pSubscript,
+  pOp =
+    memo $ eta syntax ( op=kBinop arg=pBinopArg { [op, arg] } ),
+  pBinop =
+    memo $ eta syntax ( l=pBinopArg ops=pOp+ { Binop (l, ops) } ),
+  pWhile =
+    memo $ eta syntax ( -kWhile e=pProgram -kDo a=pProgram -kOd { While (e, a) } ),
+  pDoWhile =
+    memo $ eta syntax ( -kDo a=pProgram -kWhile e=pProgram -kOd { DoWhile (a, e) } ),
+  pFor =
+    memo $ eta syntax ( -kFor i=pProgram -s[","] c=pProgram -s[","] f=pProgram -kDo a=pProgram -kOd
+                        { For (i, c, f, a) } ),
+  pVDefnEmpty =
+    memo $ eta syntax ( x=lident { VDefnEmpty (x) } ),
+  pAssnExpr =
+    memo $ pBinop | pBinopArg,
+  pVDefnAssn =
+    memo $ eta syntax ( x=lident s["="] e=pAssnExpr { VDefnAssn (x, e) } ),
+  pVDefnSingle =
+    memo $ pVDefnEmpty | pVDefnAssn,
+  pVDefn =
+    memo $ eta syntax ( -kVar xs=list[pVDefnSingle] { VDefn (xs) } ),
+  pFunDefn =
+    memo $ eta syntax ( -kFun f=lident args=inbr[s("("), list0 (lident), s(")")] -s["{"] b=pProgram -s["}"]
+                        { FunDefn (f, args, b) } ),
+  pSeqSC =
+    memo $ pConst | pString | pArray | pSexp | pVar | pSkip | pScoped | pIf | pCall | pSubscript | pBinop | pWhile | pDoWhile | pFor | pVDefn,
+  pSeqNoSC =
+    pFunDefn,
+  pSeqStep =
+    memo $ eta syntax ( pSeqSC -s[";"] | pSeqNoSC ),
+  pSeqEnd =
+    memo $ eta syntax ( pSeqSC | pSeqNoSC ),
+  pSeq =
+    memo $ eta syntax ( fs=pSeqStep* ls=pSeqEnd { Seq (fs +++ {ls}) } ),
+  pProgram = pSeq,
+  pFullProgram = pSeq |> bypass (end);
  
-var primary    = memo $ eta syntax (
-                                      -- array constant
-                                      loc=pos x=inbr[s("["), list0(syntax (e=exp {e(Val)})), s("]")] {fun (a) {assertValue (a, Array (x), loc)}}    |
-                                      
-                                      -- string constant
-                                      loc=pos x=strlit                                               {fun (a) {assertValue (a, String (x), loc)}}   |
-                                      
-                                      -- character literal
-                                      loc=pos x=chrlit                                               {fun (a) {assertValue (a, Const (x), loc)}}    |
-                                      
-                                      -- decimal constant
-                                      loc=pos x=decimal                                              {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
 
-                                      -- identifier
-                                      x=lident args=inbr[s("("), list0(syntax(e=exp {e(Val)})), s(")")]? {fun (a) {
-                                                                                                            case args of
-                                                                                                              None -> case a of
-                                                                                                                        Ref  -> Ref (x)
-                                                                                                                      | Void -> Ignore (Var (x))
-                                                                                                                      | _    -> Var (x)
-                                                                                                                      esac
-                                                                                                            | Some (args) -> assertValue (a, Call (x, args))
-                                                                                                            esac
-                                                                                                         }} |
+fun codegen (p) {
+  fun immediateDefns (p) {
+    fun splitAsns (ds) {
+      fun g ([ds, as], d) {
+        case d of
+          VDefnEmpty (x) -> [VDefnEmpty (x) : ds, as]
+        | VDefnAssn (x, e) -> [VDefnEmpty (x) : ds, Binop (Var (x), {[":=", e]}) : as]
+        esac
+      }
+      foldr (g, [{}, {}], ds)
+    }
+    case p of
+      Seq (es) ->
+        fun f (acc@[b, ds, as, rs], c) {
+          case [b, c] of
+            [True, _] ->
+              [b, ds, as, c : rs]
+          | [_, VDefn (defns)] ->
+              case splitAsns (defns) of
+                [defns, assns] ->
+                  [b, VDefn (defns) : ds, assns +++ as, rs]
+              esac
+          | [_, FunDefn (_, _, _)] ->
+              [b, c : ds, as, rs]
+          | _  ->
+              [True, ds, as, c : rs]
+          esac
+        }
+        case foldl (f, [False, {}, {}, {}], es) of
+          [_, ds, as, rs] ->
+            case as.reverse +++ rs.reverse of
+              {} -> [ds, Skip]
+            | rs -> [ds, Seq (rs)]
+            esac
+        esac
+    | VDefn (defns) ->
+        case splitAsns (defns) of
+          [defns, {}] ->
+            [VDefn (defns), Skip]
+        | [defns, assns] ->
+            [VDefn (defns), Seq (assns)]
+        esac
+    | FunDefn (_, _, _) -> [{p}, Skip]
+    | a -> [{}, a]
+    esac
+  }
 
-                                      -- S-expression
-                                      loc=pos x=uident args=inbr[s("("), list0(syntax(e=exp {e(Val)})), s(")")]? {fun (a) {assertValue (a, Sexp (x, case args of
-                                                                                                                                                      None        -> {}
-                                                                                                                                                    | Some (args) -> args
-                                                                                                                                                    esac), loc)}} |
-                                      $(failure ("the rest of primary parsing in not implemented\n"))),
-      basic      = memo $ eta (expr ({[Right, {[s (":="),
-                                                fun (l, loc, r) {
-                                                  fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
-                                              }]}],
-                                      [Left , map (binop, {"!!"})],
-                                      [Left , map (binop, {"&&"})],
-                                      [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
-                                      [Left , map (binop, {"+", "-"})],
-                                      [Left , map (binop, {"*", "/", "%"})]
-                                     },
-                                     postfix)),
-      postfix    = memo $ eta syntax (loc=pos e=primary ps=(i=inbr[s("["), exp, s("]")] {Index (i (Val))})* {fun (a) {foldl (fun (e, p) {                                                                                                                                                    case p of                                                                                   
-                                                                                   Index (i) ->
-                                                                                     fun (a) {
-                                                                                       case a of
-                                                                                         Ref -> ElemRef (e (Val), i)
-                                                                                       | _   -> assertValue (a, Elem (e (Val), i), loc)
-                                                                                       esac
-                                                                                     }
-                                                                                 esac                                                                            
-                                                                               }, e, ps) (a)
-                                                              }}
-                                     ),
-      scopeExpr  = memo $ eta syntax (ds=definition* e=exp? {fun (a) {fun (e) {
-                                                                        case ds of
-                                                                          {} -> e
-                                                                        | _  -> expandScope (ds, e) 
-                                                                        esac
-                                                                      } (case e of 
-                                                                           Some (e) -> e (a)
-                                                                         | _        -> Skip
-                                                                         esac)
-                                                                      }}),
-      definition = memo $ eta syntax (kVar ds=list[syntax (lident (s["="] e=basic {e (Val)})?)] s[";"] {Var (ds)} |
-                                      kVal ds=list[syntax (lident (s["="] e=basic {e (Val)}))]  s[";"] {Val (ds)} |
-                                      kFun name=lident
-                                           args=inbr[s("("), list0 (lident), s(")")]
-                                           body=inbr[s("{"), scopeExpr, s("}")] {
-                                           Fun (name, args, body (Weak))
-                                      }
-                                     ),                                    
-      exp        = memo $ eta syntax (basic | s1=basic s[";"] s2=exp {fun (a) {Seq (s1 (Void), s2 (a))}});
+  fun expandScopes (p) {
+    case p of
+      Scoped (e) ->
+        Scoped (expandScopes (e))
+    | Array (args) ->
+        Array (map (expandScopes, args))
+    | If (c, t, es, f) ->
+        If
+          ( expandScopes (c)
+          , expandScopes (t)
+          , map (fun ([c, t]) { [expandScopes (c), expandScopes (t)] }, es)
+          , expandScopes (f)
+          )
+    | Call (f, as) ->
+        Call (f, map (expandScopes, as))
+    | Sexp (c, args) ->
+        Sexp (c, map (expandScopes, args))
+    | Subscript (a, i) ->
+        Subscript (expandScopes (a), expandScopes (i))
+    | Read (e) ->
+        Read (expandScopes (e))
+    | Write (e) ->
+        Write (expandScopes (e))
+    | Binop (l, ops) ->
+        Binop
+          ( expandScopes (l)
+          , map (fun ([op, r]) { [op, expandScopes (r)] }, ops)
+          )
+    | While (c, a) ->
+        While (expandScopes (c), expandScopes (a))
+    | DoWhile (a, c) ->
+        case immediateDefns (a) of
+          [ds, rs] -> Seq (ds +++ {DoWhile (expandScopes (rs), expandScopes (c))})
+        esac
+    | For (i, c, f, a) ->
+        case immediateDefns (i) of
+          [ds, rs] ->
+            Seq
+              (ds +++
+               { For
+                  ( expandScopes (rs)
+                  , expandScopes (c)
+                  , expandScopes (f)
+                  , expandScopes (a)
+                  )
+               })
+        esac
+    | Seq (es) ->
+        fun f (acc, e) {
+          case expandScopes (e) of
+            Seq (ies) -> reverse (ies) +++ acc
+          | ie        -> ie : acc
+          esac
+        }
+        Seq (foldl (f, {}, es).reverse)
+    | VDefn (ds) ->
+        fun f (d) {
+          case d of
+            VDefnEmpty (x) -> VDefnEmpty (x)
+          | VDefnAssn (x, e) -> VDefnAssn (x, expandScopes (e))
+          esac
+        }
+        VDefn (map (f, ds))
+    | FunDefn (f, xs, b) ->
+        FunDefn (f, xs, expandScopes (b))
+    | a -> a
+    esac
+  }
+
+  fun mkSeq (e) {
+    case e of
+      Seq (e) -> Seq (e)
+    | a -> Seq ({a})
+    esac
+  }
+
+  fun makeScopes (p) {
+    case p of
+      Seq (es) ->
+        fun f ([ds, rs], e) {
+          case e of
+            Scoped (e) ->
+              [ds, makeScopes (mkSeq (e)) : rs]
+          | Array (elems) ->
+              [ds, Array (map (fun (elem) { makeScopes (mkSeq (elem)) }, elems)) : rs]
+          | Sexp (c, args) ->
+              [ds, Sexp (c, map (fun (arg) { makeScopes (mkSeq (arg)) }, args)) : rs]
+          | If (c, t, es, f) ->
+              [ ds
+              , If
+                  ( makeScopes (mkSeq (c))
+                  , makeScopes (mkSeq (t))
+                  , map (fun ([c, t]) { [makeScopes (mkSeq (c)), makeScopes (mkSeq (t))] }, es)
+                  , makeScopes (mkSeq (f))
+                  )
+                : rs
+              ]
+          | Call (e, as) ->
+              [ds, Call (e, map (fun (a) { makeScopes (mkSeq (a)) }, as)) : rs]
+          | Subscript (a, i) ->
+              [ds, Subscript (makeScopes (mkSeq (a)), makeScopes (mkSeq (i))) : rs]
+          | Read (e) ->
+              [ds, Read (makeScopes (mkSeq (e))) : rs]
+          | Write (e) ->
+              [ds, Write (makeScopes (mkSeq (e))) : rs]
+          | Binop (l, as) ->
+              [ ds
+              , Binop
+                  ( makeScopes (mkSeq (l))
+                  , map (fun ([op, r]) { [op, makeScopes (mkSeq (r))] }, as)
+                  )
+                : rs
+              ]
+          | While (c, a) ->
+              [ds, While (makeScopes (mkSeq (c)), makeScopes (mkSeq (a))) : rs]
+          | DoWhile (a, c) ->
+              [ds, DoWhile (makeScopes (mkSeq (a)), makeScopes (mkSeq (c))) : rs]
+          | For (i, c, f, a) ->
+              [ds,
+                For
+                  ( makeScopes (mkSeq (i))
+                  , makeScopes (mkSeq (c))
+                  , makeScopes (mkSeq (f))
+                  , makeScopes (mkSeq (a))
+                  )
+                : rs
+              ]
+          | Seq (_) ->
+              failure ("seq in seq (likely there's a bug in expandScopes)\n")
+          | VDefn (defns) ->
+              fun f ([ds, as], p) {
+                case p of
+                  VDefnEmpty (x) -> [VDefn (x) : ds, as]
+                | VDefnAssn (x, e) -> [VDefn (x) : ds, Binop (Var (x), {[":=", makeScopes (mkSeq (e))]}) : as]
+                esac
+              }
+              case foldl (f, [{}, {}], defns) of
+                [nds, as] -> [nds +++ ds, as +++ rs]
+              esac
+          | FunDefn (f, xs, b) ->
+              [FunDefn (f, xs, makeScopes (mkSeq (b))) : ds, rs]
+          | a -> [ds, a : rs]
+          esac
+        }
+
+        case foldl (f, [{}, {}], es) of
+          [ds, es] -> Scope (ds.reverse, Seq (es.reverse))
+        esac
+    | Skip -> Skip
+    | _ -> failure ("ill-formed program %s", p.string)
+    esac
+  }
+
+  fun binopToExpr (b) {
+    fun mkOp (op, l, r) {
+      case op of
+        ":=" -> Assn(l, r)
+      | op   -> Binop (op, l, r)
+      esac
+    }
+
+    fun elem (e, es) {
+      case es of
+        {}  -> 0
+      | h:t -> (compare(e, h) == 0) !! elem (e, t)
+      esac
+    }
+
+    fun leftAssoc (l, rs, ops, t) {
+      case rs of
+        {} -> rec (l, t)
+      | [op, r]:rs ->
+          if elem (op, ops)
+          then mkOp (op, rec (l, t), leftAssoc (r, rs, ops, t))
+          else
+            case l of
+              Binop (l, lrs) -> leftAssoc (Binop (l, lrs +++ {[op, r]}), rs, ops, t)
+            | l              -> leftAssoc (Binop (l, {[op, r]}), rs, ops, t)
+            esac
+          fi
+      esac
+    }
+
+    fun rightAssoc (l, rs, ops, t) {
+      fun split (l, ls, rs, ops) {
+        case rs of
+          {} -> None
+        | [op, r]:rs ->
+            case split (l, ls +++ {[op, r]}, rs, ops) of
+              Some (l, ls, rs) -> Some (l, ls, rs)
+            | None ->
+              if elem (op, ops)
+              then Some (l, ls, [op,r]:rs)
+              else None
+              fi
+            esac
+        esac
+      }
+
+      case split (l, {}, rs, ops) of
+        Some (l, ls, [op, r]:rs) -> mkOp (op, rightAssoc (l, ls, ops, t), rec (Binop (r, rs), t))
+      | None -> rec (Binop (l, rs), t)
+      esac
+    }
+
+    fun rec (b, ops) {
+      case b of
+        Binop (l, rs) ->
+          case ops of
+            {} ->
+              case rs of
+                {}         -> l
+              | [op, r]:rs -> failure ("unknown binop %s", op)
+              esac
+          | [Left, ops]:t  -> leftAssoc (l, rs, ops, t)
+          | [Right, ops]:t -> rightAssoc (l, rs, ops, t)
+          esac
+      | a -> a
+      esac
+    }
+
+    var ops =
+      {[Left,  {":="}],
+       [Right, {"&&", "!!"}],
+       [Right, {"<", ">", "<=", ">=", "==", "!="}],
+       [Right, {"+", "-"}],
+       [Right, {"*", "/", "%"}]};
+
+    rec (b, ops)    
+  }
+
+  fun toExpr (p) {
+    fun finalizeBinops (e) {
+      case e of
+        Assn (l, r)      -> Assn (finalizeBinops (l), finalizeBinops (r))
+      | Binop (op, l, r) -> Binop (op, finalizeBinops (l), finalizeBinops (r))
+      | e                -> toExpr (e)
+      esac
+    }
+
+    case p of
+      Const (n) ->
+        Const (n)
+    | Var (x) ->
+        Var (x)
+    | String (s) ->
+        String (s)
+    | Array (args) ->
+        Array (map (toExpr, args))
+    | Skip ->
+        Skip
+    | Scope (ds, e) ->
+        fun f (d) {
+          case d of
+            VDefn (x) -> VDefn (x)
+          | FunDefn (f, args, b) -> FunDefn (f, args, toExpr (b))
+          esac
+        }
+        Scope (map (f, ds), toExpr (e))
+    | If (c, t, es, f) ->
+        fun rec (es) {
+          case es of
+            {}          -> toExpr (f)
+          | [c, t] : es -> If (toExpr (c), toExpr (t), rec (es))
+          esac
+        }
+        If (toExpr (c), toExpr (t), rec (es))
+    | Call (f, args) ->
+        Call (f, map (toExpr, args))
+    | Sexp (c, args) ->
+        Sexp (c, map (toExpr, args))
+    | Subscript (a, i) ->
+        Subscript (toExpr (a), toExpr (i))
+    | Read (e) ->
+        Read (toExpr (e))
+    | Write (e) ->
+        Write (toExpr (e))
+    | Binop (l, rs) ->
+        finalizeBinops (binopToExpr (Binop (l, rs)))
+    | While (c, a) ->
+        While (toExpr (c), toExpr (a))
+    | DoWhile (a, c) ->
+        DoWhile (toExpr (a), toExpr (c))
+    | For (i, c, f, a) ->
+        Seq (toExpr (i), While (toExpr (c), Seq (toExpr (a), toExpr (f))))
+    | Seq (es) ->
+        case es.reverse of
+          {}   -> Skip
+        | e:es -> foldl (fun (a, b) { Seq (toExpr (b), a) }, toExpr (e), es)
+        esac
+    esac
+  }
+
+  var pExpanded = expandScopes (p);
+  var pScoped = makeScopes (pExpanded);
+  var pExpr = toExpr (pScoped);
+
+  pExpr
+}
+
+fun typecheck (p) {
+  fun workAll (exps, typ) {
+    case exps of
+      {} -> Succ ({})
+    | e:exps ->
+        case work (e, typ) of
+          Succ (e) ->
+            case workAll (exps, typ) of
+              Succ (exps) -> Succ (e : exps)
+            | Fail        -> Fail
+            esac
+        | Fail -> Fail
+        esac
+    esac
+  }
+
+  -- как же иногда хочется простого человеческого foldM
+  fun workDefs (ds) {
+    fun workDef (d) {
+      case d of
+        VDefn (x) -> Succ (VDefn (x))
+      | FunDefn (f, args, body) ->
+          case work (body, Weak) of
+            Succ (body) -> Succ (FunDefn (f, args, body))
+          | Fail        -> Fail
+          esac
+      esac
+    }
+
+    case ds of
+      {} -> Succ ({})
+    | d:ds ->
+        case workDef (d) of
+          Succ (d) ->
+            case workDefs (ds) of
+              Succ (ds) -> Succ (d : ds)
+            | Fail      -> Fail
+            esac
+        | Fail -> Fail
+        esac
+    esac
+  }
+
+  fun work (p, typ) {
+     case typ of
+       Void ->
+         case p of
+           Var (x) ->
+             Succ (Ignore (Var (x)))
+         | Const (n) ->
+             Succ (Ignore (Const (n)))
+         | String (s) ->
+             Succ (Ignore (String (s)))
+         | Array (elems) ->
+             case workAll (elems, Val) of
+               Succ (elems) -> Succ (Ignore (Array (elems)))
+             | _            -> Fail
+             esac
+         | Sexp (c, args) ->
+             case workAll (args, Val) of
+               Succ (args) -> Succ (Ignore (Sexp (args)))
+             | _           -> Fail
+             esac
+         | Binop (op, lhs, rhs) ->
+             case {work (lhs, Val), work (rhs, Val)} of
+               {Succ (lhs), Succ (rhs)} -> Succ (Ignore (Binop (op, lhs, rhs)))
+             | _                        -> Fail
+             esac
+         | Assn (x, e) ->
+             case work (e, Val) of
+               Fail -> Fail
+             | Succ (e) ->
+                 case work (x, Ref) of
+                   Succ (x) -> Succ (Ignore (Assn (x, e)))
+                 | Fail ->
+                     case work (x, ElemRef) of
+                       Succ (x) -> Succ (Ignore (AssnElem (x, e)))
+                     | Fail     -> Fail
+                     esac
+                 esac
+             esac
+         | Read (x) ->
+             case work (x, Ref) of
+               Succ (x) -> Succ (Read (x))
+             | _        -> Fail
+             esac
+         | Skip -> Succ (Skip)
+         | Write (e) ->
+             case work (e, Val) of
+               Succ (e) -> Succ (Write (e))
+             | _        -> Fail
+             esac
+         | Call (f, args) ->
+             case workAll (args, Val) of
+               Succ (args) -> Succ (Ignore (Call (f, args)))
+             | _           -> Fail
+             esac
+         | Subscript (a, i) ->
+             case {work (a, Val), work (i, Val)} of
+               {Succ (a), Succ (i)} -> Succ (Ignore (Subscript (a, i)))
+             | _                    -> Fail
+             esac
+         | Seq (lhs, rhs) ->
+             case {work (lhs, Void), work (rhs, Void)} of
+               {Succ (lhs), Succ (rhs)} -> Succ (Seq (lhs, rhs))
+             | _                        -> Fail
+             esac
+         | If (e, t, f) ->
+             case {work (e, Val), work (t, Void), work (f, Void)} of
+               {Succ (e), Succ (t), Succ (f)} -> Succ (If (e, t, f))
+             | _                              -> Fail
+             esac
+         | While (e, s) ->
+             case {work (e, Val), work (s, Void)} of
+               {Succ (e), Succ (s)} -> Succ (While (e, s))
+             | _                    -> Fail
+             esac
+         | DoWhile (s, e) ->
+             case {work (s, Void), work (e, Val)} of
+               {Succ (s), Succ (e)} -> Succ (DoWhile (s, e))
+             | _                    -> Fail
+             esac
+         | Scope ({}, e) ->
+             work (e, Void)
+         | Scope (ds, e) ->
+             case {workDefs (ds), work (e, Void)} of
+               {Succ (ds), Succ (p)} -> Succ (Scope (ds, p))
+             | _                     -> Fail
+             esac
+         | _ -> Fail
+         esac
+     | Ref ->
+         case p of
+           Var (x) ->
+             Succ (Ref (Var (x)))
+         | Seq (lhs, rhs) ->
+             case {work (lhs, Void), work (rhs, Ref)} of
+               {Succ (l), Succ (r)} -> Succ (Seq (l, r))
+             | _                    -> Fail
+             esac
+         | If (e, t, f) ->
+             case {work (e, Val), work (t, Ref), work (f, Ref)} of
+               {Succ (e), Succ (t), Succ (f)} -> Succ (If (e, t, f))
+             | a                              -> Fail
+             esac
+         | Scope ({}, e) ->
+             work (e, Ref)
+         | Scope (ds, e) ->
+             case {workDefs (ds), work (e, Ref)} of
+               {Succ (ds), Succ (p)} -> Succ (Scope (ds, p))
+             | _                     -> Fail
+             esac
+         | _ -> Fail
+         esac
+     | ElemRef ->
+         case p of
+           Seq (lhs, rhs) ->
+             case {work (lhs, Void), work (rhs, ElemRef)} of
+               {Succ (l), Succ (r)} -> Succ (Seq (l, r))
+             | _                    -> Fail
+             esac
+         | Subscript (a, i) ->
+             case {work (a, Val), work (i, Val)} of
+               {Succ (a), Succ (i)} -> Succ (ElemRef (Subscript (a, i)))
+             | _                    -> Fail
+             esac
+         | If (e, t, f) ->
+             case {work (e, Val), work (t, ElemRef), work (f, ElemRef)} of
+               {Succ (e), Succ (t), Succ (f)} -> Succ (If (e, t, f))
+             | a                              -> Fail
+             esac
+         | Scope ({}, e) ->
+             work (e, ElemRef)
+         | Scope (ds, e) ->
+             case {workDefs (ds), work (e, ElemRef)} of
+               {Succ (ds), Succ (p)} -> Succ (Scope (ds, p))
+             | _                     -> Fail
+             esac
+         | _ -> Fail
+         esac
+     | Val ->
+         case p of
+           Var (x) ->
+             Succ (Var (x))
+         | Const (n) ->
+             Succ (Const (n))
+         | String (s) ->
+             Succ (String (s))
+         | Array (elems) ->
+             case workAll (elems, Val) of
+               Succ (elems) -> Succ (Array (elems))
+             | Fail         -> Fail
+             esac
+         | Binop (op, lhs, rhs) ->
+             case {work (lhs, Val), work (rhs, Val)} of
+               {Succ (lhs), Succ (rhs)} -> Succ (Binop (op, lhs, rhs))
+             | _                        -> Fail
+             esac
+         | Assn (x, e) ->
+             case work (e, Val) of
+               Fail -> Fail
+             | Succ (e) ->
+                 case work (x, Ref) of
+                   Succ (x) -> Succ (Assn (x, e))
+                 | Fail ->
+                     case work (x, ElemRef) of
+                       Succ (x) -> Succ (AssnElem (x, e))
+                     | Fail -> Fail
+                     esac
+                 esac
+             esac
+         | Seq (lhs, rhs) ->
+             case {work (lhs, Void), work (rhs, Val)} of
+               {Succ (lhs), Succ (rhs)} -> Succ (Seq (lhs, rhs))
+             | _                        -> Fail
+             esac
+         | If (e, t, f) ->
+             case {work (e, Val), work (t, Val), work (f, Val)} of
+               {Succ (e), Succ (t), Succ (f)} -> Succ (If (e, t, f))
+             | _                              -> Fail
+             esac
+         | Call (f, args) ->
+             case workAll (args, Val) of
+               Succ (args) -> Succ (Call (f, args))
+             | Fail        -> Fail
+             esac
+         | Sexp (c, args) ->
+             case workAll (args, Val) of
+               Succ (args) -> Succ (Sexp (c, args))
+             | Fail        -> Fail
+             esac
+         | Subscript (a, i) ->
+             case {work (a, Val), work (i, Val)} of
+               {Succ (a), Succ (i)} -> Succ (Subscript (a, i))
+             | Fail                 -> Fail
+             esac
+         | Scope ({}, e) ->
+             work (e, Val)
+         | Scope (ds, e) ->
+             case {workDefs (ds), work (e, Val)} of
+               {Succ (ds), Succ (p)} -> Succ (Scope (ds, p))
+             | _                     -> Fail
+             esac
+         | _ -> Fail
+         esac
+     | Weak ->
+         case work (p, Val) of
+           Succ (p) -> Succ (p)
+         | Fail     ->
+             case work (p, Void) of
+               Succ (p) -> Succ (Seq (p, Const (0)))
+             | Fail     -> Fail
+             esac
+         esac
+     esac
+  }
+
+  var res =
+    case p of
+      Scope (ds, e) ->
+        case {workDefs (ds), work (e, Weak)} of
+          {Succ (ds), Succ (e)} -> Succ (Scope (ds, e))
+        esac
+    esac;
+  -- printf ("%s\n", p.string);
+  -- printf ("%s\n", res.string);
+
+  fun (k) {
+    fun (s) {
+      k (case res of
+           Succ (p) -> Succ (p, s)
+         | Fail     -> Fail ("typecheck failed", 0, 0)
+         esac)
+    }
+  }
+}
 
 -- Public top-level parser
-public parse = syntax (s=scopeExpr {s (Void)});
+public parse = (pFullProgram @ codegen) |> typecheck;
