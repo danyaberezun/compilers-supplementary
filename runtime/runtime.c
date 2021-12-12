@@ -195,6 +195,8 @@ void* Barray (int n0, ...) {
 
   __post_gc ();
 
+  printf(" with real address ==> %p\n", r->contents); fflush (stdout);
+
   return r->contents;
 }
 
@@ -557,6 +559,7 @@ static size_t SPACE_SIZE = 8;
 # define POOL_SIZE (2*SPACE_SIZE)
 
 static void init_space (pool *p, size_t *mem, size_t size, size_t offset) {
+  assert (offset <= size);
   p->begin = mem;
   p->current = mem + offset;
   p->end = mem + size;
@@ -568,7 +571,7 @@ static void allocate_and_init_space (pool *p, size_t size) {
   static int access = PROT_READ | PROT_WRITE;
 
   size_t *mem = (size_t *) mmap (NULL, size * sizeof (size_t), access, flags, -1, 0);
-  if (mem == MAP_FAILED) {
+  if ((void *) mem == MAP_FAILED) {
     perror ("Cannot allocate enough memory to init a space.");
     exit (1);
   }
@@ -578,7 +581,7 @@ static void allocate_and_init_space (pool *p, size_t size) {
 // @free_pool frees memory pool p
 static int free_space (pool *p) {
   int result = munmap (p->begin, p->size * sizeof (size_t));
-  if (result != 0) {
+  if ((void *) result == MAP_FAILED) {
     perror ("Cannot free allocated memory.");
     exit (1);
   }
@@ -594,7 +597,6 @@ static void gc_swap_spaces (void) {
   pool tmp = from_space;
   from_space = to_space;
   to_space = tmp;
-  free_space (&to_space);
 }
 
 // checks if @p is a valid pointer to the active (from-) space
@@ -612,13 +614,6 @@ static void gc_swap_spaces (void) {
 # define IS_FORWARD_PTR(p)			\
   (!UNBOXED(p) && IN_PASSIVE_SPACE(p))
 
-# define EXTRA_ROOTS_LIMIT 100
-
-static struct {
-  int size;
-  void **roots[EXTRA_ROOTS_LIMIT];
-} extra_roots;
-
 extern void gc_test_and_copy_root (size_t ** root);
 extern size_t * gc_copy (size_t *obj);
 
@@ -635,18 +630,25 @@ static void copy_elements (size_t *where, size_t *from, int len) {
   for (int i = 0; i < len; i++, from++, where++) {
     size_t current = *from;
     if (IS_VALID_HEAP_POINTER ((size_t *) current)) {
+      printf ("from copy_elements: %p\n", (size_t *) current); fflush (stdout);
       *where = (size_t) gc_copy ((size_t *) current);
+      assert (IN_PASSIVE_SPACE ((size_t *) *where));
     } else {
       *where = current;
     }
   }
 }
 
+static void advance_to_space (size_t size) {
+  to_space.current += size;
+  assert (to_space.current <= to_space.end);
+}
+
 // @extend_spaces extends size of to_space
 static void extend_to_space (void) { 
   size_t size = to_space.size;
   size_t *mem = (size_t *) mremap (to_space.begin, size * sizeof (size_t), size * 2 * sizeof (size_t), 0);
-  if (mem == MAP_FAILED) {
+  if ((void *) mem == MAP_FAILED) {
     perror ("Cannot extend memory space: not enough memory.");
     exit (1);
   }
@@ -659,46 +661,51 @@ static void extend_to_space (void) {
 //   (i.e. moves from from_space to to_space)
 //   , rests a forward pointer, and returns new object location.
 extern size_t * gc_copy (size_t *obj) { 
+  printf ("\n\ncurrent stack %p\n\n", &obj);
   printf ("\nchecking: %p\n", obj); fflush (stdout);
 
-  if (!IS_VALID_HEAP_POINTER (obj)) {
-    return obj;
-  }
+  assert (IS_VALID_HEAP_POINTER (obj));
 
   data *current_data = TO_DATA (obj);
   if (IS_FORWARD_PTR ((size_t *) current_data->tag)) {
     return (size_t *) current_data->tag;
   }
 
+  assert (to_space.current < to_space.end);
+
   size_t *result;
+
+  printf ("tag = %d\n", TAG(current_data->tag)); fflush (stdout);
 
   switch (TAG (current_data->tag)) {
   case ARRAY_TAG: {
     printf ("array\n"); fflush (stdout);
     *to_space.current = current_data->tag;
-    to_space.current++;
+    advance_to_space (1);
 
     result = to_space.current;
 
     size_t elements_space = ELEMS_MEM_SIZE (current_data->tag, sizeof (int));
-    current_data->tag = (int) to_space.current;
-    to_space.current += elements_space;
-    copy_elements (result, obj, elements_space);
+    int length = LEN (current_data->tag); 
+    current_data->tag = (size_t) to_space.current;
+    advance_to_space (elements_space);
+
+    copy_elements (result, obj, length);
     break;
   }
 
   case STRING_TAG: {
     printf ("string\n"); fflush (stdout);
     *to_space.current = current_data->tag;
-    to_space.current++;
+    advance_to_space (1);
 
     result = to_space.current;
 
-    size_t string_space = ELEMS_MEM_SIZE (current_data->tag, sizeof (char)) + 1;
+    size_t string_space = ELEMS_MEM_SIZE (current_data->tag, sizeof (char)) + 1; // TODO + 1
     strcpy ((char *) to_space.current, (char *) obj);
 
-    current_data->tag = (int) to_space.current;
-    to_space.current += string_space;
+    current_data->tag = (size_t) to_space.current;
+    advance_to_space (string_space);
     break;
   }
 
@@ -706,17 +713,17 @@ extern size_t * gc_copy (size_t *obj) {
     printf ("sexp (%p)\n", obj); fflush (stdout);
     sexp *sexpression = TO_SEXP (obj);
     *to_space.current = sexpression->tag;
-    to_space.current++;
+    advance_to_space (1);
     *to_space.current = current_data->tag;
-    to_space.current++;
+    advance_to_space (1);
 
     result = to_space.current;
 
     size_t sexp_space = ELEMS_MEM_SIZE (sexpression->contents.tag, sizeof (size_t));
-    printf ("length = %d\n",  ELEMS_MEM_SIZE (sexpression->contents.tag, sizeof (size_t))); fflush (stdout);
-    current_data->tag = (int) to_space.current;
-    to_space.current += sexp_space;
-    copy_elements (result, obj, sexp_space);
+    int length = LEN (sexpression->contents.tag);
+    current_data->tag = (size_t) to_space.current;
+    advance_to_space (sexp_space);
+    copy_elements (result, obj, length);
     break;
   }
   
@@ -724,6 +731,8 @@ extern size_t * gc_copy (size_t *obj) {
     perror ("Unexpected tag while copying.");
     exit (1);
   }
+
+  printf ("!!!copied: %p\n", result); fflush (stdout);
 
   return result;
 }
@@ -739,13 +748,12 @@ extern void gc_test_and_copy_root (size_t ** root) {
 // @gc_root_scan_data scans static area for root
 //   for each root it calls @gc_test_and_copy_root
 extern void gc_root_scan_data (void) {
-  size_t *current = (size_t *) &__gc_data_start;
+  size_t *start = (size_t *) &__gc_data_start;
   size_t *end = (size_t *) &__gc_data_end;
-  assert (current <= end);
+  assert (start < end);
 
-  while (current != end) {
+  for (size_t *current = start; current < end; current++) {
     gc_test_and_copy_root ((size_t **) current);
-    current++;
   }
 }
 
@@ -754,6 +762,7 @@ extern void gc_root_scan_data (void) {
 extern void init_pool (void) { 
   init_extra_roots ();
   allocate_and_init_space (&from_space, SPACE_SIZE);
+  init_space (&to_space, NULL, 0, 0);
 }
 
 // @gc performs stop-the-world mark-and-copy garbage collection
@@ -771,27 +780,37 @@ static void * gc (size_t size) {
 
   allocate_and_init_space (&to_space, from_space.size);
 
-  printf ("allocated 'to'\n"); fflush (stdout);
+  printf ("\nfrom: %p <---> %p\nto: %p <---> %p\n\n", 
+          from_space.begin, from_space.end, to_space.begin, to_space.end);
+  fflush (stdout);
+
+  printf ("\nallocated 'to'\n"); fflush (stdout);
 
   gc_root_scan_data ();
 
-  printf ("scanned data\n"); fflush (stdout);
+  printf ("\nscanned data\n"); fflush (stdout);
 
   __gc_root_scan_stack ();
 
-  printf ("scanned stack\n"); fflush (stdout);
+  printf ("\nscanned stack\n"); fflush (stdout);
 
   scan_extra_roots ();
 
-  printf ("started extra roots\n"); fflush (stdout);
+  printf ("\nstarted extra roots\n"); fflush (stdout);
 
   while (to_space.current + size >= to_space.end) {
     extend_to_space ();
   }
 
-  printf ("extended space\n"); fflush (stdout);
+  printf ("\nextended space\n"); fflush (stdout);
 
   gc_swap_spaces ();
+
+  for (size_t *p = from_space.begin; p <= from_space.current; p++) {
+    assert (!IN_PASSIVE_SPACE ((size_t *) *p));
+  }
+
+  free_space (&to_space);
 
   printf ("ended gc\n"); fflush (stdout);
 
@@ -810,5 +829,6 @@ extern void * alloc (size_t size) {
     from_space.current = gc (space);
   }
   from_space.current += space;
+  assert (from_space.current <= from_space.end);
   return from_space.current - space;
 }
