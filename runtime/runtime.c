@@ -155,11 +155,7 @@ extern void* Bsexp (int bn, ...) {
     
     p = (size_t*) ai;
     ((int*)d->contents)[i] = ai;
-
-    size_t value = 0;
-    if (!UNBOXED (ai)) value = *(size_t *)ai;
   }
-
 
   r->tag = UNBOX(va_arg(args, int));
 
@@ -792,11 +788,10 @@ static void * gc (size_t size) {
 // returns a pointer to the allocated block of size @size
 extern void * alloc (size_t size) {
   size_t space = (size + sizeof (size_t) - 1) / sizeof (size_t);
-
   if (from_space.current + space >= from_space.end) {
     from_space.current = gc (space);
   }
-  // printf ("\nres = %p\n", from_space.current); fflush (stdout);
+
   from_space.current += space;
   assert (from_space.current <= from_space.end);
   return from_space.current - space;
