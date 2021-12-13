@@ -6,7 +6,7 @@ RM=rm -rf
 
 .PHONY: check $(TESTS)
 
-check: $(TESTS) expr_tests
+check: $(TESTS)# expr_tests
 
 $(TESTS): %: %.lama
 	@echo $@
@@ -14,9 +14,9 @@ $(TESTS): %: %.lama
 # @ulimit -s -S 32768; cat $@.input | $(LAMAC) $@.lama -s > $@.log && diff $@.log orig/$@.log
 	$(LAMAC) $@.lama && cat $@.input | ./$@ > $@.log && diff $@.log orig/$@.log
 
-expr_tests:
-	make -C expressions
-	make -C deep-expressions
+# expr_tests:
+# 	make -C expressions
+# 	make -C deep-expressions
 
 clean:
 	$(RM) *.s *.i *~ $(LOGS) $(TESTS) *.run *.sm

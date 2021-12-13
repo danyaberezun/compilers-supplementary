@@ -11,6 +11,49 @@
   exit(1);
 
 extern void nimpl (void) { NIMPL }
+extern void __pre_gc  ();
+extern void __post_gc ();
+extern void* alloc    (size_t);
+
+/* GC extra roots */
+/* All work with extra roots has to be already done */
+# define MAX_EXTRA_ROOTS_NUMBER 32
+typedef struct {
+  int current_free;
+  void ** roots[MAX_EXTRA_ROOTS_NUMBER];
+} extra_roots_pool;
+
+static extra_roots_pool extra_roots;
+
+void clear_extra_roots (void) {
+  extra_roots.current_free = 0;
+}
+
+void push_extra_root (void ** p) {
+  if (extra_roots.current_free >= MAX_EXTRA_ROOTS_NUMBER) {
+    perror ("ERROR: push_extra_roots: extra_roots_pool overflow");
+    exit   (1);
+  }
+  extra_roots.roots[extra_roots.current_free] = p;
+  extra_roots.current_free++;
+}
+
+void pop_extra_root (void ** p) {
+  if (extra_roots.current_free == 0) {
+    perror ("ERROR: pop_extra_root: extra_roots are empty");
+    exit   (1);
+  }
+  extra_roots.current_free--;
+  if (extra_roots.roots[extra_roots.current_free] != p) {
+    perror ("ERROR: pop_extra_root: stack invariant violation");
+    exit   (1);
+  }
+}
+
+static inline void init_extra_roots (void) {
+  extra_roots.current_free = 0;
+}
+/* end extra roots */
 
 # define UNBOXED(x)  (((int) (x)) &  0x0001)
 # define UNBOX(x)    (((int) (x)) >> 1)
@@ -93,7 +136,7 @@ extern void* Bsexp (int bn, ...) {
   data   *d;  
   int n = UNBOX(bn);
 
-  r = (sexp*) malloc (sizeof(int) * (n+1));
+  r = (sexp*) alloc (sizeof(int) * (n+1));
   d = &(r->contents);
   r->tag = 0;
     
@@ -121,7 +164,7 @@ void* Barray (int n0, ...) {
   int     i, ai; 
   data    *r; 
 
-  r = (data*) malloc (sizeof(int) * (n+1));
+  r = (data*) alloc (sizeof(int) * (n+1));
 
   r->tag = ARRAY_TAG | (n << 3);
   
@@ -133,7 +176,6 @@ void* Barray (int n0, ...) {
   }
   
   va_end(args);
-
   return r->contents;
 }
 
@@ -143,11 +185,12 @@ void* Bstring (void *p) {
 
   __pre_gc ();
   push_extra_root (&p);
-  s = (data*) malloc (n + 1 + sizeof (int));
+  s = (data*) alloc (n + 1 + sizeof (int));
   s->tag = STRING_TAG | (n << 3);
   pop_extra_root (&p);
 
   strncpy (s->contents, p, n + 1);
+
   __post_gc ();
   return s->contents;
 }
@@ -439,8 +482,7 @@ extern void Bmatch_failure (void *v, char *fname, int line, int col) {
 /* Where root can be found in: */
 /* 1) Static area. */
 /*   Globals @__gc_data_end and @__gc_data_start are used to idenfity the begin and the end */
-/*   of the static data area. They are defined while generating X86 code in src/X86.ml */
-/*   (function genasm). */
+/*   of the static data area. They are defined while generating X86 code in src/X86.lama. */
 /* 2) Program stack. */
 /*   Globals @__gc_stack_bottom and @__gc_stack_top (see runctime/gc_runtime.s) have to be set */
 /*   as the begin and the end of program stack or its part where roots can be found. */
@@ -453,15 +495,14 @@ extern void Bmatch_failure (void *v, char *fname, int line, int col) {
 /* rest a forward pointer instead of the object, scan object for pointers, call copying */
 /* for each found pointer. */
 
-
-// The begin and the end of static area (are specified in src/X86.ml fucntion genasm)
+// The begin and the end of static area (are specified in src/X86.lama fucntion genasm)
 extern const size_t __gc_data_end, __gc_data_start;
 
 // @L__gc_init is defined in runtime/runtime.s
 //   it sets up stack bottom and calls init_pool
 //   it is called from the main function (see src/X86.lama function compileX86)
 extern void L__gc_init ();
-// @__gc_root_scan_stack (you have to define it in runtime/runtime.s)
+// @__gc_root_scan_stack (you have to define it in runtime/gc_runtime.s)
 //   finds roots in program stack and calls @gc_test_and_copy_root for each found root
 extern void __gc_root_scan_stack ();
 
@@ -493,8 +534,15 @@ static pool   to_space;   // To-space   (passive) semi-heap
 static size_t *current;   // Pointer to the free space begin in active space
 
 // initial semi-space size
-static size_t SPACE_SIZE = 128;
+static size_t SPACE_SIZE = 8;
 # define POOL_SIZE (2*SPACE_SIZE)
+
+// @init_to_space initializes to_space
+// @flag is a flag: if @SPACE_SIZE has to be increased or not
+static void init_to_space (int flag) { NIMPL }
+
+// @free_pool frees memory pool p
+static int free_pool (pool * p) { NIMPL }
 
 // swaps active and passive spaces
 static void gc_swap_spaces (void) { NIMPL }
@@ -540,9 +588,6 @@ extern void gc_root_scan_data (void) { NIMPL }
 // @init_pool is a memory pools initialization function
 //   (is called by L__gc_init from runtime/gc_runtime.s)
 extern void init_pool (void) { NIMPL }
-
-// @free_pool frees memory pool p
-static int free_pool (pool * p) { NIMPL }
 
 // @gc performs stop-the-world mark-and-copy garbage collection
 //   and extends pools (i.e. calls @extend_spaces) if necessarily
