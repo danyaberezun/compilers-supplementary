@@ -70,7 +70,7 @@ static inline void init_extra_roots (void) {
 # define LEN(x) ((x & 0xFFFFFFF8) >> 3)
 # define TAG(x) (x & 0x00000007)
 # define ELEMS_MEM_SIZE(x, y) (((LEN(x) + 1) * y - 1) / sizeof (size_t)) 
-# define IS_TRUE_POINTER(x) ((((size_t) (x)) & 15) == 4 || (((size_t) (x)) & 15) == 8)
+# define IS_TRUE_POINTER(x) ((((size_t) (x)) & 15) == 4)
 
 # define TO_DATA(x) ((data*)((char*)(x)-sizeof(int)))
 # define TO_SEXP(x) ((sexp*)((char*)(x)-2*sizeof(int)))
@@ -663,12 +663,6 @@ static void advance_to_space (size_t size) {
   assert (to_space.current <= to_space.end);
 }
 
-static void fix_to_space_pointer () {
-  while ((size_t) to_space.current % (4 * sizeof (size_t)) != 0) {
-    advance_to_space (1);
-  }
-}
-
 // @extend_spaces extends size of to_space
 static void extend_to_space (void) { 
   size_t size = to_space.size;
@@ -713,7 +707,6 @@ extern size_t * gc_copy (size_t *obj) {
     int length = LEN (current_data->tag); 
     current_data->tag = (size_t) to_space.current;
     advance_to_space (elements_space);
-    fix_to_space_pointer ();
 
     copy_elements (result, obj, length);
     break;
@@ -731,7 +724,6 @@ extern size_t * gc_copy (size_t *obj) {
 
     current_data->tag = (size_t) to_space.current;
     advance_to_space (string_space);
-    fix_to_space_pointer ();
     break;
   }
 
@@ -749,7 +741,6 @@ extern size_t * gc_copy (size_t *obj) {
     int length = LEN (sexpression->contents.tag);
     current_data->tag = (size_t) to_space.current;
     advance_to_space (sexp_space);
-    fix_to_space_pointer ();
 
     copy_elements (result, obj, length);
     break;
@@ -769,7 +760,7 @@ extern size_t * gc_copy (size_t *obj) {
 //   and, if so, calls @gc_copy for each found root
 extern void gc_test_and_copy_root (size_t ** root) {
   // printf ("\ntesting.... %p, probably %p\n", root, *root); fflush (stdout);
-  if (IS_VALID_HEAP_POINTER (*root) && IS_TRUE_POINTER (*root)) {
+  if (IS_VALID_HEAP_POINTER (*root)) {
     *root = gc_copy (*root);
     assert (IN_PASSIVE_SPACE (*root));
   }
@@ -856,9 +847,6 @@ static void * gc (size_t size) {
 extern void * alloc (size_t size) {
   // output_stack ();
   size_t space = (size + sizeof (size_t) - 1) / sizeof (size_t);
-  while (space % 4 != 0) {
-    space++;
-  }
 
   if (from_space.current + space >= from_space.end) {
     from_space.current = gc (space);
