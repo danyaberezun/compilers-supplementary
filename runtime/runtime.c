@@ -706,6 +706,9 @@ extern void init_pool (void) {
 static void * gc (size_t size) { 
   gc_root_scan_data();
   __gc_root_scan_stack();
+  for (int i = 0; i < extra_roots.current_free; i++) {
+    gc_test_and_copy_root(extra_roots.roots[i]);
+  }
 
   while (to_space.current + size > to_space.end) extend_spaces();
 
