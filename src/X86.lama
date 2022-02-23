@@ -6,6 +6,7 @@ import Collection;
 import List;
 import Manifest;
 import Buffer;
+import Expr;
 
 -- Assembler language interface
 -- The registers: 
@@ -23,6 +24,21 @@ var ebx = R (0),
     edx = R (5),
     ebp = R (6),
     esp = R (7);
+
+fun pushAll() {
+  emptyBuffer()
+    <+ Push (ebx)
+    <+ Push (ecx)
+    <+ Push (esi)
+    <+ Push (edi)
+}
+fun popAll() {
+  emptyBuffer()
+    <+ Pop (edi)
+    <+ Pop (esi)
+    <+ Pop (ecx)
+    <+ Pop (ebx)
+}
 
 -- We need to know the word size to calculate offsets correctly
 var wordSize = 4;
@@ -394,9 +410,7 @@ fun move (from, to) {
   fi
 }
 
--- Gets a suffix for Set instruction from
--- source language comparison operator
-fun suffix (op) {
+fun suffixUnsafe (op) {
   case op of
     "<"  -> "l"
   | "<=" -> "le"
@@ -404,50 +418,117 @@ fun suffix (op) {
   | "!=" -> "ne"
   | ">=" -> "ge"
   | ">"  -> "g"
+  | _    -> ""
   esac
+}
+
+-- Gets a suffix for Set instruction from
+-- source language comparison operator
+fun suffix (op) {
+  var r = suffixUnsafe(op);
+  if r == ""
+  then failure("bad suffix " ++ op)
+  else r
+  fi
 }
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  fun compile (env, code) {
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        case i of
-          READ ->
+  foldl (
+    fun ([env, scode], i) {
+      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      case i of
+        READ ->
+          case env.allocate of
+            [s, env] -> [env, code <+> pushAll () <+ Call ("Lread") <+> popAll () <+ Mov (eax, s)]
+          esac
+      | WRITE ->
+          case env.pop of
+            [s, env] -> [env, code <+> pushAll () <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+> popAll ()]
+          esac
+      | ST (x) ->
+          case env.addGlobal (x).pop of
+            [s, env] -> [env, code <+> move(s, env.loc (x)) ]
+          esac
+      | STI    ->
+          case env.pop2 of
+            [v, e, env] ->
+              [env, code <+> move (v, eax) <+> move (e, I (0, eax))]
+          esac
+      | LD (x) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s) ]
+          esac
+      | LDA (x) ->
+          case env.addGlobal (x).allocate of
+            [s, env] -> [env, code <+ Lea (env.loc (x), eax) <+> move (eax, s) ]
+          esac
+      | DROP ->
+          case env.pop of
+            [s, env] -> [env, code]
+          esac
+      | DUP ->
+          case env.peek of v ->
             case env.allocate of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
+              [s, env] -> [env, code <+> move (v, s) ]
             esac
-        (* Assignment *)
-        
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-               
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        (* End *)
-        esac
-      }, [env, emptyBuffer ()], code)
-  }
-
-  compile (env, code) 
+          esac
+      | BINOP (o) ->
+          case env.pop2 of
+            [r, l, env] ->
+              case env.allocate of
+                [a, env] ->
+                  var code0 = code <+ Mov (l, eax);
+                  var codeDiv = code0 <+ Cltd <+ IDiv (r);
+                  var suff = suffixUnsafe(o);
+                  if compare(suff, "") == 0
+                  then
+                    case o of
+                      "/" -> [env, codeDiv <+ Mov (eax, a)]
+                    | "%" -> [env, codeDiv <+ Mov (edx, a)]
+                    | "!!" -> [env, code0 <+ Binop ("!!", r, eax) <+ Binop ("^", edx, edx) <+ Binop ("cmp", edx, eax) <+ Set ("ne", "%dl") <+ Mov (edx, a)]
+                    | "&&" -> [env, code0
+                        <+ Binop ("cmp", L (0), eax) <+ Set ("ne", "%al") <+ Binop ("&&", L (255), eax) <+ Mov (r, edx)
+                        <+ Mov (r, edx) <+ Binop ("cmp", L (0), edx) <+ Set ("ne", "%dl") <+ Binop ("&&", L (255), edx)
+                        <+ Binop ("&&", edx, eax) <+ Mov (eax, a)]
+                    | _   -> [env, code0 <+ Binop (o, r, eax) <+ Mov (eax, a)]
+                    esac
+                  else
+                    [env, code0 <+ Binop ("^", edx, edx) <+ Binop ("cmp", r, eax) <+ Set (suff, "%dl") <+ Mov (edx, a)]
+                  fi
+              esac
+          esac
+      | CONST (c) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move(L (c), s) ]
+          esac
+      | LABEL (l) ->
+          [if env.isBarrier then env.retrieveStack (l) else env fi, code <+ Label (l)]
+      | JMP (l) ->
+          [env.setStack (l).setBarrier, code <+ Jmp (l)]
+      | CJMP (c, lab) ->
+          case env.pop2 of
+            [r, l, env] ->
+              [env.setStack (lab), code <+ Mov (l, eax) <+ Binop ("cmp", r, eax) <+ CJmp (suffix(c), lab)]
+          esac
+      esac
+               -- Some guidelines for generating function calls:
+               --
+               -- 1. generate instructions to save live registers on the X86 stack (use
+               --    env.liveRegisters (number of arguments);
+               -- 2. generate instructions to move actual parameters from the symbolic
+               --    stack to the hardware one;
+               -- 3. generate the call itself;
+               -- 4. discard the actual parameters from the stack;
+               -- 5. restore saved live registers.
+               --
+               -- Some guidelines for generating functions:
+               --
+               -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
+               --    env.enterFunction to create a proper environment;
+               -- 2. generate epilogue for END instruction.
+    }, [env, emptyBuffer ()], code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
