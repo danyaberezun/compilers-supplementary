@@ -3,11 +3,19 @@
 import List;
 import Array;
 import State;
+import Collection;
 import World;
 import Lexer;
 import Parser;
 import Fun;
 import Builtins;
+
+public fun showDbg (x) {
+  var f = fopen("/proc/self/fd/2", "a");
+  fprintf(f, "%s\n", string(x));
+  fclose(f);
+  x
+}
 
 -- As association map which maps "\otimes" into "\oplus"
 var ops = {
@@ -101,16 +109,115 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (c@[st, w], expr) {
+  case expr of
+    Scope (v, s) ->
+      var cont = 1;
+      st := enterScope (st);
+      while cont do
+        case v of
+          {} -> cont := 0
+        | va:vx ->
+            case va of
+              Var (va) -> st := addNames (st, va)
+            | Fun (name, args, body) -> st := addFunction (st, name, args, body)
+            esac;
+            v := vx
+        esac
+      od;
+      case eval([st, w], s) of [c@[st, w], v] ->
+        [[leaveScope (st), w], v]
+      esac
+  | Var (v) -> [c, st.lookup (v)]
+  | Ref (v) -> [c, fun (st, x) { updState(v, x, st) }]
+  | Ignore (e) -> eval(c, e)
+  | Const (i) -> [c, i]
+  | String (x) -> [c, x]
+  | Array (x) -> 
+      case evalList(c, x) of [c, x] -> [c, listArray(x)] esac
+  | Sexp (n, x) -> 
+      case evalList(c, x) of [c, x] -> [c, listArray(x)] esac
+  | Seq (l, r) -> eval(eval (c, l)[0], r)
+  | Binop (s, l, r) ->
+    case eval (c, l) of [c, l] ->
+      case eval (c, r) of [c, r] ->
+        [c, evalOp(s, l, r)]
+      esac
+    esac
+  | Assn (s, e) ->
+      case eval(c, s) of [c, s] ->
+        case eval(c, e) of [c@[st, w], e] ->
+          case s(st, e) of st ->
+            [[st, w], e]
+          esac
+        esac
+      esac
+  | While (e, s) ->
+      var cont = 1;
+      while cont do
+        case eval(c, e) of [cn, v] ->
+          c := cn;
+          if v
+          then c := eval(c, s)[0]
+          else cont := 0
+          fi
+        esac
+      od;
+      [c, 0]
+  | DoWhile (s, e) ->
+      eval(eval(c, s)[0], While (e, s))
+  | If (e, t, f) ->
+      case eval(c, e) of [c, e] ->
+        if e
+        then eval(c, t)
+        else eval(c, f)
+        fi
+      esac
+  | Skip -> [c, 0]
+  | ElemRef (a, i) ->
+      case eval (c, a) of [c, a] ->
+        case eval (c, i) of [c@[st, w], i] ->
+          [c, fun (st, t) { a[i] := t; st }]
+        esac
+      esac
+  | Elem (a, i) ->
+      case eval (c, a) of [c, a] ->
+        case eval (c, i) of [c@[st, w], i] ->
+          [c, a[i]]
+        esac
+      esac
+  | Call (f, eargs) ->
+      case lookup(st, f) of Fun (args, body) ->
+        case evalList(c, eargs) of [c@[st0, w], eargs] ->
+          case body of
+            External ("read") ->
+              case eargs of
+                {} -> case readWorld(w) of [va, w] -> [[st0, w], va] esac
+              esac
+          | External ("write") ->
+              case eargs of
+                {e} -> [[st0, writeWorld(e, w)], 0]
+              esac
+          | External ("length") ->
+              case eargs of
+                {s} -> [[st0, w], length (s)]
+              esac
+          | _ ->
+            var adder = fun (st, [a, v]) { addName (st, a, v) };
+            case eval ([foldl (adder, enterFunction (st0), zip(args, eargs)), w], body) of
+              [[st, w], ret] -> [[leaveFunction (st0, getGlobal (st)), w], ret]
+            esac
+          esac
+        esac
+      esac
+  esac
 }
-
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
-  case eval ([emptyState ().enterScope.addName ("read",   Fun ({}, External))
-                                      .addName ("write",  Fun ({"a"}, External))
-                                      .addName ("length", Fun ({"a"}, External)), createWorld (input)], expr) of
+  case eval ([emptyState ().enterScope.addName ("read",   Fun ({}, External ("read")))
+                                      .addName ("write",  Fun ({"a"}, External ("write")))
+                                      .addName ("length", Fun ({"a"}, External ("length"))), createWorld (input)], expr) of
     [c, _] -> c.snd.getOutput
   esac
 }
