@@ -28,16 +28,16 @@ var ebx = R (0),
 var wordSize = 4;
 
 -- We need to distinguish the following operand types: 
---    R (int)       -- hard register                    
---    S (int)       -- a position on the hardware stack 
---    M (string)    -- a named memory location          
+--    R (int)       -- hard register
+--    S (int)       -- a position on the hardware stack
+--    M (string)    -- a named memory location
 --    L (int)       -- an immediate operand
 --    I (int, opnd) -- an indirect operand with offset
 
 -- Some x86 instruction (we do not need all of them):
 --   Mov   (opnd, opnd)         -- copies a value from the first to the second operand  
 --   Lea   (opnd, opnd)         -- loads an address of the first operand into the second
---   Binop (string, opnd, opnd) -- makes a binary operation; note, the first operand   
+--   Binop (string, opnd, opnd) -- makes a binary operation; note, the first operand
 --                                 designates x86 operator, not the source language one
 --   IDiv  (opnd)               -- x86 integer division, see instruction set reference 
 --   Cltd                       -- see instruction set reference           
@@ -127,7 +127,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
       | R (n) : _ -> if n < nRegs then [R (n+1), stackSlots] else [S (0), 1] fi
       | _         -> [S (0), 1]
       esac
-    of [x, n] -> [x, makeEnv (x : stack, if n > stackSlots then n else stackSlots fi, globals, barrier, stackMap)]esac
+    of [x, n] -> [x, makeEnv (x : stack, if n > stackSlots then n else stackSlots fi, globals, barrier, stackMap)] esac
   }
 
   -- Pushes an item on the symbolic state; returns an updated envirtonment
@@ -155,7 +155,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
   fun peek () {
     stack.fst
   }
-  
+
   -- Adds a global variable; returns an updated environment
   fun addGlobal (name) {
     makeEnv (stack, stackSlots, addSet (globals, globalName (name)), barrier, stackMap)
@@ -338,37 +338,115 @@ fun move (from, to) {
 -- source language comparison operator
 fun suffix (op) {
   case op of
-    "<"  -> "l"
-  | "<=" -> "le"
-  | "==" -> "e"
-  | "!=" -> "ne"
-  | ">=" -> "ge"
-  | ">"  -> "g"
+    "<"  -> Some ("l")
+  | "<=" -> Some ("le")
+  | "==" -> Some ("e")
+  | "!=" -> Some ("ne")
+  | ">=" -> Some ("ge")
+  | ">"  -> Some ("g")
+  | _    -> None
   esac
 }
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  fun compile (env, code) {
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-            esac
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-      }, [env, emptyBuffer ()], code)
+  fun pushRegs () {
+    singletonBuffer (Push (ebx)) <+
+    Push (ecx) <+
+    Push (esi) <+
+    Push (edi)
   }
 
-  compile (env, code) 
+  fun popRegs () {
+    singletonBuffer (Pop (edi)) <+
+    Pop (esi) <+
+    Pop (ecx) <+
+    Pop (ebx)
+  }
+
+  foldl (
+    fun ([env, scode], i) {
+      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      case i of
+        READ         ->
+          case env.allocate of
+            [s, env] -> [env, code <+> pushRegs () <+ Call ("Lread") <+> popRegs () <+ Mov (eax, s)]
+          esac
+      | WRITE        ->
+          case env.pop of
+            [s, env] -> [env, code <+> pushRegs () <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+> popRegs ()]
+          esac
+      | BINOP (op)   ->
+          case env.pop2 of
+            [x, y, env] ->
+              case env.allocate of
+                [s, env] ->
+                  fun divMod (r) {
+                     move (y, eax) <+ Cltd <+ IDiv (x) <+> move (r, s)
+                  }
+
+                  fun boolOp (op) {
+                    fun prepBool (r, rl) {
+                      singletonBuffer (Binop ("cmp", L (0), r)) <+ Set ("nz", rl) <+ Binop ("&&", L (255), r)
+                    }
+                    prepBool (eax, "%al") <+> prepBool (edx, "%dl")
+                  }
+
+                  case op of
+                    "/"  -> [env, code <+> divMod (eax)]
+                  | "%"  -> [env, code <+> divMod (edx)]
+                  | _    -> [env, code <+> move (x, eax) <+> move (y, edx) <+>
+                    case op.suffix of
+                        Some (suf) ->
+                          singletonBuffer (Binop ("cmp", eax, edx)) <+ Set (suf, "%dl") <+ Binop ("&&", L (255), edx)
+                      | None       -> 
+                          case op of 
+                            "!!" -> boolOp (op)
+                          | "&&" -> boolOp (op)
+                          | _    -> emptyBuffer ()
+                          esac <+ Binop (op, eax, edx)
+                    esac <+ Mov (edx, s)]
+                  esac
+              esac
+          esac
+      | LD    (v)    ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (env.loc (v), s)]
+          esac
+      | LDA   (v)    ->
+          case env.allocate of
+            [s, env] -> [env, code <+ Lea (env.loc (v), eax) <+> move (eax, s)]
+          esac
+      | ST    (v)    ->
+          case env.addGlobal (v).pop of
+            [s, env] -> [env, code <+> move (s, env.loc (v))]
+          esac
+      | STI          ->
+          case env.pop2 of
+            [s, v, env] -> [env, code <+> move (s, eax) <+> move (v, I (0, eax))]
+          esac
+      | CONST (x)    ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (L (x), s)]
+          esac
+      | LABEL (l)    -> [if env.isBarrier then env.retrieveStack (l) else env fi, code <+ Label (l)]
+      | JMP   (l)    -> [env.setStack (l).setBarrier, code <+ Jmp (l)]
+      | CJMP  (c, l) ->
+          case env.pop of
+            [s, env] -> [env.setStack (l), code <+ Binop ("cmp", L (0), s) <+ CJmp (c, l)]
+          esac
+      | DUP          ->
+          var x = env.peek;
+          case env.allocate of
+            [s, env] -> [env, code <+> move (x, s)]
+          esac
+      | DROP         -> 
+          case env.pop of
+            [_, env] -> [env, code]
+          esac
+      esac
+    }, [env, emptyBuffer ()], code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
