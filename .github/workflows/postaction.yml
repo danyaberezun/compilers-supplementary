@@ -1,0 +1,104 @@
+name: PostAction
+
+on:
+  workflow_run:
+    workflows: ["Regression"]
+    types:
+      - completed
+
+jobs:
+  job2:
+    runs-on: ubuntu-latest
+    if: >
+      ${{ github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      output_id_number: ${{ steps.step1.outputs.id }}
+    steps:
+      - name: 'Download artifact'
+        uses: actions/github-script@v3.1.0
+        with:
+          script: |
+            console.log(${{ github.event.workflow_run.id }});
+            var artifacts = await github.actions.listWorkflowRunArtifacts({
+               owner: context.repo.owner,
+               repo: context.repo.repo,
+               run_id: ${{ github.event.workflow_run.id }},
+            });
+            var matchArtifact = artifacts.data.artifacts.filter((artifact) => {
+              return artifact.name == "share_info";
+            })[0];
+            var download = await github.actions.downloadArtifact({
+               owner: context.repo.owner,
+               repo: context.repo.repo,
+               artifact_id: matchArtifact.id,
+               archive_format: 'zip',
+            });
+            var fs = require('fs');
+            fs.writeFileSync('${{ github.workspace }}/share_info.zip', Buffer.from(download.data));
+
+      - run: unzip share_info.zip
+      - run: |
+          echo "assignment=$(cat assignment_number.txt)" >> $GITHUB_ENV
+          echo "login=$(cat gitid.txt)" >> $GITHUB_ENV
+          echo "base=$(cat base.txt)" >> $GITHUB_ENV
+
+      - id: 'get_worksheet'
+        uses: jroehl/gsheet.action@v1.0.0
+        with:
+          spreadsheetId: ${{secrets.SPREADSHEET_ID}}
+          commands: | # list of commands, specified as a valid JSON string
+            [
+              { "command": "getData", "args": { "worksheetTitle": "Sheet1", "minCol": 1, "maxCol": 1 } }
+            ]
+        env:
+          GSHEET_CLIENT_EMAIL: ${{ secrets.SERVICE_EMAIL }}
+          GSHEET_PRIVATE_KEY: ${{ secrets.SERVICE_KEY }}
+      - id: step1
+        name: dump results
+        env:
+          #  the output of the action can be found in ${{ steps.update_worksheet.outputs.results }}
+          RESULTS: ${{ steps.get_worksheet.outputs.results }}
+        run: |
+          cmd=$(echo "${RESULTS}" | jq ".results[0].result.rawData")
+          
+          branch=${{ env.base }}
+          assignment=${{ env.assignment }}
+          gitid="\"${{ env.login }}\""
+          result=1
+          j=0
+          for i in {1..60}
+          do
+            t=$(echo "${cmd}" | jq ".[$i][0]")
+            echo "$t"
+            echo "$gitid"
+            if [ "$t" = "$gitid" ]; then
+              echo "FOUND"
+              echo "$i"
+              j="[{ \"command\": \"updateData\", \"args\": {\"worksheetTitle\": \"Sheet1\", \"data\": [["\"$result\"", "\"$result\""]], \"minCol\": $((assignment*2)), \"minRow\": $((i+1)) }} ]"
+              echo "$j"
+              echo "::set-output name=id::$j"
+            else
+              echo "Strings are not equal."
+            fi
+          done
+          if [[ $j -eq 0 ]]
+          then
+            j="[{ \"command\": \"appendData\", \"args\": {\"worksheetTitle\": \"Sheet1\", \"data\": [["$gitid", "\"$result\"", "\"$result\""]], \"minCol\": 1 }} ]"
+            echo "::set-output name=id::$j"
+          fi
+          echo $j
+          echo "$gitid"
+#        echo "::set-output name=id::$i"
+  job3:
+    runs-on: ubuntu-latest
+    needs: job2
+    steps:
+      - id: 'update_worksheet'
+        uses: jroehl/gsheet.action@v1.0.0
+        with:
+          spreadsheetId: ${{secrets.SPREADSHEET_ID}}
+          commands: ${{needs.job2.outputs.output_id_number}}
+        env:
+          GSHEET_CLIENT_EMAIL: ${{ secrets.SERVICE_EMAIL }}
+          GSHEET_PRIVATE_KEY: ${{ secrets.SERVICE_KEY }}
