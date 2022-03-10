@@ -1,6 +1,7 @@
 -- X86 codegeneration interface
 -- We use stack machine programs as intermediate representation
 import Fun;
+import Data;
 import SM;
 import Collection;
 import List;
@@ -28,16 +29,16 @@ var ebx = R(0),
 var wordSize = 4;
 
 -- We need to distinguish the following operand types: 
---    R (int)       -- hard register                    
---    S (int)       -- a position on the hardware stack 
---    M (string)    -- a named memory location          
+--    R (int)       -- hard register
+--    S (int)       -- a position on the hardware stack
+--    M (string)    -- a named memory location
 --    L (int)       -- an immediate operand
 --    I (int, opnd) -- an indirect operand with offset
 
 -- Some x86 instruction (we do not need all of them):
 --   Mov   (opnd, opnd)         -- copies a value from the first to the second operand  
 --   Lea   (opnd, opnd)         -- loads an address of the first operand into the second
---   Binop (string, opnd, opnd) -- makes a binary operation; note, the first operand   
+--   Binop (string, opnd, opnd) -- makes a binary operation; note, the first operand
 --                                 designates x86 operator, not the source language one
 --   IDiv  (opnd)               -- x86 integer division, see instruction set reference 
 --   Cltd                       -- see instruction set reference           
@@ -411,45 +412,92 @@ fun suffix(op) {
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
-fun compile(env, code) {
-  fun compile(env, code) {
-    foldl(
-      fun ([env, scode], i) {
-        var code = scode <+ Meta("# " ++ showSMInsn(i) ++ "\n");
-        case i of
-          READ    ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Push(edx) <+ Push(ecx) <+ Call("Lread") <+ Pop(ecx) <+ Pop(edx) <+ Mov(eax, s)]
-            esac
-          | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push(edx) <+ Push(ecx) <+ Push(s) <+ Call("Lwrite") <+ Pop(eax) <+ Pop(ecx) <+ Pop(edx)]
-            esac
-          (* Assignment *)
+fun compile (env, code) {
+  foldl(
+    fun ([env, scode], i) {
+      var code = scode <+ Meta("# " ++ showSMInsn(i) ++ "\n");
+      case i of
+        READ ->
+          case env.allocate of
+            [s, env] -> [env, code <+ Call("Lread") <+ Mov(eax, s)]
+          esac
+        | WRITE ->
+          case env.pop of
+            [s, env] -> [env, code <+ Push(s) <+ Call("Lwrite") <+ Pop(eax)]
+          esac
+        (* Assignment *)
 
-          -- Some guidelines for generating function calls:
-          --
-          -- 1. generate instructions to save live registers on the X86 stack (use
-          --    env.liveRegisters (number of arguments);
-          -- 2. generate instructions to move actual parameters from the symbolic
-          --    stack to the hardware one;
-          -- 3. generate the call itself;
-          -- 4. discard the actual parameters from the stack;
-          -- 5. restore saved live registers.
-          --
-          -- Some guidelines for generating functions:
-          --
-          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-          --    env.enterFunction to create a proper environment;
-          -- 2. generate epilogue for END instruction.
+        -- Some guidelines for generating function calls:
+        --
+        -- 1. generate instructions to save live registers on the X86 stack (use
+        --    env.liveRegisters (number of arguments);
+        -- 2. generate instructions to move actual parameters from the symbolic
+        --    stack to the hardware one;
+        -- 3. generate the call itself;
+        -- 4. discard the actual parameters from the stack;
+        -- 5. restore saved live registers.
+        --
+        -- Some guidelines for generating functions:
+        --
+        -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
+        --    env.enterFunction to create a proper environment;
+        -- 2. generate epilogue for END instruction.
+        | CONST (int) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move(L(int), s)]
+          esac
+        | LD (name) ->
+          case env.addGlobal(name).allocate of
+            [s, env] -> [env, code <+> move(env.loc(name), s)]
+          esac
+        | ST (name) ->
+          case env.addGlobal(name).pop of
+            [s, env] -> [env, code <+> move(s, env.loc(name))]
+          esac
+        | BINOP (name) ->
+          case env.pop2 of
+            [r, l, env] -> [
+              env.push(r),
+              code <+> case name of
+                  "+"  -> simpleOp(name, l, r)
+                | "*"  -> simpleOp(name, l, r)
+                | "-"  -> simpleOp(name, r, l) <+> move(l, r)
+                | "/"  -> divOp(name, l, r)
+                | "%"  -> divOp(name, l, r)
+                | "&&" -> binaryOp(name, l, r)
+                | "!!" -> binaryOp(name, l, r)
+                | cmp  -> simpleOp("cmp", r, l) <+> setOperand(suffix(cmp), r)
+              esac
+            ]
+          esac
 
-          | _     -> failure("codegeneration for instruction %s is not yet implemented\n", i.string)
-          (* End *)
-        esac
-      }, [env, emptyBuffer()], code)
+      esac
+    }, [env, emptyBuffer()], code
+  )
+}
+
+fun simpleOp(name, l, r) {
+  case l of
+    R (_) -> Binop(name, l, r).singletonBuffer
+    | _   -> { Mov(r, eax), Binop(name, l, eax), Mov(eax, r) }.listBuffer
+  esac
+}
+
+fun divOp(name, l, r) {
+  var reg = if name === "/" then eax else edx fi;
+  { Mov(l, eax), Cltd, IDiv(r), Mov(reg, r) }.listBuffer
+}
+
+fun binaryOp(name, l, r) {
+  fun transform(src) {
+    Binop("cmp", L(0), src).singletonBuffer <+> setOperand("g", src)
   }
 
-  compile(env, code)
+  transform(l) <+> transform(r) <+> simpleOp(name, l, r)
+}
+
+fun setOperand(suffix, src) {
+  { Mov(L(0), eax), Set(suffix, "%al"), Mov(eax, src) }.listBuffer
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
