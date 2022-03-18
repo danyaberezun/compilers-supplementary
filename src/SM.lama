@@ -9,6 +9,12 @@ import State;
 import Expr;
 import Buffer;
 
+public fun showDbg (x) {
+  var f = fopen("/proc/self/fd/2", "a");
+  fprintf(f, "%s\n", string(x));
+  fclose(f)
+}
+
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
 public fun showSMInsn (i) {
@@ -65,20 +71,40 @@ fun eval1 (c, x) {
   | LD    (x) -> [{c[1](x)} +++ c[0], c[1], c[2]]
   | ST    (x) -> [tl (c[0]), updState(x, hd(c[0]), c[1]), c[2]]
   | CONST (n) -> [{n} +++ c[0], c[1], c[2]]
+  | LABEL (x) -> c
   esac
 }
 
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
-fun eval (c, insns) {
+fun eval (env, c, insns) {
   case insns of
     {} -> c
-  | x:xs  -> eval(eval1(c, x), xs)
+  | x:xs  ->
+    case x of
+      JMP (lab) ->
+        var xs = env.fromLabel (lab);
+        eval(env, c, xs)
+    | CJMP (cond, lab) ->
+        c := eval1(c, BINOP (cond));
+        case c[0] of
+          (v:vs) ->
+            var cNext = [vs, c[1], c[2]];
+            if v
+            then
+                var xs = env.fromLabel (lab);
+                eval(env, cNext, xs)
+            else eval(env, cNext, xs)
+            fi
+        esac
+    | _ -> eval(env, eval1(c, x), xs)
+    esac
   esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM (input, insns) {
+  -- var aaa = showDbg(insns);
   eval (initEvalEnv (insns), [{}, emptyState, createWorld (input)], insns)[2].getOutput
 }
 
@@ -116,9 +142,9 @@ fun genLabels (env, n) {
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
   case expr of
-    Var (s) -> {LD (s)}
-  | Const (i) -> {CONST (i)}
-  | Binop (s, l, r) -> compileExpr(l) +++ compileExpr(r) +++ {BINOP (s)}
+    Var (s) -> singletonBuffer (LD (s))
+  | Const (i) -> singletonBuffer (CONST (i))
+  | Binop (s, l, r) -> compileExpr(l) <+> compileExpr(r) <+ BINOP (s)
   esac
 }
 
@@ -160,7 +186,44 @@ public fun compileSM (stmt) {
                   esac
              esac
         esac
-    | _              -> failure ("compileSM not implemented\n")
+    | While (e, s)   ->
+        case env.genLabel of
+          [begLab, env] ->
+            case env.genLabel of
+              [endLab, env] ->
+                var res0 = label (begLab, true) <+> compileExpr (e) <+ CONST (0) <+ CJMP ("==", endLab);
+                case compile (begLab, env, s) of
+                  [_, env, scode] -> [false, env, res0 <+> scode <+ JMP (begLab) <+> label (endLab, true)]
+                esac
+            esac
+        esac
+    | DoWhile (s, e)   ->
+        case env.genLabel of
+          [begLab, env] ->
+            case env.genLabel of
+              [endLab, env] ->
+                case compile (begLab, env, s) of
+                  [_, env, scode] -> [false, env, label (begLab, true) <+> scode <+> compileExpr (e) <+ CONST (0) <+ CJMP ("!=", begLab) <+> label (endLab, true)]
+                esac
+            esac
+        esac
+    | If (e, t, f)   ->
+        case env.genLabel of
+          [elsLab, env] ->
+            case env.genLabel of
+              [endLab, env] ->
+                case compile (endLab, env, t) of
+                  [_, env, tcode] ->
+                    var fcode =
+                      case f of
+                        Some (f) -> case compile (endLab, env, f) of [_, env1, fcode] -> env := env1; fcode esac
+                      | None   -> emptyBuffer()
+                      esac;
+                    [false, env, compileExpr (e) <+ CONST (0) <+ CJMP ("==", elsLab)
+                      <+> tcode <+ JMP (endLab) <+> label (elsLab, true) <+> fcode <+> label (endLab, true)]
+                esac
+            esac
+        esac
     esac
   }  
 
