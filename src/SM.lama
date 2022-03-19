@@ -1,6 +1,7 @@
 -- Stack machine.
 
 import Ref;
+import Data;
 import Array;
 import List;
 import Fun;
@@ -132,7 +133,29 @@ fun eval(env, w, insns) {
 
   -- Core interpreter: takes a configuration and a program, returns a configuration
   fun eval(c@[st, cst, s, w], insns) {
-    foldl(evalIns, c, getBuffer(insns))
+    fun isNotEmpty(l) {
+      case l of
+        {}  -> false
+        | _ -> true
+      esac
+    }
+
+    var currentInsns = insns;
+    var currentC = c;
+    while currentInsns.isNotEmpty do
+      case currentInsns of
+        insn : tail ->
+          case evalIns(currentC, insn) of
+            Next(c) ->
+              currentC := c;
+              currentInsns := tail
+            | FromLabel(c, label) ->
+              currentC := c;
+              currentInsns := env.fromLabel(label)
+          esac
+      esac
+    od;
+    currentC
   }
 
   eval([{}, {}, makeState(0, 0), w], insns) [3].getOutput
@@ -140,21 +163,45 @@ fun eval(env, w, insns) {
 
 fun evalIns(c@[stack, st, world], insn) {
   case insn of
-    READ -> case readWorld(world) of
-      [v, newWorld] -> [v:stack, st, newWorld]
-    esac
-    | WRITE -> case stack of
-      v : tail -> [tail, st, writeWorld(v, world)]
-    esac
-    | BINOP (op) -> case stack of
-      v1 : v2 : tail -> [evalOp(op, v2, v1):tail, st, world]
-    esac
-    | LD    (name) -> [st(name):stack, st, world]
-    | ST    (name) -> case stack of
-      v : tail -> [tail, st <- [name, v], world]
-    esac
-    | CONST (int) -> [int:stack, st, world]
+      READ          -> evalStraightforward(c, insn)
+    | WRITE         -> evalStraightforward(c, insn)
+    | BINOP (op)    -> evalStraightforward(c, insn)
+    | LD    (name)  -> evalStraightforward(c, insn)
+    | ST    (name)  -> evalStraightforward(c, insn)
+    | CONST (int)   -> evalStraightforward(c, insn)
+    | LABEL (_)     -> Next(c)
+    | JMP   (label) -> FromLabel(c, label)
+    | CJMP  (key, label) ->
+      case stack of
+        v : tail ->
+          var newC = [tail, st, world];
+          if key === "z" && v == 0 !! key === "nz" && v != 0
+            then FromLabel(newC, label)
+            else Next(newC)
+          fi
+      esac
   esac
+}
+
+fun evalStraightforward(c@[stack, st, world], insn) {
+  Next(
+    case insn of
+      READ -> case readWorld(world) of
+        [v, newWorld] -> [v:stack, st, newWorld]
+      esac
+      | WRITE -> case stack of
+        v : tail -> [tail, st, writeWorld(v, world)]
+      esac
+      | BINOP (op) -> case stack of
+        v1 : v2 : tail -> [evalOp(op, v2, v1):tail, st, world]
+      esac
+      | LD    (name) -> [st(name):stack, st, world]
+      | ST    (name) -> case stack of
+        v : tail -> [tail, st <- [name, v], world]
+      esac
+      | CONST (int) -> [int:stack, st, world]
+    esac
+  )
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -435,7 +482,43 @@ public fun compileSM(stmt) {
       | Var    (x) -> [false, env, singletonBuffer(LD(x))]
       | Ref    (x) -> [false, env, singletonBuffer(LDA(x))]
       | Const  (n) -> [false, env, singletonBuffer(CONST(n))]
-      | _          -> failure("compileSM not implemented\n")
+      | Binop (opName, l, r) -> compile(lab, env, l) <+> compile(lab, env, r) <+ BINOP(opName)
+      | If (condition, body, next) ->
+        case env.genLabel of
+          [elseLabel, env] ->
+            case compile(lab, env, body) of
+              [_, env, ifCode] ->
+                case compile(lab, env, next) of
+                  [_          , env, elseCode] -> [
+                    true, env,
+                    compile(lab, env, condition) <+ CJMP("z", elseLabel) <+>
+                      ifCode <+ JMP(lab) <+
+                      LABEL(elseLabel) <+> elseCode
+                  ]
+                esac
+            esac
+        esac
+      | While (condition, body) ->
+        case env.genLabel of
+          [conditionLabel, env] ->
+            case compile(conditionLabel, env, body) of
+              [_, env, bodyCode] -> [
+                true, env,
+                label(conditionLabel, true) <+> compile(lab, env, condition) <+ CJMP("z", lab)
+                  <+> bodyCode <+ JMP(conditionLabel)
+              ]
+            esac
+        esac
+      | DoWhile(body, condition) ->
+        case env.genLabel of
+          [bodyLabel, env] ->
+            case compile(bodyLabel, env, body) of
+              [_, env, bodyCode] -> [
+                false, env,
+                label(bodyLabel, true) <+> bodyCode <+> compile(lab, env, condition) <+ CJMP("nz", bodyLabel)
+              ]
+            esac
+        esac
     esac
   }
 
