@@ -44,7 +44,9 @@ public fun evalOp (op, l, r) {
 --        Set     (string, expr)       |
 --        Seq     (expr, expr)         |
 --        Skip                         |
---        if      (expr, expr, expr)   |
+--        Read    (string)             |
+--        Write   (expr)               |
+--        If      (expr, expr, expr)   |
 --        While   (expr, expr)         |
 --        DoWhile (expr, expr)         |
 --        Var     (string)             |
@@ -61,50 +63,115 @@ public fun evalOp (op, l, r) {
 
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
-fun lookupVal (state, name) {
-  case state.lookup (name) of
-    x@Val (_) -> x
-  | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
+fun getVar (state, name) {
+  case state.lookup(name) of
+    Var (x) -> Var (x)
+  | _       -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
   esac
 }
 
--- Helper function: checks that given name designates a function in
--- a given state
-fun lookupFun (state, name) {
+
+fun getFun (state, name) {
   case state.lookup (name) of
-    x@Fun (_, _) -> x
-  | _            -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
+    Fun (params, body) -> Fun(params, body)
+  | _  -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
   esac
 }
 
 -- Helper function: adds a bunch of regular variables current scope
-fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
+fun addVars (state, names) {
+  foldl(fun (s, name) { s.addName(name, Var (0)) }, state, names)
 }
 
 -- Helper function: adds a function in current scope
 fun addFunction (state, name, args, body) {
-  state.addName (name, Fun (args, body))
+  state.addName(name, Fun (args, body))
 }
                                         
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
   case foldl (fun ([c, vals], e) {
-                case eval (c, e) of
-                  [c, v] -> [c, v : vals]
-                esac
-              },
-              [c, {}],
-              exprs) of
+    case eval (c, e) of [c, v] -> [c, v : vals] esac
+  }, [c, {}], exprs) of
     [c, vals] -> [c, reverse (vals)]
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun scopeDef(st, def) {
+  case def of
+    Var (names) -> st.addVars(names)
+  | Fun (f, args, body) -> st.addFunction(f, args, body)
+  esac
 }
 
+fun funArg(st, [param, value]) {
+ st.addName(param, value) 
+ }
+
+
+fun eval (c@[s, w], expr) {
+  case expr of
+    Const (n) -> [c, n]
+  | Var (x) -> [c, s.lookup(x)]
+  | Ref (lv) -> [c, Ref(lv)]
+  | Binop (op, l, r) ->
+      case evalList(c, {l, r}) of [config, {x, y}] ->
+        [config, evalOp(op, x, y)]
+      esac
+  | Assn (x, e) -> 
+      case evalList(c, {x, e}) of [[s, w], {v, rv}] -> 
+        case v of Ref (lv) -> [[s <- [lv, rv], w], rv] 
+        | _ -> failure("Expected lvalue, got %s", v.string) 
+        esac
+      esac
+  | Seq (cur, next) -> 
+      case eval(c, cur) of [config, v] -> eval(config, next) esac                
+  | Skip -> [c, Nothing]                                       
+  | Read (x) -> 
+      case readWorld(w) of [lv, w] ->
+        [[s <- [x, lv], w], Nothing]
+      esac            
+  | Write (expr) ->
+      case eval(c, expr) of [[s, w], t] ->
+        [[s, writeWorld(t, w)], Nothing]
+      esac           
+  | If (condition, true_branch, false_branch) ->
+      case eval(c, condition) of [config, pred_val] ->
+        case pred_val of 
+          0 -> eval(config, false_branch)
+        | _ -> eval(config, true_branch)
+        esac
+      esac               
+  | While (expr, body) ->
+      case eval(c, expr) of [pred_config, pred_val] ->
+        case pred_val of 
+          0 -> [pred_config, Nothing]
+        | _ -> eval(eval(pred_config, body).fst, While (expr, body))
+        esac
+      esac                                        
+  | DoWhile (body, expr) -> eval(eval(c, body).fst, While (expr, body))
+  | Ignore (expr) -> [eval(c, expr).fst, Void]
+  | Call (f, args) ->
+      case s.getFun(f) of Fun(params, body) ->
+        case evalList(c, args) of [[st, w], vals] ->
+          case foldl(funArg, enterFunction(st), zip(params, vals)) of st ->
+            case eval([st, w], body) of [[st, w], ret] -> 
+              [[s.leaveFunction(st.getGlobal), w], ret] 
+            esac
+          esac
+        esac
+      esac
+  | Scope (defs, expr) ->
+      case foldl(scopeDef, enterScope(s), defs) of s ->
+        case eval([s, w], expr) of [[s, w], ret] -> 
+          [[leaveScope(s), w], ret] 
+        esac
+      esac
+  | _ -> failure("Interpretator failed on %s\n", expr)
+  esac
+}
+(* End *)
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
