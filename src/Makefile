@@ -6,18 +6,18 @@ LAMAC=lamac
 
 .PHONY: all clean
 
-all: Parser.o Lexer.o X86.o SM.o Manifest.o
+all: Expr.o SMcomp.o SMint.o X86.o Manifest.o
 	$(LAMAC) -I . -o lama-impl Driver.lama
 
 Parser.o: Lexer.o
 
 State.o: Lexer.o Parser.o
 
-Expr.o: State.o 
+Expr.o: State.o World.o
 
-SM.o: State.o World.o Expr.o Parser.o Lexer.o
+SMcomp.o: SMenv.o
 
-X86.o: SM.o Manifest.o
+X86.o: X86utils.o SMenv.o Manifest.o
 
 %.o: %.lama
 	$(LAMAC) -I . -c $<
