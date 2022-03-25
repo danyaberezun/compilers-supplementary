@@ -50,11 +50,6 @@ fun getStrings (env) { env [18] () }
 
 fun staticSize(env) { env [19] () }
 
--- Creates an initial environment
-fun initEnv () {
-  makeEnv ({}, 0, emptySet (compare), emptySet (compare), 0, false, emptyMap (compare), "", 0)
-}
-
 -- Codegeneration helper functions
 -- Generates code section
 fun codeSection(text) {
@@ -121,10 +116,10 @@ fun move(from, to) {
   fi
 }
 
-fun lea (from, to) {
+fun lea (from, to, ss) {
   if memOpnd (from) && memOpnd (to)
-  then singletonBuffer (Lea (from, eax)) <+ Mov (eax, to)
-  else singletonBuffer (Lea (from, to))
+  then singletonBuffer (Lea (from, eax)) <+ Mov (eax, to) <+ Mov(eax, ss)
+  else singletonBuffer (Lea (from, to)) <+ Mov (to, ss)
   fi
 }
 
@@ -142,7 +137,7 @@ fun suffix(op) {
 }
 
 fun bool(x) {
-  move(L(0), eax) <+ Binop("cmpl", x, eax) <+ Set("ne", "%al") <+> move(eax, x)
+  move(L (0), eax) <+ Binop("cmpl", x, eax) <+ Set("ne", "%al") <+> move(eax, x)
 }
 
 fun arithmetic(l, r, s, op) {
@@ -165,21 +160,25 @@ fun toFixedNum (r) {
   singletonBuffer (Sal1 (r)) <+ Or1 (r)
 }
 
-fun compileBinop(l, r, op, s, env, code) {
+fun fromFixedNum (f) {
+  singletonBuffer (Sar1 (f))
+}
+
+fun compileBinop(l, r, op, s) {
   case op of
-      "+"  -> [env, code <+> arithmetic(l, r, s, "addl")]
-    | "-"  -> [env, code <+> arithmetic(l, r, s, "subl")]
-    | "*"  -> [env, code <+> arithmetic(l, r, s, "imull")]
-    | "/"  -> [env, code <+> move(r, eax) <+ Cltd <+ IDiv(l) <+> move(eax, s)]
-    | "%"  -> [env, code <+> move(r, eax) <+ Cltd <+ IDiv(l) <+> move(edx, s)]
-    | "<"  -> [env, code <+> comparative(l, r, s, "l")]
-    | "<=" -> [env, code <+> comparative(l, r, s, "le")]
-    | "==" -> [env, code <+> comparative(l, r, s, "e")]
-    | "!=" -> [env, code <+> comparative(l, r, s, "ne")]
-    | ">=" -> [env, code <+> comparative(l, r, s, "ge")]
-    | ">"  -> [env, code <+> comparative(l, r, s, "g")]
-    | "!!" -> [env, code <+> bool(l) <+> bool(r) <+ Binop("orl ", l, eax) <+> move(eax, s)]
-    | "&&" -> [env, code <+> bool(l) <+> bool(r) <+ Binop("andl", l, eax) <+> move(eax, s)]
+      "+"  -> arithmetic(l, r, s, "addl")
+    | "-"  -> arithmetic(l, r, s, "subl")
+    | "*"  -> arithmetic(l, r, s, "imull")
+    | "/"  -> move(r, eax) <+ Cltd <+ IDiv(l) <+> move(eax, s)
+    | "%"  -> move(r, eax) <+ Cltd <+ IDiv(l) <+> move(edx, s)
+    | "<"  -> comparative(l, r, s, "l")
+    | "<=" -> comparative(l, r, s, "le")
+    | "==" -> comparative(l, r, s, "e")
+    | "!=" -> comparative(l, r, s, "ne")
+    | ">=" -> comparative(l, r, s, "ge")
+    | ">"  -> comparative(l, r, s, "g")
+    | "!!" -> bool(l) <+> bool(r) <+ Binop("orl ", l, eax) <+> move(eax, s)
+    | "&&" -> bool(l) <+> bool(r) <+ Binop("andl", l, eax) <+> move(eax, s)
     | _    -> failure ("Unknown operand: %s", op)
   esac
 }
@@ -223,17 +222,7 @@ fun compileItem([env, scode], item) {
   var code = scode <+ Meta ("# " ++ showSMInsn (item) ++ "\n");
   -- printf("\n=== %s", item.string);
   case item of
-    ST (x) ->
-      case peek(env) of s -> 
-        [env, code <+> move(s, loc(env, x))]
-      esac
-  | STI ->
-      case pop(env) of [lv, env] -> 
-        case peek(env) of rv ->
-          [env, code <+> move(lv, I (0, rv)) <+> move(lv, rv)]
-        esac
-      esac
-  | STA -> 
+    STA -> 
       callFunction(env, code, "Bsta", 3, {})
   | LD (x) ->
       case allocate(env) of [s, env] -> 
@@ -241,23 +230,26 @@ fun compileItem([env, scode], item) {
       esac
   | LDA (x) ->
       case allocate(env) of [s, env] ->
-        [env, code <+> lea(loc(env, x), s)]
+        case allocate(env) of [ss, env] ->
+          [env, code <+> lea(loc(env, x), s, ss)]
+        esac
       esac
   | CONST (n) ->
       case allocate(env) of [s, env] -> 
-        [env, code <+> move(L (n), s)]
+        [env, code <+> move(L (makeBox(n)), s)]
       esac
   | BINOP (op) ->
       case pop2(env) of [l, r, env] -> 
         case allocate(env) of [s, env] ->
-          compileBinop(l, r, op, s, env, code)
+          [env, code <+> fromFixedNum(l) <+> fromFixedNum(r) <+> 
+          compileBinop(l, r, op, s) <+> toFixedNum(s)]
         esac
       esac
   | JMP (lab) ->
       [setBarrier(setStack(env, lab)), code <+ Jmp (lab)]
   | CJMP (postfix, lab) ->
       case pop(env) of [s, env] ->
-        [setStack(env, lab), code <+> bool(s) <+ CJmp (postfix, lab)]
+        [setStack(env, lab), code <+> fromFixedNum(s) <+> bool(s) <+ CJmp (postfix, lab)]
       esac
   | LABEL (lab) ->
       var nextEnv = if isBarrier(env) then retrieveStack(env, lab) else env fi;
@@ -291,12 +283,13 @@ fun compileItem([env, scode], item) {
         esac
       esac    
   | ARRAY (n) -> 
-      callFunction(env, code, "Barray", n, { L (n) })
+      callFunction(env, code, "Barray", n, { L (makeBox(n)) })
   | ELEM ->
       callFunction(env, code, "Belem", 2, {})
   | SEXP (name, nargs) -> 
       case allocate(env) of [s, env] -> 
-        callFunction(env, code <+> move(L (tagHash(name)), s), "Bsexp", nargs + 1, { L (nargs+1) })
+        callFunction(env, code <+> move(L (makeBox(tagHash(name))), s),
+         "Bsexp", nargs + 1, { L (makeBox(nargs+1)) })
       esac
   | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", item.string)
   esac  
