@@ -1,0 +1,205 @@
+import Ref;
+import Array;
+import List;
+import Fun;
+import Collection;
+import World;
+import State;
+import Parser;
+import Lexer;
+import Buffer;
+import Builtins;
+
+
+-- Evaluation environment: keeps a mapping between labels and (sub)programs
+fun initEvalEnv (insns) {
+  var map =
+    fix (fun (rec) {
+          fun ([m, insns]) {
+            case insns of
+              {}               -> m
+            | LABEL (lab) : tl -> rec ([addMap (m, lab, insns), tl])
+            | _ : tl           -> rec ([m, tl])
+            esac
+          }
+        }) $ [emptyMap (compare), insns];
+  
+  [fun (l) {
+     case findMap (map, l) of Some (insns) -> insns esac
+  }]
+}
+
+-- Accessor function
+fun fromLabel (env, lab) {
+  env [0] (lab)
+}
+
+-- Stack machine interpreter. Takes an environment, a world and a program,
+-- returns a final output
+fun eval (env, w, insns) {
+  -- Global state maps names of global variables to values
+  var globalState = ref (fun (x) {error (sprintf ("name ""%s"" is undefined", x), getLoc (x))});
+  
+  -- Make a fresh local state: a pair of arrays for arguments and local variables;
+  -- takes the numbers of arguments and local variables respectively
+  fun makeState (a, l) {
+    [initArray (a, fun (_) {0}), initArray (l, fun (_) {0})]
+  }
+
+  -- Lookups a location in local/global states
+  fun lookup ([args, locs], loc) {
+    case loc of
+      Arg (i) -> args[i]
+    | Loc (i) -> locs[i]
+    | Glb (x) -> deref (globalState) (x)
+    esac 
+  }
+
+  -- Assigns a value to a location
+  fun assign ([args, locs], loc, v) {
+    case loc of
+      Arg (i) -> args[i] := v
+    | Loc (i) -> locs[i] := v
+    | Glb (x) -> var g = deref (globalState);
+                 globalState ::= fun (y) {if compare (x, y) == 0 then v else g (y) fi}
+    esac
+  }
+
+  -- Takes n positions from the list, retursn a pair: the remaining list and the taken
+  -- sublist
+  fun take (list, n) {
+    fun inner (n, acc, list) {
+      if n == 0
+      then [list, acc]
+      else inner (n-1, list.hd : acc, list.tl)
+      fi
+    }
+
+    inner (n, {}, list)
+  }
+
+  -- Core interpreter: takes a configuration and a program, returns a configuration
+  (* Assignment *)
+  fun eval (c@[st, cst, s, w], insns) {
+     -- printf("---\nstack: %s\nstate: %s\ninstruction: %s\n", st.string, s.string, insns.hd.string);
+     case insns of cur:next -> case cur of 
+       CONST (n) -> 
+         [[n:st, cst, s, w], next]
+     | LD (x) -> 
+         [[s.lookup(x):st, cst, s, w], next]
+     | LDA (x) -> 
+         [[Ref(x):st, cst, s, w], next]
+     | ST (x) -> 
+         case st of v:rest -> 
+           s.assign(x, v);
+           [[st, cst, s, w], next] 
+         esac
+     | STI ->
+         case st of rv:Ref(lv):rest -> 
+           s.assign(lv, rv);
+           [[rv:rest, cst, s, w], next]
+         esac
+     | STA ->
+         case st of v:idx:arr:rest ->
+           case arr of 
+             Sexp(_, arr) -> arr[idx] := v
+           | _ -> arr[idx] := v
+           esac;
+           [[v:rest, cst, s, w], next]
+         esac
+     | BINOP (op) ->
+         case st of y:x:rest -> 
+           [[evalOp(op, x, y):rest, cst, s, w], next]
+         esac
+     | READ ->
+         case readWorld(w) of [v, new_w] ->
+           [[v:st, cst, s, new_w], next]
+         esac
+     | WRITE ->
+         case st of v:rest -> 
+           [[rest, cst, s, writeWorld(v, w)], next]
+         esac
+     | JMP (lab) -> 
+         [c, fromLabel(env, lab)]
+     | CJMP (postfix, lab) ->
+         case st of v:rest ->
+           fun makeJump(op) {
+             if op(v, 0) then [[rest, cst, s, w], fromLabel(env, lab)]
+             else [[rest, cst, s, w], next] fi
+           }
+           case postfix of
+             "l" -> makeJump(infix <)
+           | "le" -> makeJump(infix <=)
+           | "e" -> makeJump(infix ==)
+           | "ne" -> makeJump(infix !=)
+           | "ge" -> makeJump(infix >=)
+           | "g" -> makeJump(infix >)
+           esac
+         esac
+    | LABEL (lab) -> [c, next]  
+    | DUP -> 
+        case st of v:rest -> 
+          [[v:st, cst, s, w], next]
+        esac
+    | DROP ->
+        case st of v:rest ->
+          [[rest, cst, s, w], next]
+        esac
+    | GLOBAL (x) -> 
+        s.assign(Glb (x), 0);
+        [[st, cst, s, w], next]
+    | CALL (f, n) -> [[st, [s, next]:cst, s, w], env.fromLabel(f)]
+    | BEGIN (f, nargs, nlocals) ->
+        case st.take(nargs) of [st, args] ->
+          case makeState(nargs, nlocals) of s ->
+            foldl(fun(idx, arg) { s.assign(Arg(idx), arg); idx + 1 }, 0, args);
+            [[st, cst, s, w], next]
+          esac
+        esac
+    | END ->
+        case cst of [prev_s, prev_flow]:rest ->
+          [[st, rest, prev_s, w], prev_flow]
+        | {} -> [c, next]
+        esac
+    | SEXP (name, nargs) ->
+        case take(st, nargs) of [st, elements] ->
+          [[Sexp (name, listArray(elements)) : st, cst, s, w], next]
+        esac
+    | STRING (literal) ->
+        [[literal:st, cst, s, w], next]
+    | ARRAY (n) -> 
+        case take(st, n) of [st, elements] ->
+          [[listArray(elements):st, cst, s, w], next]
+        esac
+    | ELEM -> 
+        case st of idx:arr:rest ->
+          var v = case arr of
+            Sexp (_, arr) -> arr[idx]
+            | _ -> arr[idx]
+          esac;
+          [[v:rest, cst, s, w], next]
+        esac
+    | BUILTIN (f, nargs) -> 
+        case take(st, nargs) of [st, args] ->
+          case evalBuiltin(f, args, w) of [v, w] ->
+            [[v:st, cst, s, w], next]
+          esac
+        esac
+    | _ -> failure("SM evaluator failed at %s\n", cur.string)
+    esac esac
+  }
+  
+  var config = [{}, {}, makeState(0, 0), w], flow = insns;
+  while flow.size > 0 do
+    case eval(config, flow) of [c, f] -> 
+      config := c; flow := f
+    esac
+  od;
+  
+  config[3].getOutput
+}
+
+-- Runs a stack machine for a given input and a given program, returns an output
+public fun evalSM (input, insns) {
+  eval (initEvalEnv (insns), createWorld (input), insns)
+}
