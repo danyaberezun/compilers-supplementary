@@ -1,127 +1,100 @@
--- Expression evaluator
+-- Lexical analysis using Matcher
 
+import Matcher;
+import Ostap;
+import Fun;
+import Collection;
 import List;
-import State;
-import World;
 
--- As association map which maps "\otimes" into "\oplus"
-var ops = {
-  ["+", infix +],
-  ["-", infix -],
-  ["*", infix *],
-  ["/", infix /],
-  ["%", infix %],
-  ["==", infix ==],
-  ["!=", infix !=],
-  ["<", infix <],
-  ["<=", infix <=],
-  [">", infix >],
-  [">=", infix >=],
-  ["&&", infix &&],
-  ["!!", infix !!]
-};
+-- A hashtable to keep a source code location information.
+-- The keys in this table is a (boxed) value, and values are
+-- pairs [line, column]
+var srcTab = emptyHashTab(1024, hash, flatCompare);
 
--- The evaluator for infix operators: takes an operator as a string
--- and two operand values, and returns the result
-public fun evalOp(op, l, r) {
-  case assoc(ops, op) of
-    Some (f) -> f(l, r)
-  esac
+-- A custom combinator to additionally add location info
+public fun located(p) {
+  loc |> fun (l) { p @ fun (x) { srcTab := addHashTab(srcTab, x, l); x } }
 }
 
--- Evaluates an expression "expr" in a configuration "c".
--- A configuration is a pair of a state "s" and a world "w".
--- Returns a final configuration (if any)
---
--- A expression is represented by a data structure of the following shape:
---
--- expr = Assn    (expr, expr)         |
---        Seq     (expr, expr)         |
---        Skip                         |
---        Read    (string)             |
---        Write   (expr)               |
---        If      (expr, expr, expr)   |
---        While   (expr, expr)         |
---        DoWhile (expr, expr)         |
---        Var     (string)             |
---        Ref     (string)             |
---        Const   (int)                |
---        Binop   (string, expr, expr) |
---        Ignore  (expr)
-
--- Evaluates a list of expressions, properly threading a configurations.
--- Returns the final configuration and the list of values
-fun evalList(c, exprs) {
-  case foldl(
-    fun ([c, vals], e) {
-      case eval(c, e) of
-        [c, v] -> [c, v:vals]
-      esac
-    }, [c, {}], exprs
-  ) of
-    [c, vals] -> [c, reverse(vals)]
-  esac
+-- Retrieves location info; fail if no info found
+public fun getLoc(s) {
+  case findHashTab(srcTab, s) of Some (loc) -> loc esac
 }
 
-fun eval(c@[st, world], expr) {
-  case expr of
-    Assn (ref, expr) ->
-      case evalList(c, { expr, ref }) of
-        [[st, world], { value, name }] -> [[st <- [name, value], world], value]
-      esac
-    | Seq  (stmt1, stmt2) ->
-      case evalList(c, { stmt1, stmt2 }) of
-        [c, { _, v }] -> [c, v]
-      esac
-    | Skip -> [c, {}]
-    | Read (name) ->
-      case readWorld(world) of
-        [v, newWorld] -> [[st <- [name, v], newWorld], Void]
-      esac
-    | Write (expr) ->
-      case eval(c, expr) of
-        [[st, world], value] -> [[st, writeWorld(value, world)], Void]
-      esac
-    | If (condition, thenBranch, elseBranch) ->
-      case eval(c, condition) of
-          [c, 0] -> eval(c, elseBranch)
-        | [c, _] -> eval(c, thenBranch)
-      esac
-    | While (condition, body) ->
-      var conf = c;
-      while
-        case eval(conf, condition) of
-          [c, v] -> conf := c; v
-        esac
-      do
-        conf := eval(conf, body)[0]
-      od;
-      [conf, Void]
-    | DoWhile(body, condition) ->
-      var conf = c;
-      do
-        conf := eval(conf, body)[0]
-      while
-        case eval(conf, condition) of
-          [c, v] -> conf := c; v
-        esac
-      od;
-      [conf, Void]
-    | Var (name)  -> [c, st(name)]
-    | Ref (name)  -> [c, name]
-    | Const (int) -> [c, int]
-    | Binop (opName, l, r) ->
-      case evalList(c, { l, r }) of
-        [c, { lv, rv }] -> [c, evalOp(opName, lv, rv)]
-      esac
-    | Ignore (e) -> [eval(c, e)[0], Void]
-  esac
-}
+-- A set of all keywords
+var keywords =
+  foldl(
+    addSet,
+    emptySet(compare),
+    {
+      "read",
+      "write",
+      "skip",
+      "if",
+      "then",
+      "else",
+      "elif",
+      "fi",
+      "while",
+      "do",
+      "od",
+      "for"
+    }
+  );
 
+-- Regular expression definitions
+public rWhiteSpace = createRegexp("\\(\\([ \n\r\t]*\\)\\|\\(--[^\n]*[ \n\r\t]*\\)\\)*", "whitespace"),
+       rDecimal    = createRegexp("-?[0-9]+", "decimal constant"),
+       rLident     = createRegexp("[a-z][a-z_A-Z0-9]*", "lowercase identifier"),
+       rRead       = createRegexp("read\\b", """read"""),
+       rWrite      = createRegexp("write\\b", """write"""),
+       rSkip       = createRegexp("skip\\b", """skip"""),
+       rIf         = createRegexp("if\\b", """if"""),
+       rThen       = createRegexp("then\\b", """then"""),
+       rElse       = createRegexp("else\\b", """else"""),
+       rElif       = createRegexp("elif\\b", """elif"""),
+       rFi         = createRegexp("fi\\b", """fi"""),
+       rWhile      = createRegexp("while\\b", """while"""),
+       rDo         = createRegexp("do\\b", """do"""),
+       rOd         = createRegexp("od\\b", """od"""),
+       rFor        = createRegexp("for\\b", """for""");
+      
+var whiteSpace = token (rWhiteSpace);
 
--- Evaluates a program with a given input and returns an output
-public fun evalExpr(input, expr) {
-  case eval([emptyState, createWorld(input)], expr) of
-    [c, _] -> c.snd.getOutput
-  esac
-}
+-- Public parsers for concrete tokens
+-- Generic token parser; t is either a string or a regular expression
+public fun s(t) { memo $ whiteSpace |> lift(token(t)) }
+
+-- Some individual tokens
+public kRead    = s(rRead),
+       kWrite   = s(rWrite),
+       kSkip    = s(rSkip),
+       kIf      = s(rIf),
+       kThen    = s(rThen),
+       kElse    = s(rElse),
+       kElif    = s(rElif),
+       kFi      = s(rFi),
+       kWhile   = s(rWhile),
+       kDo      = s(rDo),
+       kOd      = s(rOd),
+       kFor     = s(rFor),
+       decimal  = s(rDecimal),
+       pos      = memo $ whiteSpace |> lift (loc),
+       end      = memo $ whiteSpace |> lift (eof),
+       lident   = memo $
+         whiteSpace |> lift(
+           fun (k) {
+             fun (s) {
+               k(
+                 case s.matchRegexp(rLident) of
+                   a@Succ (v, _) -> if memSet(keywords, v)
+                     then Fail("lowercase identifier expected", s.getLine, s.getCol)
+                     else a
+                   fi
+                   | a -> a
+                 esac
+               )
+             }
+           }
+         );
+
