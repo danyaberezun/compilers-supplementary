@@ -10,12 +10,6 @@ import Expr;
 import Buffer;
 import Fun;
 
-public fun showDbg (x) {
-  var f = fopen("/proc/self/fd/2", "a");
-  fprintf(f, "%s\n", string(x));
-  fclose(f)
-}
-
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
 public fun showSMInsn (i) {
@@ -32,7 +26,7 @@ public fun showSMInsn (i) {
   | JMP   (l)    -> sprintf ("JMP %s", l)
   | CJMP  (c, l) -> sprintf ("CJMP %s, %s", c, l)
   | DUP          -> "DUP"
-  | DROP         -> "DROP"  
+  | DROP         -> "DROP"
   esac
 }
 
@@ -70,11 +64,18 @@ fun eval1 (c, x) {
       [{rv_nw[0]} +++ c[0], c[1], rv_nw[1]]
   | WRITE     -> [tl (c[0]), c[1], writeWorld(hd (c[0]), c[2])]
   | BINOP (s) -> case c[0] of
-        (r:l:z) -> [{evalBop(s, l, r)} +++ z, c[1], c[2]]
+        (r:l:z) -> [{evalOp(s, l, r)} +++ z, c[1], c[2]]
       | _ -> failure("empty stack on bop")
     esac
   | LD    (x) -> [{c[1](x)} +++ c[0], c[1], c[2]]
+  | LDA   (x) -> [{x} +++ c[0], c[1], c[2]]
+  | STI       ->
+    case c[0] of (v:e:xs) ->
+      [xs, updState(v, e, c[1]), c[2]]
+    esac
   | ST    (x) -> [tl (c[0]), updState(x, hd(c[0]), c[1]), c[2]]
+  | DROP      -> [tl (c[0]), c[1], c[2]]
+  | DUP       -> [{hd (c[0])} +++ c[0], c[1], c[2]]
   | CONST (n) -> [{n} +++ c[0], c[1], c[2]]
   | LABEL (x) -> c
   esac
@@ -109,7 +110,6 @@ fun eval (env, c, insns) {
 
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM (input, insns) {
-  -- var aaa = showDbg(insns);
   eval (initEvalEnv (insns), [{}, emptyState, createWorld (input)], insns)[2].getOutput
 }
 
@@ -143,18 +143,7 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine
--- Takes an expression, returns a list of stack machine instructions
-fun compileExpr (expr) {
-  case expr of
-    Var (s) -> singletonBuffer (LD (s))
-  | Const (i) -> singletonBuffer (CONST (i))
-  | Binop (s, l, r) -> compileExpr(l) <+> compileExpr(r) <+ BINOP (s)
-  esac
-}
-
--- Compiles a statement into a stack machine code.
+-- Compiles expression into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
@@ -164,23 +153,38 @@ public fun compileSM (stmt) {
     else emptyBuffer ()
     fi
   }
-  
-  fun compile (lab, env, stmt) {
+
+  fun compile (lab, env, stmt, isExpr) {
     case stmt of
-<<<<<<< HEAD
       Skip              -> [false, env, emptyBuffer ()]
     | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
     | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
+    | Ignore (e) ->
+      case compile(lab, env, e, true) of [r, env, e] -> [r, env, e <+ DROP] esac
+    | Binop (s, l, r) ->
+      case compile (lab, env, l, true) of [lab1, env, l] ->
+        case compile (lab, env, r, true) of [lab2, env, r] ->
+          [lab1 !! lab2, env, l <+> r <+ BINOP (s)]
+        esac
+      esac
     | Read  (x)      -> [false, env, singletonBuffer (READ) <+ ST (x)]
-    | Write (e)      -> [false, env, compileExpr (e) <+ WRITE]
-    | Assn  (x, e)   -> [false, env, compileExpr (e) <+ ST (x)]
+    | Write (e)      ->
+      case compile(lab, env, e, true) of [r, env, e] ->
+        [r, env, e <+ WRITE]
+      esac
+    | Assn  (x, e)   ->
+      case compile(lab, env, e, true) of [r1, env, e] ->
+        case compile(lab, env, x, true) of [r2, env, x] ->
+          [r1 !! r2, env, e <+ DUP <+> x <+ STI]
+        esac
+      esac
     | Seq   (s1, s2) ->
         case env.genLabel of
           [s2Lab, env] ->
-             case compile (s2Lab, env, s1) of
+             case compile (s2Lab, env, s1, false) of
                [s2LabUsed, env, s1Code] ->
-                  case compile (lab, env, s2) of
+                  case compile (lab, env, s2, isExpr) of
                     [labUsed, env, s2Code] -> [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
                   esac
              esac
@@ -190,19 +194,11 @@ public fun compileSM (stmt) {
           [begLab, env] ->
             case env.genLabel of
               [endLab, env] ->
-                var res0 = label (begLab, true) <+> compileExpr (e) <+ CONST (0) <+ CJMP ("==", endLab);
-                case compile (begLab, env, s) of
-                  [_, env, scode] -> [false, env, res0 <+> scode <+ JMP (begLab) <+> label (endLab, true)]
-                esac
-            esac
-        esac
-    | DoWhile (s, e)   ->
-        case env.genLabel of
-          [begLab, env] ->
-            case env.genLabel of
-              [endLab, env] ->
-                case compile (begLab, env, s) of
-                  [_, env, scode] -> [false, env, label (begLab, true) <+> scode <+> compileExpr (e) <+ CONST (0) <+ CJMP ("!=", begLab) <+> label (endLab, true)]
+                case compile(lab, env, e, true) of [_, env, e] ->
+                  var res0 = label (begLab, true) <+> e <+ CONST (0) <+ CJMP ("==", endLab);
+                  case compile (begLab, env, s, false) of
+                    [_, env, scode] -> [false, env, res0 <+> scode <+ JMP (begLab) <+> label (endLab, true)]
+                  esac
                 esac
             esac
         esac
@@ -211,25 +207,42 @@ public fun compileSM (stmt) {
           [elsLab, env] ->
             case env.genLabel of
               [endLab, env] ->
-                case compile (endLab, env, t) of
+                case compile (endLab, env, t, isExpr) of
                   [_, env, tcode] ->
-                    var fcode =
-                      case f of
-                        Some (f) -> case compile (endLab, env, f) of [_, env1, fcode] -> env := env1; fcode esac
-                      | None   -> emptyBuffer()
-                      esac;
-                    [false, env, compileExpr (e) <+ CONST (0) <+ CJMP ("==", elsLab)
-                      <+> tcode <+ JMP (endLab) <+> label (elsLab, true) <+> fcode <+> label (endLab, true)]
+                    case compile (endLab, env, f, isExpr) of [_, env, f] ->
+                      case compile (endLab, env, e, true) of [_, env, e] ->
+                        if isExpr
+                        then
+                          [false, env, e <+ CONST (0) <+ CJMP ("==", elsLab)
+                            <+> tcode <+ JMP (endLab) <+> label (elsLab, true) <+> f <+> label (endLab, true)]
+                        else
+                          [false, env, e <+ CONST (0) <+ CJMP ("==", elsLab)
+                            <+> tcode <+ JMP (endLab) <+> label (elsLab, true) <+> f <+> label (endLab, true)]
+                        fi
+                      esac
+                    esac
                 esac
             esac
         esac
->>>>>>> 134830e (draft implementation of hw4)
+    | DoWhile (s, e)   ->
+        case env.genLabel of
+          [begLab, env] ->
+            case env.genLabel of
+              [endLab, env] ->
+                case compile (begLab, env, s, false) of
+                  [_, env, scode] ->
+                    case compile (endLab, env, e, true) of [_, env, e] ->
+                      [false, env, label (begLab, true) <+> scode <+> e <+ CONST (0) <+ CJMP ("!=", begLab) <+> label (endLab, true)]
+                    esac
+                esac
+            esac
+        esac
     esac
   }
 
   case initCompEnv ().genLabel of
     [endLab, env] ->
-       case compile (endLab, env, stmt) of
+       case compile (endLab, env, stmt, false) of
          [endLabUsed, _, code] -> getBuffer $ code <+> label (endLab, endLabUsed) 
        esac
   esac
