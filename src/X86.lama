@@ -1,5 +1,7 @@
 -- X86 codegeneration interface
 -- We use stack machine programs as intermediate representation
+
+import Data;
 import SM;
 import Collection;
 import List;
@@ -347,28 +349,153 @@ fun suffix (op) {
   esac
 }
 
+fun movAd (from, toAddress) {
+  var movedFrom =
+    case from of
+      R (_) -> [emptyBuffer (), from]
+      | _   -> [Mov (from, eax).singletonBuffer, eax]
+    esac;
+
+  var movedAddress =
+    case toAddress of
+      R (_) -> [emptyBuffer (), toAddress]
+      | _   -> [Mov (from, edx).singletonBuffer, edx]
+    esac;
+
+  movedFrom[0] <+> movedAddress[0] <+ Mov (movedFrom[1], I (0, movedAddress[1]))
+}
+
+fun simple (name, l, r) {
+  if memOpnd (r)
+    then {
+      Mov (r, eax),
+      Binop (name, l, eax),
+      Mov (eax, r)
+    }.listBuffer
+    else Binop (name, l, r).singletonBuffer
+  fi
+}
+
+fun div (name, l, r) {
+  var reg =
+    if name === "/"
+      then eax
+      else edx
+    fi;
+  {
+    Mov (l, eax),
+    Cltd,
+    IDiv (r),
+    Mov (reg, r)
+  }.listBuffer
+}
+
+fun setOp (suffix, src) {
+  {
+    Mov (L (0), eax),
+    Set (suffix, "%al"),
+    Mov (eax, src)
+  }.listBuffer
+}
+
+fun cmp (s) {
+  Binop ("cmp", L (0), s).singletonBuffer <+> setOp ("g", s)
+}
+
+fun logical (name, l, r) {
+  cmp (l) <+> cmp (r) <+> simple (name, l, r)
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  fun compile (env, code) {
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-            esac
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-      }, [env, emptyBuffer ()], code)
-  }
-
-  compile (env, code) 
+  foldl (
+    fun ([env, scode], i) {
+      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      case i of
+        READ ->
+          case env.allocate of
+            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+          esac
+      | WRITE ->
+          case env.pop of
+            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+          esac
+      | CONST (n) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move ( L (n), s)]
+          esac
+      | LD (name) ->
+          case env.addGlobal(name).allocate of
+            [s, env] -> [env, code <+> move(env.loc (name), s)]
+          esac
+      | LDA (name) ->
+          case env.addGlobal(name).allocate of
+            [s, env] ->
+              case s of
+                R (_) -> [env, code <+ Lea (env.loc(name), s)]
+                | _   -> [env, code <+ Lea (env.loc(name), eax) <+ Mov (eax, s)]
+              esac
+          esac
+      | ST (name) ->
+          case env.addGlobal(name).pop of
+            [s, env] -> [env, code <+> move (s, env.loc(name))]
+          esac
+      | STI ->
+          case env.pop of
+            [value, env] ->
+              case env.peek of
+                ref -> [env, code <+> movAd (value, ref) <+> move (value, ref)]
+              esac
+          esac
+      | BINOP (op) ->
+          case env.pop2 of
+            [r, l, env] ->
+              [env.push (r),
+                code <+> case op of
+                  "+"  -> simple (op, l, r)
+                  | "*"  -> simple (op, l, r)
+                  | "-"  -> simple (op, r, l) <+> move (l, r)
+                  | "/"  -> div (op, l, r)
+                  | "%"  -> div (op, l, r)
+                  | "&&" -> logical (op, l, r)
+                  | "!!" -> logical (op, l, r)
+                  | cmp  -> simple ("cmp", r, l) <+> setOp (suffix (cmp), r)
+                esac
+              ]
+          esac
+        | LABEL (label) -> [env.retrieveStack (label), code <+ Label (label)]
+        | JMP (label) -> [env.setStack (label), code <+ Jmp (label)]
+        | CJMP (key, label) ->
+          case env.pop of
+            [s, env] ->
+              [
+                env.setStack (label),
+                code
+                  <+> simple ("cmp", L (0), s)
+                  <+ CJmp (key, label)
+              ]
+          esac
+        | DUP  ->
+          case env.peek of
+            top ->
+              case env.allocate of [s, env] ->
+                [
+                  env,
+                  code
+                    <+> move (top, s)
+                ]
+              esac
+          esac
+        | DROP ->
+          case env.pop of
+            [_, env] -> [env, code]
+          esac
+      esac
+    },
+    [env, emptyBuffer ()],
+    code
+  )
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
