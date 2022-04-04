@@ -279,58 +279,85 @@ fun suffix (op) {
   esac
 }
 
-fun compileLogic(code, x, y, o) {
-  code <+ Binop ("cmp", x, y) <+ Set(suffix(o), "%al") <+ Mov (eax, y)
-}
-
-fun compileOperator(env, x, y, o, code) {
-  case o of
-    "/"  -> [env.push (y), code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (eax, y)]
-  | "%"  -> [env.push (y), code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (edx, y)]
-  | "+"  -> [env.push (y), code <+ Binop ("+", x, y)]
-  | "-"  -> [env.push (y), code <+ Binop ("-", x, y)]
-  | "*"  -> [env.push (y), code <+ Binop ("*", x, y)]
-  | "&&" -> [env.push (y), code <+ Mov (x, edx) <+ Binop("cmp", L (0), edx) <+ Mov (L(0), eax) <+ Set(suffix("!="), "%al") <+ Mov (eax, edx) <+ Mov (y, eax) <+ Binop("cmp", L(0), eax) <+ Mov (L(0), eax) <+ Set(suffix("!="), "%al") <+ Binop("&&", edx, eax) <+ Mov (eax, y)]
-  | "!!" -> [env.push (y), code <+ Binop ("!!", x, eax) <+ Binop ("^", edx, edx) <+ Binop ("cmp", edx, eax) <+ Set ("ne", "%dl") <+ Mov (edx, y)]
-  | oo  -> [env.push (y), compileLogic (code, x, y, oo)]
-  esac
-}
-
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
-fun compile (env, code) {
+fun compile (env, code) {	
+	fun baseCommands(env, code, i) {
+		case i of
+		  READ ->
+		    case env.allocate of
+		      [s, env] -> [env, code <+ Call ("Lread") <+> move (eax, s)]
+		    esac             
+		| WRITE ->
+		    case env.pop of
+		      [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+		    esac
+		| CONST (n) ->
+		    case env.allocate of
+		      [s, env] -> [env, code <+> move (L (n), s)]
+		    esac
+    | ST (x) ->
+        case env.addGlobal (x).pop of
+          [s, env] -> [env, code <+> move (s, env.loc (x))]
+        esac
+    | LD (x) ->
+          case env.addGlobal (x).allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac
+    esac
+  }
+
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of
-        READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-          esac
-      | CONST (n) ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Mov (L (n), s)]
-          esac
-      | LD (x) ->
-          case env.addGlobal (x).allocate of
-            [s, env] -> [env, code <+ Mov (env.loc (x), s)]
-          esac
-      | ST (x) ->
-          case env.addGlobal (x).pop of
-            [s, env] -> [env, code <+ Mov (s, env.loc (x))]
-          esac
-      | BINOP (o) ->
-          case env.pop2 of
-            [x, y, env] -> compileOperator (env, x, y, o, code)
-          esac
+        BINOP (o) ->
+          case env.pop2 of [x, y, env] -> case env.allocate of [s, env] ->
+            fun compileMath() {
+              [env, code <+> move (x, eax) <+> move (y, edx) <+ Binop (o, eax, edx) <+> move (edx, s)]
+            }
+
+            fun compileLogic() {
+              [
+                env,
+                code <+ Mov (x, eax) <+ Binop ("cmp", eax, y) <+ Mov (L (0), eax) <+ Set (suffix (o), "%al") <+ Mov (eax, s)
+              ]
+            }
+
+            fun compileBitwise() {
+              [
+                env,
+                code <+ Mov (L (0), eax) <+ Binop ("cmp", x, eax) <+ Set (suffix ("!="), "%al") <+ Mov (L (0), edx)
+                  <+ Binop ("cmp", y, edx) <+ Set (suffix ("!="), "%dl") <+ Binop (o, eax, edx) <+ Mov (L (0), eax)
+                  <+ Set (suffix ("!="), "%al") <+ Mov (eax, s)
+              ]
+            }
+
+            case o of
+              "*"  -> compileMath()
+            | "+"  -> compileMath()
+            | "-"  -> compileMath()
+            | "/"  -> [env, code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (eax, s)]
+            | "%"  -> [env, code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (edx, s)]
+            | "&&" -> compileBitwise()
+            | "!!" -> compileBitwise()
+            | _    -> compileLogic()
+            esac
+          esac esac
+      | LABEL (l) -> 
+        [env, code <+ Label (l)]
+      | CJMP (c, l) ->
+      	case env.pop of
+          [s, env] -> [env, code <+ Binop ("cmp", L (0), s) <+ CJmp ("z", l)]
+        esac
+      | JMP (l) -> 
+        [env, code <+ Jmp (l)]
+      | o -> baseCommands(env, code, i)
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
     }, [env, emptyBuffer ()], code)
 }
+
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
