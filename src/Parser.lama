@@ -8,8 +8,8 @@ import Ref;
 import Collection;
 
 -- Signals an error; takes an error message and location info
-fun error (msg, loc) {
-  failure ("%s at %d:%d\n", msg, loc.fst, loc.snd)
+fun error(msg, loc) {
+  failure("%s at %d:%d\n", msg, loc.fst, loc.snd)
 }
 
 -- An attribute-processing functions
@@ -20,45 +20,100 @@ fun error (msg, loc) {
 
 -- Checks if a plain value "val" can be used in the context described by
 -- the attribute "atr".
-fun assertValue (atr, v, loc) {
+fun assertValue(atr, v, loc) {
   case atr of
-    Ref  -> error ("reference expected", loc)
-  | Void -> Ignore (v)
-  | _    -> v
+      Ref  -> error("reference expected", loc)
+    | Void -> Ignore(v)
+    | _    -> v
   esac
 }
 
-fun assertVoid (atr, v, loc) {
+fun assertVoid(atr, v, loc) {
   case atr of
-    Void -> v
-  | Val  -> error ("value expected", loc)
-  | _    -> error ("reference expected", loc)
+      Void -> v
+    | Val  -> error("value expected", loc)
+    | _    -> error("reference expected", loc)
   esac
 }
 
 -- A parser of "something" in brackets; l, r are left and right
 -- brackets as parsers, p --- a parser of "something"
 fun inbr(l, p, r) {
-  syntax(-l p -r)
+  syntax (-l p -r)
 }
 
 fun binaryOperation(op) {
-  [s(op), fun(l, _, r) { Binop(op, l ,r) }]
+  [
+    syntax(pos -s[op]),
+    fun(l, loc, r) {
+      fun(x) {
+        assertValue(x, Binop(op, l(Val), r(Val)), loc)
+      }
+    }
+  ]
 }
 
--- Primary expression
-var primary = memo $ eta(
-  decimal @ fun(x) { Const(stringInt(x)) }
-  | lident @ fun(x) { Var(x) }
-  | inbr(s("("), expression, s(")"))
+var ifStatement = memo $ eta syntax(
+  empty {
+      fun (x) {
+        case x of
+          Val -> failure("value expected, but no else branch")
+          | _ -> Skip
+        esac
+      }
+    }
+  | -kElse elseBody = exp
+  | -kElif condition = basic -kThen thenBody = exp elseBody = ifStatement
+    { fun(x) { If(condition(Val), thenBody(x), elseBody(x)) } }
 );
 
-var expression = memo $ eta(
+var primary = memo $ eta syntax(
+  loc = pos x = decimal { fun(a) { assertValue(a, Const(stringInt(x)), loc) } }
+  | x = lident {
+      fun(a) {
+        case a of
+            Ref  -> Ref(x)
+          | Void -> Ignore(Var(x))
+          | _    -> Var(x)
+        esac
+      }
+    }
+  | inbr[s("("), exp, s(")")]
+  | loc = pos kSkip { fun(a) { assertVoid(a, Skip, loc) } }
+  | loc = pos kRead name = inbr[s("("), lident, s(")")]
+    { fun(a) { assertVoid(a, Read(name), loc) } }
+  | loc = pos kWrite exp = inbr[s("("), exp, s(")")]
+    { fun(a) { assertVoid(a, Write(exp(Val)), loc) } }
+  | -kIf condition = basic -kThen thenBody = exp elseBody = ifStatement -kFi
+    { fun(a) { If(condition(Val), thenBody(a), elseBody(a)) } }
+  | loc = pos -kWhile condition = basic -kDo body = exp -kOd
+    { fun(a) { assertVoid(a, While(condition(Val), body(Void)), loc) } }
+  | loc = pos -kDo body = exp -kWhile condition = basic -kOd
+    { fun(a) { assertVoid(a, DoWhile(body(Void), condition(Val)), loc) } }
+  | -kFor beforeAll = exp -s[","] condition = basic -s[","] afterAll = exp
+    -kDo body = exp -kOd
+    { fun(a) { Seq(beforeAll(Void), While(condition(Val), Seq(body(Void), afterAll(a)))) } }
+);
+
+var basic = memo $ eta(
   expr(
     {
-      [Left, { binaryOperation("!!") }],
-      [Left, { binaryOperation("&&") }],
-      [Nona, map(binaryOperation, { "==", "!=", ">", "<", ">=", "<=" })],
+      [
+        Right,
+        {
+          [
+            syntax(pos -s[":="]),
+            fun(l, loc, r) {
+              fun(x) {
+                assertValue(x, Assn(l(Ref), r(Val)), loc)
+              }
+            }
+          ]
+        }
+      ],
+      [Left, map(binaryOperation, { "!!" })],
+      [Left, map(binaryOperation, { "&&" })],
+      [Nona, map(binaryOperation, { "==", "!=", "<", ">", "<=", ">=" })],
       [Left, map(binaryOperation, { "+", "-" })],
       [Left, map(binaryOperation, { "*", "/", "%" })]
     },
@@ -66,32 +121,10 @@ var expression = memo $ eta(
   )
 );
 
-var ifStatement = memo $ eta syntax(
-    empty { Skip }
-    | kElse elseBody = statement { elseBody }
-    | kElif condition = expression kThen s1 = statement elseBody = ifStatement
-      { If(condition, s1, elseBody) }
-  );
-
-var separateStatement = memo $ eta syntax(
-  kSkip { Skip }
-  | kRead variable = inbr [s("("), lident, s(")")] { Read(variable) }
-  | kWrite value = inbr [s("("), expression, s(")")] { Write(value) }
-  | variable = lident s [":="] value = expression { Assn(variable, value) }
-  | kWhile condition = expression kDo body = statement kOd { While(condition, body) }
-  | kDo body = statement kWhile condition = expression kOd { DoWhile(body, condition) }
-  | kFor initialization = statement s[","] condition = expression s[","]
-    increment = statement kDo body = statement kOd
-    { Seq(initialization, While(condition, Seq(body, increment))) }
-  | kIf condition = expression kThen thenBody = statement elseBody = ifStatement kFi
-    { If(condition, thenBody, elseBody) }
-);
-
-
-var statement = memo $ eta syntax(
-  separateStatement
-  | left = separateStatement s [";"] right = statement { Seq(left, right) }
+var exp = memo $ eta syntax(
+  basic
+  | left = basic s[";"] right = exp { fun(x) { Seq(left(Void), right(x)) } }
 );
 
 -- Public top-level parser
-public parse = statement;
+public parse = syntax(s = exp { s(Void) });

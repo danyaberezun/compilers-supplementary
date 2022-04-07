@@ -1,5 +1,5 @@
 -- Stack machine.
-
+import Data;
 import Array;
 import List;
 import Fun;
@@ -14,15 +14,19 @@ import Fun;
 -- string representation.
 public fun showSMInsn(i) {
   case i of
-    READ         -> sprintf("READ")
-  | WRITE        -> sprintf("WRITE")
+    READ        -> sprintf("READ")
+  | WRITE       -> sprintf("WRITE")
   | BINOP(s)    -> sprintf("BINOP %s", s)
   | LD   (x)    -> sprintf("LD %s", x)
+  | LDA  (x)    -> sprintf("LDA %s", x)
   | ST   (x)    -> sprintf("ST %s", x)
+  | STI         -> sprintf("STI")
   | CONST(n)    -> sprintf("CONST %d", n)
   | LABEL(s)    -> sprintf("LABEL %s", s)
   | JMP  (l)    -> sprintf("JMP %s", l)
   | CJMP (c, l) -> sprintf("CJMP %s, %s", c, l)
+  | DUP         -> sprintf("DUP")
+  | DROP        -> sprintf("DROP")
   esac
 }
 
@@ -30,57 +34,20 @@ public fun showSM(prg) {
   map(fun(i) { showSMInsn(i) ++ "\n" }, prg).stringcat
 }
 
-fun evaluateInstruction([stack, state, world], command) {
-  case command of
-    CONST(value) -> [value:stack, state, world]
-  | READ ->(
-      var valueWorld = readWorld(world);
-      var value = valueWorld.fst;
-      var newWorld = valueWorld.snd;
-      [value:stack, state, newWorld]
-  )
-  | WRITE ->(
-      case stack of
-        value:newStack -> [newStack, state, writeWorld(value, world)]
-      | _ -> failure("evaluateInstruction/write: Empty stack")
-      esac
-  )
-  | BINOP(operation) ->(
-      case stack of
-        r:l:rest ->(
-          var value = calculateBinaryOperation(operation, l, r);
-          [value:rest, state, world]
-      )
-      | _ -> failure("evaluateInstruction/binop: Insufficient operands")
-      esac
-  )
-  | LD(variableName) -> [state(variableName):stack, state, world]
-  | ST(variableName) ->(
-    case stack of
-      value:newStack -> [newStack, state <- [variableName, value], world]
-    | _ -> failure("evaluateInstruction/st: Empty stack")
-    esac
-  )
-  | LABEL(_) -> [stack, state, world]
-  esac
-}
-
--- Evaluation environment: keeps a mapping between labels and(sub)programs
+-- Evaluation environment: keeps a mapping between labels and (sub)programs
 fun initEvalEnv(insns) {
   var map =
     fix(fun(rec) {
       fun([m, insns]) {
         case insns of
-          {}               -> m
-          | LABEL(lab) : tl -> rec([addMap(m, lab, insns), tl])
+            {}               -> m
+          | LABEL (lab) : tl -> rec([addMap(m, lab, insns), tl])
           | _ : tl           -> rec([m, tl])
         esac
       }
     }) $ [emptyMap(compare), insns];
 
-  [fun(l) {
-     case findMap(map, l) of Some(insns) -> insns esac
-  }]
+  [fun(l) { case findMap(map, l) of Some (insns) -> insns esac }]
 }
 
 -- Accessor function
@@ -90,26 +57,71 @@ fun fromLabel(env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval(env, configuration@[stack, state, world], instructions) {
-  case instructions of
-    {} -> configuration
-    | i:instructionTail ->
-      case i of
-        CJMP(fl, lab) ->
-          case stack of
-            value:stackTail -> eval(
-              env,
-              [stackTail, state, world],
-              if value == fl
-              then fromLabel(env, lab)
-              else instructionTail
-              fi
-            )
-          esac
-        | JMP(lab) -> eval(env, configuration, fromLabel(env, lab))
-        | _ -> eval(env, evaluateInstruction(configuration, i), instructionTail)
-      esac
-  esac
+fun eval(environment, configuration, instance) {
+  fun isNotEmpty(l) {
+    case l of
+      {}  -> false
+      | _ -> true
+    esac
+  }
+
+  fun evalInstance(configuration@[stack, state, world], instance) {
+    case instance of
+      READ -> case readWorld(world) of
+          [v, newWorld] -> Next([v:stack, state, newWorld])
+        esac
+      | WRITE -> case stack of
+          v:tail -> Next([tail, state, writeWorld(v, world)])
+        esac
+      | BINOP(op) -> case stack of
+          v1:v2:tail -> Next([evalOp(op, v2, v1):tail, state, world])
+        esac
+      | LD (name) -> Next([state(name):stack, state, world])
+      | LDA(name) -> Next([Address(name):stack, state, world])
+      | ST (name) -> case stack of
+          v:tail -> Next([tail, state <- [name, v], world])
+        esac
+      | STI -> case stack of
+          value:Address(name):tail -> Next([value:tail, state <- [name, value], world])
+        esac
+      | CONST(int) -> Next([int:stack, state, world])
+      | DUP -> case stack of
+          v:tail -> Next([v:v:tail, state, world])
+        esac
+      | DROP -> case stack of
+          v:tail -> Next([tail, state, world])
+        esac
+      | LABEL(_) -> Next(configuration)
+      | JMP(label) -> FromLabel(configuration, label)
+      | CJMP(key, label) ->
+        case stack of
+          v:tail ->
+            var newConfiguration = [tail, state, world];
+            if key === "z" && v == 0 !! key === "nz" && v != 0
+              then FromLabel(newConfiguration, label)
+              else Next(newConfiguration)
+            fi
+        esac
+    esac
+  }
+
+  var currentInstance = instance;
+  var currentConfiguration = configuration;
+
+  while currentInstance.isNotEmpty do
+    case currentInstance of
+      insn:tail ->
+        case evalInstance(currentConfiguration, insn) of
+        Next(configuration) ->
+          currentConfiguration := configuration;
+          currentInstance := tail
+        | FromLabel(configuration, label) ->
+          currentConfiguration := configuration;
+          currentInstance := environment.fromLabel(label)
+        esac
+    esac
+  od;
+  currentConfiguration
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -119,9 +131,7 @@ public fun evalSM(input, insns) {
 
 -- Compilation environment: generates labels
 fun makeCompEnv(n) {
-  [fun() {
-     [sprintf("L%d", n), makeCompEnv(n + 1)]
-  }]
+  [fun() { [sprintf("L%d", n), makeCompEnv(n + 1)] }]
 }
 
 fun initCompEnv() {
@@ -137,8 +147,8 @@ fun genLabel(env) {
 fun genLabels(env, n) {
   fun inner(env, n) {
     if n == 0
-    then { env }
-    else case env.genLabel of
+      then { env }
+      else case env.genLabel of
         [lab, env] -> lab:inner(env, n - 1)
       esac
     fi
@@ -148,105 +158,132 @@ fun genLabels(env, n) {
 }
 
 -- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
-fun compileExpr(expression) {
-  case expression of
-    Var(variableName) -> singletonBuffer(LD(variableName))
-  | Const(value) -> singletonBuffer(CONST(value))
-  | Binop(operation, l, r) ->
-    (compileExpr(l) <+> compileExpr(r)) <+(BINOP(operation))
-  esac
-}
-
--- Compiles a statement into a stack machine code.
--- Takes a statement, returns a list of stack machine
+-- Takes an expression, returns a list of stack machine
 -- instructions.
 public fun compileSM(stmt) {
-  -- Generates a buffer with an optional label
-  --    lab     --- the name of the label
-  --    labUsed --- a flag if the lebel is needed
   fun label(lab, labUsed) {
     if labUsed
-    then singletonBuffer(LABEL(lab))
-    else emptyBuffer()
+      then singletonBuffer(LABEL(lab))
+      else emptyBuffer()
     fi
   }
 
-  -- Generates SM code for a given statement
-  --    lab  --- a label th go to after the statement is executed
-  --    env  --- compilation environment
-  --    stmt --- a statement to generate SM code for
-  -- Returns a triple:
-  --    boolean flag indicating if "lab" was used
-  --    updated environment
-  --    code buffer
   fun compile(lab, env, stmt) {
-
-    fun gengencomp(body, f) {
-      case env.genLabel of
-        [l1, env] -> case env.genLabel of
-          [l2, env] -> case compile(l2, env, body) of
-            [l3, env, code] -> f(l1, l2, l3, env, code)
+    case stmt of
+        Skip     -> [false, env, emptyBuffer()]
+      | Var  (x) -> [false, env, singletonBuffer(LD(x))]
+      | Ref  (x) -> [false, env, singletonBuffer(LDA(x))]
+      | Const(n) -> [false, env, singletonBuffer(CONST(n))]
+      | Read (x) -> [false, env, singletonBuffer(READ) <+ ST(x)]
+      | Ignor(e) ->
+        case compile(lab, env, e) of
+          [labUsed, env, code] -> [false, env, code <+> label(lab, labUsed) <+ DROP]
+        esac
+      | Write(e) ->
+        case compile(lab, env, e) of
+          [labUsed, env, code] -> [false, env, code <+> label(lab, labUsed) <+ WRITE]
+        esac
+      | Assn(ref, expr) ->
+        case env.genLabel of
+          [l1, env] -> case compile(l1, env, ref) of
+            [l2, env, code1] -> case compile(lab, env, expr) of
+              [l3, env, code2] ->
+                [
+                  false,
+                  env,
+                  code1
+                  <+> label(l1, l2)
+                  <+> code2
+                  <+> label(lab, l3)
+                  <+ STI
+                ]
+            esac
           esac
         esac
-      esac
-    }
-
-    case stmt of
-      Skip        -> [false, env, emptyBuffer()]
-    | Read(x)     -> [false, env, singletonBuffer(READ) <+ ST(x)]
-    | Write(e)    -> [false, env, compileExpr(e) <+ WRITE]
-    | Assn(x, e)  -> [false, env, compileExpr(e) <+ ST(x)]
-    | Seq(s1, s2) ->
+      | Seq(left, right) ->
         case env.genLabel of
-          [l1, env] -> case compile(l1, env, s1) of
-            [l2, env, code1] -> case compile(lab, env, s2) of
+          [l1, env] -> case compile(l1, env, left) of
+            [l2, env, code1] -> case compile(lab, env, right) of
               [l3, env, code2] -> [l3, env, code1 <+> label(l1, l2) <+> code2]
             esac
           esac
         esac
-    | While(cond, body) -> gengencomp(body, fun(l1, l2, l3, env, code) {
-        [
-          true,
-          env,
-          LABEL(l1).singletonBuffer
-          <+> compileExpr(cond)
-          <+ CJMP(0, lab)
-          <+> code
-          <+> label(l2, l3)
-          <+ JMP(l1)
-        ]
-      })
-    | If(cond, thenBody, elseBody) -> gengencomp(thenBody, fun(l1, l2, l3, env, code1) {
-        case compile(lab, env, elseBody) of
-          [_, env, code2] ->
-            [
-              true,
-              env,
-              compileExpr(cond)
-              <+ CJMP(0, l1)
-              <+> code1
-              <+> label(l2, l3)
-              <+ JMP(lab)
-              <+> LABEL(l1).singletonBuffer
-              <+> code2
-            ]
+      | Binop(opName, l, r) ->
+        case compile(lab, env, l) of
+          [l1, env, code1] -> case env.genLabel of
+            [l2, env] -> case compile(l2, env, r) of
+              [l3, env, code2] ->
+                [
+                  false,
+                  env,
+                  code1
+                  <+> label(lab, l1)
+                  <+> code2
+                  <+> label(l2, l3)
+                  <+ BINOP(opName)
+                ]
+            esac
+          esac
         esac
-      })
-    | DoWhile(body, cond) -> gengencomp(body, fun(l1, l2, l3, env, code) {
-        [
-          true,
-          env,
-          LABEL(l1).singletonBuffer
-          <+> code
-          <+> label(l2, l3)
-          <+> compileExpr(cond)
-          <+ CJMP(0, lab)
-          <+ JMP(l1)
-        ]
-      })
+      | If (condition, thenBody, elseBody) ->
+        case env.genLabels(2) of
+          [l1, l2, env] -> case compile(l1, env, condition) of
+            [l3, env, code1] -> case compile(lab, env, thenBody) of
+              [_, env, code2] -> case compile(lab, env, elseBody) of
+                [_, env, code3] ->
+                  [
+                    true,
+                    env,
+                    code1
+                    <+> label(l1, l3)
+                    <+ CJMP("z", l2)
+                    <+> code2
+                    <+ JMP(lab)
+                    <+ LABEL(l2)
+                    <+> code3
+                  ]
+              esac
+            esac
+          esac
+        esac
+      | While (condition, body) ->
+        case env.genLabels(2) of
+          [l1, l2, env] -> case compile(l1, env, body) of
+            [_, env, code1] -> case compile(l2, env, condition) of
+              [l3, env, code2] ->
+                [
+                  true,
+                  env,
+                  label(l1, true)
+                  <+> code2
+                  <+> label(l2, l3)
+                  <+ CJMP("z", lab)
+                  <+> code1
+                  <+ JMP(l1)
+                ]
+            esac
+          esac
+        esac
+      | DoWhile(body, condition) ->
+        case env.genLabels(3) of
+          [l1, l2, l3, env] -> case compile(l3, env, body) of
+            [l4, env, code1] -> case compile(l1, env, condition) of
+              [l5, env, code2] ->
+                [
+                  false,
+                  env,
+                  label(l2, true)
+                  <+> code1
+                  <+> label(l3, l4)
+                  <+> code2
+                  <+> label(l1, l5)
+                  <+ CJMP("nz", l2)
+                ]
+            esac
+          esac
+        esac
     esac
-  }
+}
 
   case initCompEnv().genLabel of
     [endLab, env] ->
