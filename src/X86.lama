@@ -404,6 +404,53 @@ fun suffix (op) {
   | "!=" -> "ne"
   | ">=" -> "ge"
   | ">"  -> "g"
+  | s -> failure("suffix: unknown comparison operator provided: %s\n", s.string)
+  esac
+}
+
+
+fun binOpToAS(op) {
+--  printf("inside binParser with %s", op);
+  case op of
+     "+" -> SMUL (op)
+    | "-" -> SMUL (op)
+    | "*" -> SMUL (op)
+    | "/" -> DIV (eax)
+    | "%" -> DIV (edx)
+    | "!!" -> LOP (op)
+    | "&&" -> LOP (op)
+    | _ -> (
+        case suffix (op) of
+            word -> CMP (word)
+        esac
+    )
+  esac
+}
+
+fun setArgs(env, code, num) {
+  case num of
+    0 -> [env, code]
+   | _ -> case pop(env) of
+        [v, env] -> setArgs(env, code <+ Push(v), num - 1)
+       esac
+  esac
+}
+
+fun callCode(env, fLabel, argN) {
+  var liveRegs = liveRegisters(env, argN);
+  var pushCode = foldl(fun (code, r) { code <+ Push (r) }, emptyBuffer(), liveRegs);
+--  printf("%s\n", pushCode.string);
+  case foldl(fun (code, r) {code <+ Push (r) }, emptyBuffer(), liveRegs) of
+     lRegsCode -> case setArgs(env, emptyBuffer(), argN) of
+            [env, argsCode] -> --printf("argCode: %s\n", argsCode.string);
+            case allocate(env) of
+               [v, env] -> [env,
+                        lRegsCode <+> argsCode <+ Call (fLabel) <+ Binop ("+", L(wordSize * argN), esp)
+                        <+> foldl(fun (code, r) {code <+ Pop (r)}, emptyBuffer(), reverse(liveRegs))
+                        <+> move(eax, v)
+                        ]
+               esac
+        esac
   esac
 }
 
@@ -414,15 +461,76 @@ fun compile (env, code) {
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+--        printf("%s\n", code.string);
         case i of
           READ ->
             case env.allocate of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
-            esac             
+	      [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+            esac
         | WRITE ->
             case env.pop of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
+	      [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) ]
             esac
+       | DROP -> case env.pop of [_, env] -> [env, code] esac
+       | LDA (x) -> case env.allocate of
+              [s, env] -> [env, code <+ Lea (env.loc(x), eax) <+ Mov (eax, s)]
+            esac
+      | LD (x) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (env.loc(x), s)]
+          esac
+      | ST (x) ->
+         case env.peek of
+            top -> [env, code <+> move(top, env.loc(x))]
+         esac
+      | STI -> case env.pop2 of [y, x, env] ->
+                 case push(env, x) of env ->
+                   if memOpnd(y) then
+                     [env, code <+ Mov(y, eax) <+ Mov(x, edx) <+ Mov(eax, I(0, edx) <+ Mov(eax, x))]
+                   else
+                     [env, code <+ Mov(x, edx) <+ Mov(y, I(0, edx)) <+ Mov(y, x)]
+                   fi
+                 esac
+               esac
+      | CONST (x) ->
+        case env.allocate of
+            [s, env] -> [env, code <+ Mov ( L(x), s) ]
+        esac
+     | BINOP (op) ->
+        case env.pop2 of
+            [x, y, env] -> (
+                case push(env, y) of
+                    envNew -> case binOpToAS(op) of
+                           SMUL (op) -> [envNew, code <+ Mov (y, eax) <+ Binop (op, x, eax) <+ Mov (eax, y)]
+                           | DIV (reg) -> [envNew, code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (reg, y)]
+                           | CMP (op) -> [envNew, code <+ Mov (y, eax) <+ Binop ("cmp", x, eax) <+ Mov ( L(0), eax) <+ Set (op, "%al") <+ Mov (eax, y) ]
+                           | LOP (op) -> [envNew, code <+ Binop ("cmp", L(0), y) <+ Mov ( L(0), edx) <+ Set(suffix("!="), "%dl") <+
+                                          Binop ("cmp", L(0), x) <+ Mov ( L(0), eax) <+ Set(suffix("!="), "%al") <+
+--                           Binop("cmp", y, eax)  <+ Set(suffix("!="), "%al")  <+ Binop("cmp", x, edx) <+ Set(suffix("!="), "%dl") <+
+                                           Binop(op, edx, eax) <+ Mov(eax, y) ]
+                          esac
+                esac
+            )
+        esac
+     | LABEL (l) -> if isBarrier(env, l) then
+                        [retrieveStack(env, l), code <+ Label (l)]
+                    else [env, code <+ Label (l)]
+                    fi
+     | JMP (l) -> [env.setStack(l).setBarrier, code <+ Jmp (l) ]
+
+     | GLOBAL(x) -> [addGlobal(env, x), code]
+
+     | BEGIN(lab, args, argsN) -> [enterFunction(env, lab, argsN), code <+> prologue(lab) ]
+     | END -> case epilogue(env) of
+            [env, ep] -> [env, code <+> ep]
+        esac
+     | CJMP (mode, l) -> case env.pop of
+            [s, env] -> [env.setStack(l), code <+ Binop("cmp", L(0), s) <+ CJmp (mode, l) ]
+        esac
+     | CALL (fLab, n) -> case callCode(env, fLab, n) of
+            [env, codeR] -> [env, code <+> codeR]
+        esac
+      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         (* Assignment *)
         
          -- Some guidelines for generating function calls:
