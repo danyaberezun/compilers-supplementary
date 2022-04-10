@@ -349,26 +349,114 @@ fun suffix (op) {
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
-fun compile (env, code) {
-  fun compile (env, code) {
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-            esac
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+fun compile (env, code) {	
+	fun baseCommands(env, code, i) {
+		case i of
+		  READ ->
+		    case env.allocate of
+		      [s, env] -> [env, code <+ Call ("Lread") <+> move (eax, s)]
+		    esac             
+		| WRITE ->
+		    case env.pop of
+		      [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+		    esac
+		| CONST (n) ->
+		    case env.allocate of
+		      [s, env] -> [env, code <+> move (L (n), s)]
+		    esac
+    | ST (x) ->
+        case env.addGlobal (x).pop of
+          [s, env] -> [env, code <+> move (s, env.loc (x))]
         esac
-      }, [env, emptyBuffer ()], code)
+    | LD (x) ->
+          case env.addGlobal (x).allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac
+    esac
   }
 
-  compile (env, code) 
+  foldl (
+    fun ([env, scode], i) {
+      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      case i of
+        BINOP (o) ->
+          case env.pop2 of [x, y, env] -> case env.allocate of [s, env] ->
+            fun compileMath() {
+              [env, code <+> move (x, eax) <+> move (y, edx) <+ Binop (o, eax, edx) <+> move (edx, s)]
+            }
+
+            fun compileLogic() {
+              [
+                env,
+                code <+ Mov (x, eax) <+ Binop ("cmp", eax, y) <+ Mov (L (0), eax) <+ Set (suffix (o), "%al") <+ Mov (eax, s)
+              ]
+            }
+
+            fun compileBitwise() {
+              [
+                env,
+                code <+ Mov (L (0), eax) <+ Binop ("cmp", x, eax) <+ Set (suffix ("!="), "%al") <+ Mov (L (0), edx)
+                  <+ Binop ("cmp", y, edx) <+ Set (suffix ("!="), "%dl") <+ Binop (o, eax, edx) <+ Mov (L (0), eax)
+                  <+ Set (suffix ("!="), "%al") <+ Mov (eax, s)
+              ]
+            }
+
+            case o of
+              "*"  -> compileMath()
+            | "+"  -> compileMath()
+            | "-"  -> compileMath()
+            | "/"  -> [env, code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (eax, s)]
+            | "%"  -> [env, code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (edx, s)]
+            | "&&" -> compileBitwise()
+            | "!!" -> compileBitwise()
+            | _    -> compileLogic()
+            esac
+          esac esac
+      | LABEL (l) -> 
+        [env.retrieveStack(l), code <+ Label (l)]
+      | CJMP (c, l) ->
+      	case env.pop of
+          [s, env] -> [env.setStack(l), code <+ Binop ("cmp", L (0), s) <+ CJmp (c, l)]
+        esac
+      | JMP (l) ->
+        [env.setStack(l), code <+ Jmp (l)]
+      | LDA (a) ->
+        case env.addGlobal (a).allocate of
+          [s, env] ->
+            case s of
+              R (_) -> [env, code <+ Lea(env.loc (a), s)]
+            | _   -> [env, code <+ Lea(env.loc (a), eax) <+ Mov (eax, s)]
+            esac
+        esac
+      | STI ->
+        case env.pop of
+          [x, env] ->
+            case env.peek of
+              r -> [
+                env,
+                code 
+                  <+> case x of 
+                    R (_) -> case r of
+                               R (_) -> {Mov (x, I (0, r))}
+                             | _     -> {Mov (x, edx), Mov (x, I (0, edx))}
+                             esac
+                  | _     ->  case r of
+                               R (_) -> {Mov (x, eax), Mov (x, I (0, r))}
+                             | _     -> {Mov (x, eax), Mov (x, edx), Mov (x, I (0, r))}
+                             esac
+                  esac.listBuffer
+                  <+> move(x, r)
+              ]
+            esac
+        esac
+      | DUP  ->
+        case env.peek of
+          x -> case env.allocate of [s, env] -> [env, code <+> move(x, s)] esac
+        esac
+      | DROP -> case env.pop of [_, env] -> [env, code] esac
+      | o -> baseCommands(env, code, i)
+      esac
+    }, [env, emptyBuffer ()], code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
