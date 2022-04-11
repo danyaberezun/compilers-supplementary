@@ -349,27 +349,72 @@ fun suffix (op) {
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
-fun compile (env, code) {
-  fun compile (env, code) {
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-            esac
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-      }, [env, emptyBuffer ()], code)
-  }
-
-  compile (env, code) 
+fun compile(env, code) {
+  foldl(
+    fun ([env, scode], i) {
+      var code = scode <+ Meta("# " ++ showSMInsn(i) ++ "\n");
+      case i of
+        READ -> case env.allocate of [item, env] -> [env, code <+ Call("Lread") <+ Mov(eax, item)] esac
+        | WRITE -> case env.pop of [item, env] -> [env, code <+ Push(item) <+ Call("Lwrite") <+ Pop(eax)] esac
+        | CONST(value) -> fun ([item, env]) { [env, code <+> move(L(value), item)] }(env.allocate)
+        | BINOP(op) -> fun ([lOp, rOp, env]) { fun ([ret, env]) {[env, code <+> operation(op, lOp, rOp, ret)]}(env.allocate) }(env.pop2)
+        | LD(variable) -> fun ([item, env]) { [env, code <+> move(env.loc(variable), item)] }(env.addGlobal(variable).allocate)
+        | LDA(variable) -> fun ([s, env]) { [env, code <+ Lea(loc(env, variable), eax) <+ Mov(eax, s)] } (env.addGlobal(variable).allocate)
+        | ST(variable) -> fun ([item, env]) { [env, code <+> move(item, env.loc(variable))] }(env.addGlobal(variable).pop)
+        | STI -> fun([v, variable, env]) {
+          case env.allocate of
+            [s, env] -> [env, code <+ Mov(variable, eax) <+ Mov(v, edx) <+ Mov(edx, I(0, eax)) <+ Mov(edx, s)]
+          esac
+        }(env.pop2)
+        | LABEL(label) -> [if isBarrier(env) then retrieveStack(env, label) else env fi, code <+ Label(label)]
+        | JMP(label) -> [setBarrier(setStack(env, label)), code <+ Jmp(label)]
+        | CJMP(0, label) -> fun ([s, env]) { [setStack(env, label), code <+ Binop("cmp", L(0), s) <+ CJmp("z", label)] }(env.pop)
+        | CJMP(_, label) -> fun ([s, env]) { [setStack(env, label), code <+ Binop("cmp", L(0), s) <+ CJmp("nz", label)] }(env.pop)
+        | DROP -> fun([v, env]) { [env, code] }(env.pop)
+        | DUP -> fun ([v, env]) {
+          var c1 = env.allocate;
+          var c2 = c1[1].allocate;
+          [c2[1], code <+> move(v, eax) <+> move(eax, c1[0]) <+> move(eax, c2[0])]
+        }(env.pop)
+      esac
+    }, [env, emptyBuffer()], code)
 }
+
+fun operation(name, lOp, rOp, ret) {
+  case name of
+    "+" -> processOp(name, lOp, rOp, ret)
+    | "-" -> processOp(name, lOp, rOp, ret)
+    | "*" -> processOp(name, lOp, rOp, ret)
+    | "/" -> processDivision(eax, lOp, rOp, ret)
+    | "%" -> processDivision(edx, lOp, rOp, ret)
+    | "&&" -> processLogical(name, lOp, rOp, ret)
+    | "!!" -> processLogical(name, lOp, rOp, ret)
+    | cmp -> processCmp(cmp, lOp, rOp, ret)
+  esac
+}
+
+
+fun toBit(opnd) {
+  Binop("cmp", L(0), opnd).singletonBuffer <+ Mov(L(0), eax) <+ Set(suffix("!="), "%al") <+ Mov(eax, opnd)
+}
+
+fun processLogical(x86Name, lOp, rOp, dest) {
+  toBit(lOp) <+> toBit(rOp) <+ Mov(rOp, eax) <+ Binop(x86Name, lOp, eax) <+ Mov(eax, dest)
+}
+
+fun processOp(x86Name, lOp, rOp, dest) {
+  move(rOp, edx) <+ Binop(x86Name, lOp, edx) <+ Mov(edx, dest)
+}
+
+fun processDivision(reg, lOp, rOp, dest) {
+  move(rOp, eax) <+ Cltd <+ IDiv(lOp)  <+ Mov(reg, dest)
+}
+
+fun processCmp(name, lOp, rOp, dest) {
+  move(lOp, eax) <+ Binop("cmp", eax, rOp) <+ Mov(L(0), eax) <+ Set(suffix(name), "%al") <+ Mov(eax, dest)
+}
+
+
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
