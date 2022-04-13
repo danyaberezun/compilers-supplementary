@@ -410,7 +410,6 @@ fun suffix (op) {
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  fun compile (env, code) {
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
@@ -440,15 +439,164 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-               
+        | BINOP (s) ->
+          case env.pop2 of
+            [y, x, env] ->
+              case env.allocate of
+                [res, env] -> (
+                  fun normalOp(op, l, r) {
+                    [
+                      env, 
+                      code 
+                        <+> move  (l, eax)
+                        <+  Binop (s, r, eax)
+                        <+> move  (eax, res)
+                    ]
+                  }
+
+                  fun boolOp(op, l, r) {
+                    [
+                      env,
+                      code
+                        <+  Binop ("cmp", L (0), r)
+                        <+> move  (L (0), eax)
+                        <+  Set   (suffix ("!="), "%al")
+                        <+> move  (eax, r)
+                        <+  Binop ("cmp", L (0), l)
+                        <+> move  (L (0), eax)
+                        <+  Set   (suffix ("!="), "%al")
+                        <+  Binop (s, r, eax)
+                        <+> move  (eax, res)
+                    ]
+                  }
+
+                  fun compareOp(op, l, r) {
+                    [
+                      env, 
+                      code 
+                        <+> move  (r, eax)
+                        <+  Binop ("cmp", eax, l)
+                        <+> move  (L (0), eax)
+                        <+  Set   (suffix (s), "%al")
+                        <+> move  (eax, res)
+                    ]
+                  }
+
+                  case s of
+                    "+" -> normalOp ("+", x, y)
+                  | "-" -> normalOp ("-", x, y)
+                  | "*" -> normalOp ("*", x, y)
+                  | "&&" -> boolOp ("&&", x, y)
+                  | "!!" -> boolOp ("!!", x, y)
+                  | "/" -> [env, code <+> move (x, eax) <+ Cltd <+ IDiv (y) <+> move (eax, res)]
+                  | "%" -> [env, code <+> move (x, eax) <+ Cltd <+ IDiv (y) <+> move (edx, res)]
+                  | cmpOp -> compareOp (cmpOp, x, y)
+                  esac
+                )
+              esac
+          esac
+        | LD (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (env.loc (x), s)]
+            esac      
+        | LDA (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Lea  (env.loc (x), s)]
+            esac
+        | ST (x) ->
+            case env.peek of
+              s -> [env, code <+> move (s, env.loc (x))]
+            esac      
+        | STI ->
+            case env.pop of
+              [s, env] -> 
+                case env.peek of 
+                  t    -> [env, code <+> move (s, I (0, t)) <+>  move (s, t)]
+                esac
+            esac
+        | CONST (n) ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Mov (L (n), s)]
+            esac
+        | LABEL (s) ->
+          if env.isBarrier then
+            [env.retrieveStack (s), code <+ Label (s)]
+          else
+            [env, code <+ Label (s)]
+          fi
+        | JMP (l) -> [setBarrier (env.setStack (l)), code <+ Jmp  (l)]
+        | CJMP (c, l) ->
+            case env.pop of
+              [s, env] -> [env.setStack (l), code <+ Binop ("cmp", L (0), s) <+ CJmp (c, l)]
+            esac    
+        | DROP ->
+            case env.pop of
+              [_, env] -> [env, code]
+            esac
+        | GLOBAL (x) -> [env.addGlobal(x), code]
+        | CALL (f, n) -> (
+
+          fun pushArgs (env, code, n) {
+            if n then
+              case env.pop of
+                [arg, env] -> pushArgs (env, code <+ Push (arg), n - 1)
+              esac
+            else [env, code] fi
+          }
+
+          fun saveRegs(regs) {
+            foldl(
+              fun (c, reg) {
+                c <+ Push(reg)
+              },
+              emptyBuffer(),
+              regs
+            )
+          }
+
+          fun restoreRegs(regs) {
+            foldl(
+              fun (c, reg) {
+                c <+ Pop(reg)
+              },
+              emptyBuffer(),
+              regs
+            )
+          }
+
+          var liveRegs = liveRegisters(env, n);
+          case pushArgs(env, emptyBuffer(), n) of
+            [env, argcode] ->
+              case allocate(env) of
+                [res, env] ->
+                  [
+                    env, 
+                      code
+                      <+> saveRegs(liveRegs)
+                      <+> argcode
+                      <+ Call(f)
+                      <+ Binop("+", L (wordSize * n), esp)
+                      <+> restoreRegs(liveRegs)
+                      <+> move (eax, res)
+                  ]
+              esac
+          esac
+        )
+        | BEGIN (f, n, m) ->
+          [
+            enterFunction(env, f, m),
+            code <+> prologue(f)
+          ]
+        | END ->
+          case epilogue(env) of
+            [env, ep] -> [env, code <+> ep]
+          esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         (* End *)
         esac
       }, [env, emptyBuffer ()], code)
   }
 
-  compile (env, code) 
-}
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
