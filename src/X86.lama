@@ -7,12 +7,6 @@ import List;
 import Manifest;
 import Buffer;
 
-fun log(value) {
-  var f = fopen("/proc/self/fd/2", "a");
-  fprintf(f, "%s\n", string(value));
-  fclose(f)
-}
-
 -- Assembler language interface
 -- The registers:
 var regs = ["%ebx", "%ecx", "%esi", "%edi", "%eax", "%edx", "%ebp", "%esp"];
@@ -494,39 +488,63 @@ fun compile (env, code) {
     esac
   }
 
+  fun popn(env, n) {
+    var res = {};
+    for var i; i := 0, i < n, i := i + 1 do
+      case pop(env) of [v, nenv] ->
+        env := nenv;
+        res := v : res
+      esac
+    od;
+    [env, res]
+  }
+
   fun push_regs(env, depth) { listBuffer (map (fun (x) { Push (x) }, liveRegisters(env, depth))) }
   fun pop_regs(env, depth) { listBuffer (map (fun (x) { Pop (x) }, reverse (liveRegisters(env, depth)))) }
+
+  fun compile_call(env, fLabel, args) {
+    var na = size(args);
+    var code = foldl(fun (code, arg) {
+      code <+ Push (arg)
+    }, push_regs(env, 0), reverse(args)) <+ Call (fLabel) <+ Binop ("+", L (na * wordSize), esp) <+> pop_regs(env, 0);
+    case allocate(env) of [retVal, env] ->
+      [env, code <+ Mov (eax, retVal)]
+    esac
+  }
 
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       var next = case i of
-        READ ->
-          case allocate(env) of
-            [s, env] -> [env, push_regs(env, 0) <+ Call ("Lread") <+> pop_regs(env, 0) <+ Mov (eax, s)]
-          esac
-      | WRITE ->
-          case pop(env) of
-            [s, env] -> [env, push_regs(env, 0) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+> pop_regs(env, 0)]
-          esac
-      | LD    (x) ->
-          case allocate(env) of
-            [s, env] -> [env, move (loc(env, x), s)]
-          esac
-      | ST    (x) ->
-          case pop(env) of
-            [s, env] -> [env, move (s, loc(env, x))]
-          esac
-      | CONST (n) ->
-          case allocate(env) of
-            [s, env] -> [env, move (L (n), s)]
-          esac
-      | BINOP (s) ->
+        BINOP (s) ->
           case pop2(env) of
             [x, y, env] ->
               case allocate(env) of
                 [res, env] -> [env, buildBinop (s, x, y, res)]
               esac
+          esac
+      | LD    (x) ->
+          case allocate(env) of
+            [s, env] -> [env, move (loc(env, x), s)]
+          esac
+      | LDA (x) ->
+          case allocate(env) of [addr, env] ->
+            [env, Lea (loc(env, x), eax) <<+ Mov (eax, addr)]
+          esac
+      | ST    (x) ->
+          case pop(env) of
+            [s, env] -> [env, move (s, loc(env, x))]
+          esac
+      | STI ->
+          case pop2(env) of [addr, v, env] ->
+            [env, Mov (addr, eax) <<+ Mov (v, I (0, eax))]
+          esac
+      | SEXP (s, n) -> case popn(env, n) of [env, args] ->
+            compile_call(env, "Bsexp", L (n + 1) : args +++ {L (0)})
+          esac
+      | CONST (n) ->
+          case allocate(env) of
+            [s, env] -> [env, move (L (n), s)]
           esac
       | LABEL (l) -> [if isBarrier (env) then retrieveStack (env, l) else env fi, singletonBuffer (Label (l))]
       | JMP (l) -> [setBarrier (setStack (env, l)), singletonBuffer (Jmp (l))]
@@ -534,14 +552,11 @@ fun compile (env, code) {
           case pop(env) of
             [x, env] -> [setStack (env, l), Mov (x, edx) <<+ Binop ("!!", edx, edx) <+ CJmp (c, l)]
           esac
-      | LDA (x) ->
-          case allocate(env) of [addr, env] ->
-            [env, Lea (loc(env, x), eax) <<+ Mov (eax, addr)]
-          esac
-      | STI ->
-          case pop2(env) of [addr, v, env] ->
-            [env, Mov (addr, eax) <<+ Mov (v, I (0, eax))]
-          esac
+      | CALL (f, na) -> case popn(env, na) of [env, args] -> compile_call(env, f, args) esac
+      | BEGIN (fLabel, na, nl) ->
+          [enterFunction(env, fLabel, nl), prologue(fLabel)]
+      | GLOBAL (x) -> [addGlobal(env, x), emptyBuffer()]
+      | END -> epilogue(env)
       | DUP ->
           case peek(env) of x ->
             case allocate(env) of [dupped, env] ->
@@ -549,22 +564,21 @@ fun compile (env, code) {
             esac
           esac
       | DROP -> case pop(env) of [_, env] -> [env, emptyBuffer()] esac
-      | CALL (f, na) ->
-          var code = push_regs(env, na);
-          for var i; i := 0, i < na, i := i + 1 do
-            case pop(env) of [arg, nenv] ->
-              env := nenv;
-              code := code <+ Push (arg)
+      | STRING (s) -> case addString(env, s) of [env, name] ->
+            case compile_call(env, "Bstring", {eax}) of [env, code] -> 
+              [env, Lea (M (name), eax) <<+> code]
             esac
-          od;
-          code := code <+ Call (f) <+ Binop ("+", L (na * wordSize), esp) <+> pop_regs(env, 0);
-          case allocate(env) of [retVal, env] ->
-            [env, code <+ Mov (eax, retVal)]
           esac
-      | BEGIN (fLabel, na, nl) ->
-          [enterFunction(env, fLabel, nl), prologue(fLabel)]
-      | GLOBAL (x) -> [addGlobal(env, x), emptyBuffer()]
-      | END -> epilogue(env)
+      | ARRAY (n) -> case popn(env, n) of [env, args] ->
+            compile_call(env, "Barray", L (n) : args)
+          esac
+      | STA -> case popn(env, 3) of [env, {va, a, i}] ->
+            compile_call(env, "Bsta", {a, i, va})
+          esac
+      | ELEM -> case pop2(env) of [i, a, env] ->
+            compile_call(env, "Belem", {a, i})
+          esac
+      | BUILTIN (f, na) -> case popn(env, na) of [env, args] -> compile_call(env, "L" ++ f, args) esac
       (* Assignment *)
       
         -- Some guidelines for generating function calls:

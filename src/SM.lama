@@ -13,6 +13,13 @@ import Expr;
 import Builtins;
 import Buffer;
 
+
+fun log(value) {
+  var f = fopen("/proc/self/fd/2", "a");
+  fprintf(f, "%s\n", string(value));
+  fclose(f)
+}
+
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
 public fun showSMInsn (i) {
@@ -159,11 +166,15 @@ fun eval (env, w, insns) {
     | i : tail ->
         c :=
           case i of
-            READ         -> case readWorld(w) of [n, w] -> setWorld(setStack(c, n : s), w) esac
-          | WRITE        -> case s of n : s -> setWorld(setStack(c, s), writeWorld(n, w)) esac
-          | BINOP (op)   -> case s of rhs : lhs : s -> setStack(c, evalOp(op, lhs, rhs) : s) esac
+            BINOP (op)   -> case s of rhs : lhs : s -> setStack(c, evalOp(op, lhs, rhs) : s) esac
           | LD    (x)    -> setStack(c, lookup(v, x) : s)
+          | LDA   (x)    -> setStack(c, Ref (x) : s)
           | ST    (x)    -> case s of n : s -> setState(setStack(c, s), v <- x :=: n) esac
+          | STI          ->
+              case s of Ref (x) : ass : s ->
+                setState(setStack(c, s), v <- x :=: ass)
+              esac
+          | SEXP (id, n) -> tail := ARRAY (n) : tail; c
           | CONST (n)    -> setStack(c, n : s)
           | LABEL (s)    -> c
           | JMP   (l)    -> tail := fromLabel (env, l); c
@@ -176,11 +187,6 @@ fun eval (env, w, insns) {
                   esac then fromLabel (env, l) else tail fi;
                 setStack(c, s)
               esac
-          | LDA (x)      -> setStack(c, Ref (x) : s)
-          | STI          ->
-              case s of Ref (x) : ass : s ->
-                setState(setStack(c, s), v <- x :=: ass)
-              esac
           | CALL (f, _) ->
               var ret = tail;
               tail := fromLabel(env, f);
@@ -191,11 +197,27 @@ fun eval (env, w, insns) {
               esac
           | GLOBAL (x) -> setState(c, v <- Glb (x) :=: 0)
           | END  -> case sc of
-              {} -> tail := {}; c
-            | [v, ret] : sc -> tail := ret; setCStack(setState(c, v), sc)
-            esac
+                {} -> tail := {}; c
+              | [v, ret] : sc -> tail := ret; setCStack(setState(c, v), sc)
+              esac
           | DUP  -> case s of n : _ -> setStack(c, n : s) esac
           | DROP -> case s of n : s -> setStack(c, s) esac
+          | STRING (st) -> setStack(c, st : s)
+          | ARRAY (n) -> case take(s, n) of [s, args] ->
+                setStack(c, listArray(args) : s)
+              esac
+          | STA -> case s of i : a : va : s ->
+                a[i] := va;
+                setStack(c, s)
+              esac
+          | ELEM -> case s of i : a : s ->
+                setStack(c, a[i] : s)
+              esac
+          | BUILTIN (f, n) -> case take(s, n) of [s, args] ->
+                case evalBuiltin(f, args, w) of [va, w] ->
+                  setStack(setWorld(c, w), va : s)
+                esac
+              esac
           esac;
         eval (c, tail)
     esac
@@ -492,6 +514,14 @@ public fun compileSM (stmt) {
     esac
   }
 
+  fun compileListWithEndLabel(env, list) {
+    foldl(fun ([env, code], arg) {
+      case compileWithEndLabel(env, arg) of [env, argCode] ->
+        [env, code <+> argCode]
+      esac
+    }, [env, emptyBuffer()], list)
+  }
+
   -- Generates SM code for a given statement
   --    lab  --- a label th go to after the statement is executed
   --    env  --- compilation environment
@@ -502,19 +532,31 @@ public fun compileSM (stmt) {
   --    code buffer  
   fun compile (lab, env, stmt) {
     case stmt of
-      Ignore (e)     -> case compileWithEndLabel (env, e) of [env, code] -> [false, env, code <+ DROP] esac
-    | Skip           -> [false, env, emptyBuffer ()]
-    | Var (name)     -> [false, env, singletonBuffer (LD (lookupVar(env, name)))]
-    | Ref (name)     -> [false, env, singletonBuffer (LDA (lookupVar(env, name)))]
-    | Const (n)      -> [false, env, singletonBuffer (CONST (n))]
+      Ignore (e)  -> case compileWithEndLabel (env, e) of [env, code] -> [false, env, code <+ DROP] esac
+    | Skip        -> [false, env, emptyBuffer ()]
+    | Var (name)  -> [false, env, singletonBuffer (LD (lookupVal(env, name)))]
+    | Ref (name)  -> [false, env, singletonBuffer (LDA (lookupVar(env, name)))]
+    | Const (n)   -> [false, env, singletonBuffer (CONST (n))]
+    | String (x)  -> [false, env, singletonBuffer (STRING (x))]
+    | Array  (x)  -> case compileListWithEndLabel(env, x) of [env, code] ->
+        [false, env, code <+ ARRAY (size(x))]
+      esac
+    | Sexp (name, args) -> case compileListWithEndLabel(env, args) of [env, code] ->
+        [false, env, code <+ SEXP (name, size(args))]
+      esac
     | Binop (op, lhs_e, rhs_e) ->
-        case compileWithEndLabel (env, lhs_e) of [env, lhs_code] ->
-          case compileWithEndLabel (env, rhs_e) of [env, rhs_code] ->
-            [false, env, lhs_code <+> rhs_code <+ BINOP (op)]
+        case compileListWithEndLabel(env, {lhs_e, rhs_e}) of [env, lrhs_code] ->
+          [false, env, lrhs_code <+ BINOP (op)]
+        esac
+    | Set (name, e) -> compile(lab, env, Assn (Ref (name), e))
+    | Assn (Ref (name), e) -> case compileWithEndLabel (env, e) of [env, code] -> [false, env, code <+ DUP <+ ST (lookupVar(env, name))] esac
+    | Assn (ElemRef (arr, ind), e) ->
+        case compileListWithEndLabel(env, {arr, ind}) of [c, codeai] ->
+          case compileWithEndLabel(env, e) of [c, codev] ->
+            [false, env, codev <+ DUP <+> codeai <+ STA]
           esac
         esac
-    | Assn (Ref (name), e) -> case compileWithEndLabel (env, e) of [env, code] -> [false, env, code <+ DUP <+ ST (lookupVar(env, name))] esac
-    | Assn (refe, e)    ->
+    | Assn (refe, e) ->
         case compileWithEndLabel (env, refe) of [env, refe_code] ->
           case compileWithEndLabel (env, e) of [env, code] ->
             [false, env, code <+ DUP <+> refe_code <+ STI]
@@ -532,6 +574,9 @@ public fun compileSM (stmt) {
         esac
     | Read  (name)   -> [false, env, singletonBuffer (READ) <+ ST (lookupVar(env, name))]
     | Write (e)      -> case compileWithEndLabel (env, e) of [env, code] -> [false, env, code <+ WRITE] esac
+    | Elem (arr, ind) -> case compileListWithEndLabel(env, {arr, ind}) of [env, codeai] ->
+          [false, env, codeai <+ ELEM]
+        esac
     | If (cond, ifBody, elseBody) ->
         case genLabel(env) of [elseLab, env] ->
           case compileWithEndLabel (env, cond) of [env, condCode] ->
@@ -585,13 +630,14 @@ public fun compileSM (stmt) {
         esac
     | Call (name, args) ->
         case lookupFun(env, name) of Fun (fLabel, _) ->
-          case foldl(fun ([env, code], arg) {
-            case compileWithEndLabel(env, arg) of [env, argCode] ->
-              [env, code <+> argCode]
+          case compileListWithEndLabel(env, args) of [env, argsCode] ->
+            [false, env, argsCode <+ (
+              if fLabel[0] == '$'
+              then BUILTIN (name, size(args))
+              else CALL (fLabel, size(args))
+              fi
+            )]
             esac
-          }, [env, emptyBuffer()], args) of [env, argsCode] ->
-            [false, env, argsCode <+ CALL (fLabel, size(args))]
-          esac
         esac
     esac
   }
