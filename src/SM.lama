@@ -128,12 +128,7 @@ fun eval (env, w, insns) {
 
   fun eval1 (c@[st, cst, s, w], x) {
     case x of
-      READ      ->
-        case readWorld(w) of
-          [va, w] -> [{va} +++ st, cst, s, w]
-        esac
-    | WRITE     -> [tl (st), cst, s, writeWorld(hd (st), w)]
-    | BINOP (op) ->
+       BINOP (op) ->
         case st of
           (r:l:st) -> [{evalOp(op, l, r)} +++ st, cst, s, w]
         esac
@@ -147,6 +142,17 @@ fun eval (env, w, insns) {
     | DROP      -> [tl (st), cst, s, w]
     | DUP       -> [{hd (st)} +++ st, cst, s, w]
     | CONST (n) -> [{n} +++ st, cst, s, w]
+    | STRING (n) -> [{n} +++ st, cst, s, w]
+    | ARRAY (n)  -> case take(st, n) of [t, h] -> [listArray(h):t, cst, s, w] esac
+    | SEXP (name, n)  -> case take(st, n) of [t, h] -> [listArray(h):t, cst, s, w] esac
+    | ELEM       ->
+        case st of
+          e:a:st -> [a[e]:st, cst, s, w]
+        esac
+    | STA       ->
+        case st of
+          e:a:t:st -> a[e] := t; [st, cst, s, w]
+        esac
     | LABEL (x) -> c
     | BEGIN (name, nargs, locs) ->
         case take (st, nargs) of
@@ -181,7 +187,21 @@ fun eval (env, w, insns) {
               fi
           esac
       | CALL (f, a) ->
-          eval ([st, [s, xs] : cst, s, w], fromLabel (env, f))
+          case f of
+            "$read" -> if a == 0
+              then
+                case readWorld(w) of
+                  [va, w] -> eval([{va} +++ st, cst, s, w], xs)
+                esac
+              else failure(a) fi
+          | "$write" -> if a == 1
+            then eval ([st, cst, s, writeWorld(hd (st), w)], xs)
+            else failure(a) fi
+          | "$length" -> if a == 1
+            then eval ([length(hd(st)):tl(st), cst, s, w], xs)
+            else failure(a) fi
+          | _ -> eval ([st, [s, xs] : cst, s, w], fromLabel (env, f))
+          esac
       | END ->
         case cst of
           -- leaveFunction (s0, getGlobal (s))
@@ -467,8 +487,8 @@ public fun compileSM (stmt) {
   fun compile (lab, env, stmt) {
     case stmt of
       Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (lookupVar(env, x)))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (lookupVar(env, x)))]
+    | Var    (x)        -> [false, env, singletonBuffer (LD (lookupVal(env, x)))]
+    | Ref    (x)        -> [false, env, singletonBuffer (LDA (lookupVal(env, x)))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
     | Ignore (e) ->
       case compile(lab, env, e, true) of [r, env, e] -> [r, env, e <+ DROP] esac
@@ -478,15 +498,10 @@ public fun compileSM (stmt) {
           [lab1 !! lab2, env, l <+> r <+ BINOP (s)]
         esac
       esac
-    | Read  (x)      -> [false, env, singletonBuffer (READ) <+ ST (lookupVar(env, x))]
-    | Write (e)      ->
-      case compile(lab, env, e, true) of [r, env, e] ->
-        [r, env, e <+ WRITE]
-      esac
     | Assn  (x, e)   ->
       case compile(lab, env, e, true) of [r1, env, e] ->
-        case compile(lab, env, x, true) of [r2, env, x] ->
-          [r1 !! r2, env, e <+ DUP <+> x <+ STI]
+        case compile(lab, env, x, true) of [r2, env, xcode] ->
+          [r1 !! r2, env, e <+ DUP <+> xcode <+ case x of ElemRef (_, _) -> STA | _ -> STI esac]
         esac
       esac
     | Seq   (s1, s2) ->
@@ -578,10 +593,27 @@ public fun compileSM (stmt) {
           case foldl (folder, [env, false, emptyBuffer ()], args) of
             [env, used, code] ->
               case lookupFun (env, f) of
-                  Fun (f, n) -> [false, env, code <+> label (endLab, used) <+ CALL (f, size (n))]
+                  Fun (f, n) -> [false, env, code <+ CALL (f, size (n))]
               esac
           esac
       esac
+    | String (x) -> [false, env, singletonBuffer(STRING (x))]
+    | Array (x) ->
+      case foldl(fun([env, c], p) { case compile(lab, env, p) of [_, env, b] -> [env, c <+> b] esac }, [env, emptyBuffer ()], x) of
+        [env, code] -> [false, env, code <+ ARRAY (size (x))]
+      esac
+    | Sexp (name, x) ->
+      case foldl(fun([env, c], p) { case compile(lab, env, p) of [_, env, b] -> [env, c <+> b] esac }, [env, emptyBuffer ()], x) of
+        [env, code] -> [false, env, code <+ SEXP (name, size (x))]
+      esac
+    | Elem (a, e) ->
+        case compile (lab, env, Seq (a, e)) of
+          [used, env, code] -> [used, env, code <+ ELEM]
+        esac
+    | ElemRef (a, e) ->
+        case compile (lab, env, Seq (a, e)) of
+          [used, env, code] -> [used, env, code]
+        esac
     esac
   }
 
@@ -598,9 +630,9 @@ public fun compileSM (stmt) {
     esac
   }
 
-  case initCompEnv ().beginScope.addFun ("read"  , "$read"  , 0)
-                                .addFun ("write" , "$write" , 1)
-                                .addFun ("length", "$length", 1).genLabel of
+  case initCompEnv ().beginScope.addFun ("read"  , "$read"  , {})
+                                .addFun ("write" , "$write" , {"a"})
+                                .addFun ("length", "$length", {"a"}).genLabel of
     [endLab, env] ->
       fun iterate([env, used0, code0], fns) {
         case fns of
