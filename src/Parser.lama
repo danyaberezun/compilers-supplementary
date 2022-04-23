@@ -44,6 +44,10 @@ fun inbr(l, p, r) {
   syntax(-l p -r)
 }
 
+fun bracketed(p) {
+  inbr(s ("("), p, s (")"))
+}
+
 -- A helper function to be used with super-combinator "expr"
 fun binop(op) {
   [
@@ -107,70 +111,121 @@ fun distributeScope(expr, exprConstructor) {
   esac
 }
 
-var primary = memo $ eta syntax(
-  -- decimal constant
-  loc=pos x=decimal {fun(a) {assertValue(a, Const(stringInt(x)), loc)}}
+var primary = memo $ eta syntax (
+  loc = pos n = decimal { fun(a) { assertValue(a, Const(stringInt(n)), loc) } }
+  | loc = pos func = lident args = bracketed[list0(argParser)]
+    { fun(a) { assertValue(a, Call(func, args), loc) } }
+  | loc = pos x = lident {
+    fun(a) {
+      case a of
+        Ref -> Ref(x)
+      | Void -> Ignore(Var(x))
+      | _ -> Var(x)
+      esac
+    }
+  }
+  | loc = pos kSkip { fun(a) { assertVoid(a, Skip, loc) } }
+  | loc = pos kRead e = bracketed[exp] { fun(a) { assertVoid(a, Read(e(Ref)), loc) } }
+  | loc = pos kWrite e = bracketed[exp] { fun(a) { assertVoid(a, Write(e(Val)), loc) } }
+  | kIf cond = exp kThen body = scopeExpr elseTail = elsePart
+    { fun(a) { If(cond(Val), body(a), elseTail(a)) } }
+  | loc = pos kWhile cond = exp kDo body = scopeExpr kOd
+    { fun(a) { assertVoid(a, While(cond(Val), body(Void)), loc) } }
+  | loc = pos kDo body = scopeExpr kWhile cond = exp kOd {
+    fun(a) {
+      distributeScope(
+        body(Void),
+        fun(loopBody) { assertVoid(a, DoWhile(loopBody, cond(Val)), loc) }
+      )
+    }
+  }
+  | loc = pos kFor init = scopeExpr s[","] cond = exp s[","] step = exp kDo body = scopeExpr kOd {
+    fun(a) {
+      var fullBody = Seq(body(Void), step(Void));
+      var whilePart = While(cond(Val), fullBody);
+      distributeScope(
+        init(Void),
+        fun(initPart) {
+          assertVoid(a, Seq(initPart, whilePart), loc)
+        }
+      )
+    }
+  }
+  | bracketed[scopeExpr]
+);
 
-  -- identifier
-  | x=lident args=inbr[s("("), list0(syntax(e=exp {e(Val)})), s(")")]? {
-      fun(a) {
-        case args of
-          None -> case a of
-              Ref  -> Ref(x)
-            | Void -> Ignore(Var(x))
-            | _    -> Var(x)
-            esac
-        | Some(args) -> assertValue(a, Call(x, args))
-        esac
+var argParser = memo $ eta syntax(arg = exp { arg(Val) });
+
+var elsePart = memo $ eta syntax(
+  kElif cond = exp kThen body = scopeExpr elseTail = elsePart
+  { fun(x) { If(cond(Val), body(x), elseTail(x)) } }
+  | kElse body = scopeExpr kFi { body }
+  | loc = pos kFi { fun(x) { assertVoid(x, Skip, loc) } }
+);
+
+var varDef = memo $ eta syntax(
+  x = lident { [x, None] }
+  | x = lident s["="] init = basic { [x, Some(init(Val))] }
+);
+
+var genericDef = memo $ eta syntax(
+  s["var"] varDefs = list[varDef] s[";"] { Var(varDefs) }
+  | s["fun"] funName = lident args = bracketed[list0(lident)] s["{"]
+    body = scopeExpr s["}"] { Fun(funName, args, body(Weak)) }
+);
+
+var defenitions = memo $ eta syntax(
+  headDef = genericDef tailDefs = defenitions { headDef:tailDefs }
+  | headDef = genericDef { { headDef } }
+);
+
+var scopeExpr = memo $ eta syntax(
+  defs = defenitions e = exp { fun(x) { expandScope(defs, e(x)) } }
+  | e = exp { fun(x) { Scope({}, e(x)) } }
+);
+
+fun binaryOperation(op) {
+  [
+    syntax(pos -s[op]),
+    fun(l, loc, r) {
+      fun(x) {
+        assertValue(x, Binop(op, l(Val), r(Val)), loc)
       }
     }
-(* Assignment *)
-  | $(failure("the rest of primary parsing in not implemented\n")));
-(* End *)
+  ]
+}
 
-var basic = memo $ eta(expr(
-  {
-    [Right, {[
-      s(":="),
-      fun(l, loc, r) {
-        fun(a) {assertValue(a, Assn(l(Ref), r(Val)), loc)}
-      }
-    ]}],
-    [Left, map(binop, {"!!"})],
-    [Left, map(binop, {"&&"})],
-    [Nona, map(binop, {"==", "!=", "<", ">", "<=", ">="})],
-    [Left, map(binop, {"+", "-"})],
-    [Left, map(binop, {"*", "/", "%"})]
-  },
-  primary
+
+var basic = memo $ eta(
+  expr(
+    {
+      [
+        Right,
+        {
+          [
+            syntax(pos -s[":="]),
+            fun(l, loc, r) {
+              fun(x) {
+                assertValue(x, Assn(l(Ref), r(Val)), loc)
+              }
+            }
+          ]
+        }
+      ],
+      [Left, map(binaryOperation, { "!!" })],
+      [Left, map(binaryOperation, { "&&" })],
+      [Nona, map(binaryOperation, { "==", "!=", "<", ">", "<=", ">=" })],
+      [Left, map(binaryOperation, { "+", "-" })],
+      [Left, map(binaryOperation, { "*", "/", "%" })]
+    },
+    primary
   )
 );
 
-var scopeExpr = memo $ eta syntax(ds=definition* e=exp? {
-  fun(a) {
-    fun(e) {
-      case ds of
-        {} -> e
-      | _  -> expandScope(ds, e)
-      esac
-    }
-    (
-      case e of
-        Some(e) -> e(a)
-      | _       -> Skip
-      esac
-    )
-  }
-});
-
-var definition = memo $ eta syntax(
-  kVar ds=list[syntax(lident(s["="] e=basic {e(Val)})?)] s[";"] {Var(ds)}
-  | kFun name=lident
-    args=inbr[s("("), list0(lident), s(")")]
-    body=inbr[s("{"), scopeExpr, s("}")] { Fun(name, args, body(Weak)) }
+var exp = memo $ eta syntax(
+  basic
+  | left = basic s[";"] right = exp { fun(x) { Seq(left(Void), right(x)) } }
 );
-
-var exp = memo $ eta syntax(basic | s1=basic s[";"] s2=exp {fun(a) {Seq(s1(Void), s2(a))}});
 
 -- Public top-level parser
 public parse = syntax(s=scopeExpr {s(Void)});
