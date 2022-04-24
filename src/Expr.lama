@@ -56,9 +56,7 @@ public fun evalOp (op, l, r) {
 --        String  (string)             |
 --        Array   (expr list)          |
 --        Elem    (expr, expr)         |
---        ElemRef (expr, expr)         |
---        Builtin (string, expr list)
-
+--        ElemRef (expr, expr)
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
 fun lookupVal (state, name) {
@@ -101,10 +99,117 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun makeDefs (s, defs) {
+  foldl (fun (s, def){
+    case def of
+      Var (v) -> s.addNames (v)
+      | Fun (name, args, body) -> s.addFunction (name, args, body)
+    esac
+  }, s, defs)
 }
 
+fun eval (c@[s, w], expr) {
+  case expr of
+    Const (z) -> [c, z]
+    | Var (x) -> [c, s.lookup (x)]
+    | Ref (x) -> [c, Ref (x)]
+    | Binop (op, x, y) ->
+        case evalList (c, { x, y }) of
+          [c1, { x1, y1 }] -> [c1, evalOp (op, x1, y1)]
+        esac
+    | Skip -> [c, Bot]
+    | Assn (to, wt) ->
+        case evalList (c, { to, wt }) of
+          [c1 @ [s1, w1], { Ref (x1), y1 }] -> [[s1 <- [x1, y1], w1], y1]
+          | [c1 @ [s1, w1], { ElemRef (x1, i), y1}] -> [c1, x1[i] := y1]
+        esac
+    | Read(x) ->
+        case readWorld (w) of
+          [v, w1] -> [[s <- [x, v], w1], Bot]
+        esac
+    | Write (x) ->
+        case eval (c, x) of
+          [c1@[s1, w1], v1] ->
+            case writeWorld (v1, w1) of
+              w2 -> [[s1, w2], Bot]
+            esac
+        esac
+    | Seq (x, y) ->
+        case evalList (c, { x, y }) of
+          [c1, {x1, y1}] -> [c1, y1]
+        esac
+    | If (cond, a, b) ->
+        case eval (c, cond) of
+          [c1, 0] -> eval (c1, b)
+          | [c1, _] -> eval (c1, a)   
+        esac        
+    | While (cond, s1) ->
+        case eval (c, cond) of
+          [c1, 0] -> [c1, Bot]
+          | [c1, _] -> eval (eval (c1, s1).fst, expr)
+        esac
+    | DoWhile (s1, cond) ->
+        case eval (c, s1) of
+          [c1, _] -> case eval (c1, cond) of
+            [c2, 0] -> [c2, Bot]
+            | [c2, _] -> [eval (c2, expr).fst, Bot]
+          esac
+        esac
+    | Scope (defs, expr) ->
+        case s.enterScope of s1 ->
+          case s1.makeDefs (defs) of
+            s2 ->  case eval ([s2, w], expr) of
+              [c1@[s3, w1], v1] -> [[s3.leaveScope, w1], v1]
+            esac
+          esac
+        esac
+    | Call (name, args) -> 
+        case s.lookup (name) of
+            Fun (fargs, fbody) -> 
+                case evalList (c, args) of
+                  [c1@[s1, w1], vals] ->  
+                    case fbody of 
+                      External -> fun ([ret, w3]) {
+                          [[s1, w3], ret]
+                        } (evalBuiltin (name, vals, w1))
+                      | _ ->
+                        case addNames (enterFunction (s1), fargs) of s3 ->
+                          case eval ([foldl (fun (s, [n, v]) {
+                                s <- [n,v]
+                              },
+                              s3,
+                              zip (fargs, vals)), w1
+                            ], fbody) of [c3@[s3, w2], v3] ->
+                              [[leaveFunction (s1, s3.getGlobal), w2], v3]
+                          esac
+                        esac
+                    esac
+                esac
+        esac
+    | Ignore (e) -> [fst (eval (c, e)), Bot]
+    | String (s) -> [c, s]
+    | Array (es) -> fun ([c, r]) { [c, listArray (r)] } (evalList (c, es))
+    | Elem    (a, i) -> 
+        fun ([c, a :i : {}]) {
+          case a of
+            Sexp (_, a) -> [c, a[i]]
+            | _ -> [c, a[i]]
+          esac
+        } (evalList (c, {a, i}))
+    | ElemRef (a, i) ->
+        fun ([c, a : i : {}]) {
+          case a of
+              Sexp (_, a) -> [c, ElemRef (a, i)]
+            | _ -> [c, ElemRef (a, i)]
+          esac
+        } (evalList (c, {a, i}))
+    | Set (s, e) -> eval (c, Assn (Ref (s), e))
+    | Sexp (name, es) ->
+        fun ([c, r]) {
+          [c, Sexp (name, listArray (r))]
+        } (evalList (c, es))
+    esac
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
