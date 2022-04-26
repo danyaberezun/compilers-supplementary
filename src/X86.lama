@@ -120,7 +120,7 @@ fun insnString(insn) {
 --    a stack map which maps labels to symbolic stacks
 
 fun makeEnv(stack, stackSlots, globals, strings, stringIndex, barrier, stackMap, fLabel, nLocals) {
--- Returns an internal name for a global variable
+  -- Returns an internal name for a global variable
   fun globalName(name) {
     "global_" ++ name
   }
@@ -515,8 +515,44 @@ fun addressMov(from, toAddress) {
   movedFrom[0] <+> movedAddress[0] <+ Mov(movedFrom[1], I(0, movedAddress[1]))
 }
 
--- Compiles stack machine code into a list of x86 instructions. Takes an environment
--- and stack machine code, returns an updated environment and x86 code.
+fun pushArgs(env, argsCnt) {
+  var curEnv = env;
+  var code = emptyBuffer();
+  for var i; i := 0, i < argsCnt, i := i + 1 do
+    case curEnv.pop of
+      [s, env] -> curEnv := env; code := code <+ Push(s)
+    esac
+  od;
+  [curEnv, code]
+}
+
+fun updateRegs(regs, tail) {
+  foldl(
+    fun (code, reg) { code <+ tail(reg) },
+    emptyBuffer(),
+    regs
+  )
+}
+
+fun compileCall(env, funLabel, args) {
+  var liveRegs = env.liveRegisters(args);
+  case env.pushArgs(args) of
+    [env, argsCode] ->
+      case env.allocate of
+        [s, env] ->
+          [
+            env,
+            updateRegs(liveRegs, fun (reg) { Push(reg) })
+              <+> argsCode
+              <+ Call(funLabel)
+              <+ Binop("+", L(args * wordSize), esp)
+              <+> updateRegs(liveRegs.reverse, fun (reg) { Pop(reg) })
+              <+ Mov(eax, s)
+          ]
+      esac
+  esac
+}
+
 fun compile(args, env, code) {
   foldl(
     fun ([env, scode], i) {
@@ -530,7 +566,7 @@ fun compile(args, env, code) {
       if env.isBarrier
         then
           case i of
-              LABEL (l, true) -> [env.dropBarrier, code <+ Label(l)]
+            LABEL (l, true) -> [env.dropBarrier, code <+ Label(l)]
             | LABEL (l, _)    ->
               if hasStack(env, l)
                 then [retrieveStack(env, l), code <+ Label(l)]
@@ -540,11 +576,11 @@ fun compile(args, env, code) {
           esac
         else
           case i of
-            READ           ->
+            READ                      ->
               case env.allocate of
                 [s, env] -> [env, code <+ Call("Lread") <+ Mov(eax, s)]
               esac
-            | WRITE        ->
+            | WRITE                   ->
               case env.pop of
                 [s, env] -> [env, code <+ Push(s) <+ Call("Lwrite") <+ Pop(eax)]
               esac
@@ -564,60 +600,76 @@ fun compile(args, env, code) {
             -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
             --    env.enterFunction to create a proper environment;
             -- 2. generate epilogue for END instruction.
-            | CONST (int)  ->
+            | CONST (int)             ->
               case env.allocate of
                 [s, env] -> [env, code <+> move(L(int), s)]
               esac
-            | LD (name)    ->
-              case env.addGlobal(name).allocate of
+            | LD (name)               ->
+              case env.allocate of
                 [s, env] -> [env, code <+> move(env.loc(name), s)]
               esac
-            | LDA (name) ->
-          case env.addGlobal(name).allocate of
-            [s, env] ->
-              case s of
-                R (_) -> [env, code <+ Lea(env.loc(name), s)]
-                | _   -> [env, code <+ Lea(env.loc(name), eax) <+ Mov(eax, s)]
+            | LDA (name)              ->
+              case env.allocate of
+                [s, env] ->
+                  case s of
+                    R (_) -> [env, code <+ Lea(env.loc(name), s)]
+                    | _   -> [env, code <+ Lea(env.loc(name), eax) <+ Mov(eax, s)]
+                  esac
               esac
-          esac
-        | ST (name)    ->
-              case env.addGlobal(name).pop of
+            | ST (name)               ->
+              case env.pop of
                 [s, env] -> [env, code <+> move(s, env.loc(name))]
               esac
-            | STI ->
-          case env.pop of
-            [value, env] ->
-              case env.peek of
-                ref -> [env, code <+> addressMov(value, ref) <+> move(value, ref)]
+            | STI                     ->
+              case env.pop of
+                [value, env] ->
+                  case env.peek of
+                    ref -> [env, code <+> addressMov(value, ref) <+> move(value, ref)]
+                  esac
               esac
-          esac
-        | BINOP (name) ->
+            | BINOP (name)            ->
               case env.pop2 of
                 [r, l, env] -> [
-                  env.push(r),
+                  env.push(l),
                   code <+> case name of
                       "+"  -> simpleOp(name, l, r)
                     | "*"  -> simpleOp(name, l, r)
-                    | "-"  -> simpleOp(name, r, l) <+> move(l, r)
+                    | "-"  -> simpleOp(name, l, r)
                     | "/"  -> divOp(name, l, r)
                     | "%"  -> divOp(name, l, r)
                     | "&&" -> binaryOp(name, l, r)
                     | "!!" -> binaryOp(name, l, r)
-                    | cmp  -> simpleOp("cmp", r, l) <+> setOperand(suffix(cmp), r)
+                    | cmp  -> simpleOp("cmp", l, r) <+> setOperand(suffix(cmp), l)
                   esac
                 ]
               esac
-        | LABEL (label)      -> [env.retrieveStack(label), code <+ Label(label)]
-        | JMP   (label)      -> [env.setStack(label), code <+ Jmp(label)]
-        | CJMP  (key, label) ->
-          case env.pop of
-            [s, env] -> [env.setStack(label), code <+> simpleOp("cmp", L(0), s) <+ CJmp(key, label)]
+            | LABEL (label)           -> [
+              if env.isBarrier
+                then env.retrieveStack(label)
+                else env
+              fi,
+              code <+ Label(label)
+            ]
+            | JMP   (label)           -> [env.setStack(label).setBarrier, code <+ Jmp(label)]
+            | CJMP  (key, label)      ->
+              case env.pop of
+                [s, env] -> [env.setStack(label), code <+> simpleOp("cmp", s, L(0)) <+ CJmp(key, label)]
+              esac
+            | DUP                     ->
+              case env.peek of
+                top -> case env.allocate of [s, env] -> [env, code <+> move(top, s)] esac
+              esac
+            | DROP                    -> case env.pop of [_, env] -> [env, code] esac| GLOBAL(name) -> [env.addGlobal(name), code]
+            | CALL(label, args)       ->
+              case compileCall(env, label, args) of
+                [env, callCode] -> [env, code <+> callCode]
+              esac
+            | BEGIN(label, _, locals) -> [env.enterFunction(label, locals), code <+> prologue(label)]
+            | END                     ->
+              case env.epilogue of
+                [env, epl] -> [env, code <+> epl]
+              esac
           esac
-        | DUP  ->
-          case env.peek of
-            top -> case env.allocate of [s, env] -> [env, code <+> move(top, s)] esac
-          esac
-        | DROP -> case env.pop of [_, env] -> [env, code] esac      esac
       fi
     },
     [env, emptyBuffer()],
@@ -626,15 +678,15 @@ fun compile(args, env, code) {
 }
 
 fun simpleOp(name, l, r) {
-  if memOpnd(r)
-    then { Mov(r, eax), Binop(name, l, eax), Mov(eax, r) }.listBuffer
-    else Binop(name, l, r).singletonBuffer
+  if memOpnd(l)
+    then { Mov(l, eax), Binop(name, r, eax), Mov(eax, l) }.listBuffer
+    else Binop(name, r, l).singletonBuffer
   fi
 }
 
 fun divOp(name, l, r) {
   var reg = if name === "/" then eax else edx fi;
-  { Mov(l, eax), Cltd, IDiv(r), Mov(reg, r) }.listBuffer
+  { Mov(l, eax), Cltd, IDiv(r), Mov(reg, l) }.listBuffer
 }
 
 fun binaryOp(name, l, r) {
@@ -656,10 +708,10 @@ public fun compileX86(args, code) {
     [env, code] ->
       var asmFile = args.getBaseName ++ ".s",
           runtime =
-          case getEnv("LAMA_RUNTIME") of
-            #val   -> "../runtime/"
-            | path -> path
-          esac ++ "/runtime.o";
+            case getEnv("LAMA_RUNTIME") of
+              #val   -> "../runtime/"
+              | path -> path
+            esac ++ "/runtime.o";
 
       fwrite(
         asmFile,
