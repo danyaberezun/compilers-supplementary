@@ -1,0 +1,223 @@
+-- Compiles stack machine code into a list of x86 instructions. Takes an environment
+-- and stack machine code, returns an updated environment and x86 code.
+import SM;
+import Data;
+import Manifest;
+import Fun;
+import Buffer;
+import X86;
+import List;
+
+fun pushArgs(env, argsCnt) {
+  var curEnv = env;
+  var code = emptyBuffer();
+  for var i; i := 0, i < argsCnt, i := i + 1 do
+    case curEnv.pop of
+      [s, env] -> curEnv := env; code := code <+ Push(s)
+    esac
+  od;
+  [curEnv, code]
+}
+
+fun updateRegs(regs, tail) {
+  foldl(
+    fun (code, reg) { code <+ tail(reg) },
+    emptyBuffer(),
+    regs
+  )
+}
+
+fun compileCall(env, funLabel, args) {
+  var liveRegs = env.liveRegisters(args);
+  case env.pushArgs(args) of
+    [env, argsCode] ->
+      case env.allocate of
+        [s, env] ->
+          [
+            env,
+            updateRegs(liveRegs, fun (reg) { Push(reg) })
+              <+> argsCode
+              <+ Call(funLabel)
+              <+ Binop("+", L(args * wordSize), esp)
+              <+> updateRegs(liveRegs.reverse, fun (reg) { Pop(reg) })
+              <+ Mov(eax, s)
+          ]
+      esac
+  esac
+}
+
+fun compile(args, env, code) {
+  foldl(
+    fun ([env, scode], i) {
+      var code = scode <+ Meta("# " ++ showSMInsn(i) ++ "\n");
+
+      -- printf ("Insn: %s\n", i.string);
+
+      -- This if removes unreachable code; otherwise
+      -- the stack invariants for the symbolic interpreter
+      -- are violated
+      if env.isBarrier
+        then
+          case i of
+            LABEL (l, true) -> [env.dropBarrier, code <+ Label(l)]
+            | LABEL (l, _)    ->
+              if hasStack(env, l)
+                then [retrieveStack(env, l), code <+ Label(l)]
+                else [env, code]
+              fi
+            | _               -> [env, code]
+          esac
+        else
+          case i of
+            READ                      ->
+              case env.allocate of
+                [s, env] -> [env, code <+ Call("Lread") <+ Mov(eax, s)]
+              esac
+            | WRITE                   ->
+              case env.pop of
+                [s, env] -> [env, code <+ Push(s) <+ Call("Lwrite") <+ Pop(eax)]
+              esac
+
+            -- Some guidelines for generating function calls:
+            --
+            -- 1. generate instructions to save live registers on the X86 stack (use
+            --    env.liveRegisters (number of arguments);
+            -- 2. generate instructions to move actual parameters from the symbolic
+            --    stack to the hardware one;
+            -- 3. generate the call itself;
+            -- 4. discard the actual parameters from the stack;
+            -- 5. restore saved live registers.
+            --
+            -- Some guidelines for generating functions:
+            --
+            -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
+            --    env.enterFunction to create a proper environment;
+            -- 2. generate epilogue for END instruction.
+            | CONST (int)             ->
+              case env.allocate of
+                [s, env] -> [env, code <+> move(L(int), s)]
+              esac
+            | LD (name)               ->
+              case env.allocate of
+                [s, env] -> [env, code <+> move(env.locc(name), s)]
+              esac
+            | LDA (name)              ->
+              case env.allocate of
+                [s, env] ->
+                  case s of
+                    R (_) -> [env, code <+ Lea(env.locc(name), s)]
+                    | _   -> [env, code <+ Lea(env.locc(name), eax) <+ Mov(eax, s)]
+                  esac
+              esac
+            | ST (name)               ->
+              case env.pop of
+                [s, env] -> [env, code <+> move(s, env.locc(name))]
+              esac
+            | STI                     ->
+              case env.pop of
+                [value, env] ->
+                  case env.peek of
+                    ref -> [env, code <+> addressMov(value, ref) <+> move(value, ref)]
+                  esac
+              esac
+            | BINOP (name)            ->
+              case env.pop2 of
+                [r, l, env] -> [
+                  env.push(l),
+                  code <+> case name of
+                    "+"  -> simpleOp(name, l, r)
+                    | "*"  -> simpleOp(name, l, r)
+                    | "-"  -> simpleOp(name, l, r)
+                    | "/"  -> divOp(name, l, r)
+                    | "%"  -> divOp(name, l, r)
+                    | "&&" -> binaryOp(name, l, r)
+                    | "!!" -> binaryOp(name, l, r)
+                    | cmp  -> simpleOp("cmp", l, r) <+> setOperand(suffix(cmp), l)
+                  esac
+                ]
+              esac
+            | LABEL (label)           -> [
+              if env.isBarrier
+                then env.retrieveStack(label)
+                else env
+              fi,
+              code <+ Label(label)
+            ]
+            | JMP   (label)           -> [env.setStack(label).setBarrier, code <+ Jmp(label)]
+            | CJMP  (key, label)      ->
+              case env.pop of
+                [s, env] -> [env.setStack(label), code <+> simpleOp("cmp", s, L(0)) <+ CJmp(key, label)]
+              esac
+            | DUP                     ->
+              case env.peek of
+                top -> case env.allocate of [s, env] -> [env, code <+> move(top, s)] esac
+              esac
+            | DROP                    -> case env.pop of [_, env] -> [env, code] esac| GLOBAL(name) -> [env.addGlobal(name), code]
+            | CALL(label, args)       ->
+              case compileCall(env, label, args) of
+                [env, callCode] -> [env, code <+> callCode]
+              esac
+            | BEGIN(label, _, locals) -> [env.enterFunctionn(label, locals), code <+> prologue(label)]
+            | END                     ->
+              case env.epilogue of
+                [env, epl] -> [env, code <+> epl]
+              esac
+          esac
+      fi
+    },
+    [env, emptyBuffer()],
+    code
+  )
+}
+
+fun simpleOp(name, l, r) {
+  if memOpnd(l)
+    then { Mov(l, eax), Binop(name, r, eax), Mov(eax, l) }.listBuffer
+    else Binop(name, r, l).singletonBuffer
+  fi
+}
+
+fun divOp(name, l, r) {
+  var reg = if name === "/" then eax else edx fi;
+  { Mov(l, eax), Cltd, IDiv(r), Mov(reg, l) }.listBuffer
+}
+
+fun binaryOp(name, l, r) {
+  fun transform(src) {
+    Binop("cmp", L(0), src).singletonBuffer <+> setOperand("g", src)
+  }
+
+  transform(l) <+> transform(r) <+> simpleOp(name, l, r)
+}
+
+fun setOperand(suffix, src) {
+  { Mov(L(0), eax), Set(suffix, "%al"), Mov(eax, src) }.listBuffer
+}
+
+-- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
+-- compiles the program into machine code, and compiles the machine code into an executable
+public fun compileX86(args, code) {
+  case compile(args, initEnv(), code) of
+    [env, code] ->
+      var asmFile = args.getBaseName ++ ".s",
+          runtime =
+            case getEnv("LAMA_RUNTIME") of
+              #val   -> "../runtime/"
+              | path -> path
+            esac ++ "/runtime.o";
+
+      fwrite(
+        asmFile,
+        map(
+          insnString,
+          getBuffer $
+            singletonBuffer(Meta("\t.global\tmain\n")) <+>
+            dataSection(listBuffer(map(intDef, getGlobals(env))) <+>
+              listBuffer(map(stringDef, getStrings(env)))) <+>
+            codeSection(code)
+        ).stringcat
+      );
+
+      system({ "gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile }.stringcat)
+  esac
+}
