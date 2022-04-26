@@ -468,8 +468,44 @@ fun addressMov(from, toAddress) {
   movedFrom[0] <+> movedAddress[0] <+ Mov(movedFrom[1], I(0, movedAddress[1]))
 }
 
--- Compiles stack machine code into a list of x86 instructions. Takes an environment
--- and stack machine code, returns an updated environment and x86 code.
+fun pushArgs(env, argsCnt) {
+  var curEnv = env;
+  var code = emptyBuffer();
+  for var i; i := 0, i < argsCnt, i := i + 1 do
+    case curEnv.pop of
+      [s, env] -> curEnv := env; code := code <+ Push(s)
+    esac
+  od;
+  [curEnv, code]
+}
+
+fun updateRegs(regs, tail) {
+  foldl(
+    fun (code, reg) { code <+ tail(reg) },
+    emptyBuffer(),
+    regs
+  )
+}
+
+fun compileCall(env, funLabel, args) {
+  var liveRegs = env.liveRegisters(args);
+  case env.pushArgs(args) of
+    [env, argsCode] ->
+      case env.allocate of
+        [s, env] ->
+          [
+            env,
+            updateRegs(liveRegs, fun (reg) { Push(reg) })
+              <+> argsCode
+              <+ Call(funLabel)
+              <+ Binop("+", L(args * wordSize), esp)
+              <+> updateRegs(liveRegs.reverse, fun (reg) { Pop(reg) })
+              <+ Mov(eax, s)
+          ]
+      esac
+  esac
+}
+
 fun compile (env, code) {
   foldl(
     fun ([env, scode], i) {
@@ -504,11 +540,11 @@ fun compile (env, code) {
             [s, env] -> [env, code <+> move(L(int), s)]
           esac
         | LD (name) ->
-          case env.addGlobal(name).allocate of
+          case env.allocate of
             [s, env] -> [env, code <+> move(env.loc(name), s)]
           esac
         | LDA (name) ->
-          case env.addGlobal(name).allocate of
+          case env.allocate of
             [s, env] ->
               case s of
                 R (_) -> [env, code <+ Lea(env.loc(name), s)]
@@ -516,7 +552,7 @@ fun compile (env, code) {
               esac
           esac
         | ST (name) ->
-          case env.addGlobal(name).pop of
+          case env.pop of
             [s, env] -> [env, code <+> move(s, env.loc(name))]
           esac
         | STI ->
@@ -529,45 +565,61 @@ fun compile (env, code) {
         | BINOP (name) ->
           case env.pop2 of
             [r, l, env] -> [
-              env.push(r),
+              env.push(l),
               code <+> case name of
-                  "+"  -> simpleOp(name, l, r)
+                "+"  -> simpleOp(name, l, r)
                 | "*"  -> simpleOp(name, l, r)
-                | "-"  -> simpleOp(name, r, l) <+> move(l, r)
+                | "-"  -> simpleOp(name, l, r)
                 | "/"  -> divOp(name, l, r)
                 | "%"  -> divOp(name, l, r)
                 | "&&" -> binaryOp(name, l, r)
                 | "!!" -> binaryOp(name, l, r)
-                | cmp  -> simpleOp("cmp", r, l) <+> setOperand(suffix(cmp), r)
+                | cmp  -> simpleOp("cmp", l, r) <+> setOperand(suffix(cmp), l)
               esac
             ]
           esac
-        | LABEL (label)      -> [env.retrieveStack(label), code <+ Label(label)]
-        | JMP   (label)      -> [env.setStack(label), code <+ Jmp(label)]
+        | LABEL (label)      -> [
+          if env.isBarrier
+            then env.retrieveStack(label)
+            else env
+          fi,
+          code <+ Label(label)
+        ]
+        | JMP   (label)      -> [env.setStack(label).setBarrier, code <+ Jmp(label)]
         | CJMP  (key, label) ->
           case env.pop of
-            [s, env] -> [env.setStack(label), code <+> simpleOp("cmp", L(0), s) <+ CJmp(key, label)]
+            [s, env] -> [env.setStack(label), code <+> simpleOp("cmp", s, L(0)) <+ CJmp(key, label)]
           esac
         | DUP  ->
           case env.peek of
             top -> case env.allocate of [s, env] -> [env, code <+> move(top, s)] esac
           esac
         | DROP -> case env.pop of [_, env] -> [env, code] esac
+        | GLOBAL(name) -> [env.addGlobal(name), code]
+        | CALL(label, args) ->
+          case compileCall(env, label, args) of
+            [env, callCode] -> [env, code <+> callCode]
+          esac
+        | BEGIN(label, _, locals) -> [env.enterFunction(label, locals), code <+> prologue(label)]
+        | END ->
+          case env.epilogue of
+            [env, epl] -> [env, code <+> epl]
+          esac
       esac
     }, [env, emptyBuffer()], code
   )
 }
 
 fun simpleOp(name, l, r) {
-  if memOpnd(r)
-    then { Mov(r, eax), Binop(name, l, eax), Mov(eax, r) }.listBuffer
-    else Binop(name, l, r).singletonBuffer
+  if memOpnd(l)
+    then { Mov(l, eax), Binop(name, r, eax), Mov(eax, l) }.listBuffer
+    else Binop(name, r, l).singletonBuffer
   fi
 }
 
 fun divOp(name, l, r) {
   var reg = if name === "/" then eax else edx fi;
-  { Mov(l, eax), Cltd, IDiv(r), Mov(reg, r) }.listBuffer
+  { Mov(l, eax), Cltd, IDiv(r), Mov(reg, l) }.listBuffer
 }
 
 fun binaryOp(name, l, r) {
