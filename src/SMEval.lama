@@ -1,0 +1,176 @@
+-- Stack machine interpreter. Takes an environment, a world and a program,
+-- returns a final output
+import List;
+import SM;
+import Data;
+import World;
+import Expr;
+import Array;
+import Lexer;
+import Parser;
+import Ref;
+
+
+fun eval(env, w, insns) {
+  -- Global state maps names of global variables to values
+  var globalState = ref(fun (x) { error(sprintf("name ""%s"" is undefined", x), getLoc(x)) });
+
+  -- Make a fresh local state: a pair of arrays for arguments and local variables;
+  -- takes the numbers of arguments and local variables respectively
+  fun makeState(a, l) {
+    [initArray(a, fun (_) { 0 }), initArray(l, fun (_) { 0 })]
+  }
+
+  -- Lookups a location in local/global states
+  fun lookup([args, locs], loc) {
+    case loc of
+        Arg (i) -> args[i]
+      | Loc (i) -> locs[i]
+      | Glb (x) -> deref(globalState)(x)
+    esac
+  }
+
+  -- Assigns a value to a location
+  fun assign([args, locs], loc, vl) {
+    case loc of
+        Arg (i) -> args[i] := vl
+      | Loc (i) -> locs[i] := vl
+      | Glb (x) -> var g = deref(globalState);
+      globalState ::= fun (y) { if compare(x, y) == 0 then vl else g(y) fi }
+    esac
+  }
+
+  -- Takes n positions from the list, retursn a pair: the remaining list and the taken
+  -- sublist
+  fun take(list, n) {
+    fun inner(n, acc, list) {
+      if n == 0
+        then [list, acc]
+        else inner(n - 1, list.hd:acc, list.tl)
+      fi
+    }
+
+    inner(n, {}, list)
+  }
+
+  fun evalStraightforward(c@[stack, cStack, st, world], insn) {
+    Next(
+      case insn of
+        READ -> case readWorld(world) of
+          [v, newWorld] -> [v:stack, cStack, st, newWorld]
+        esac
+        | WRITE -> case stack of
+          v : tail -> [tail, cStack, st, writeWorld(v, world)]
+        esac
+        | BINOP (op) -> case stack of
+          v1 : v2 : tail -> [evalOp(op, v2, v1):tail, cStack, st, world]
+        esac
+        | LD    (loc) ->
+          [st.lookup(loc):stack, cStack, st, world]
+        | LDA   (loc) -> [Address(loc):stack, cStack, st, world]
+        | ST    (loc) -> case stack of
+          v : tail -> st.assign(loc, v); [tail, cStack, st, world]
+        esac
+        | STI ->
+          case stack of
+            value : Address(loc) : tail ->
+              st.assign(loc, value);
+              [value:tail, cStack, st, world]
+          esac
+        | CONST (int) -> [int:stack, cStack, st, world]
+        | DUP -> case stack of
+          v : tail -> [v:v:tail, cStack, st, world]
+        esac
+        | DROP -> case stack of
+          v : tail -> [tail, cStack, st, world]
+        esac
+      esac
+    )
+  }
+
+  fun evalIns(c@[stack, cStack, st, world], insn, tail) {
+    case insn of
+        READ          -> evalStraightforward(c, insn)
+      | WRITE         -> evalStraightforward(c, insn)
+      | BINOP (op)    -> evalStraightforward(c, insn)
+      | LD    (name)  -> evalStraightforward(c, insn)
+      | LDA   (name)  -> evalStraightforward(c, insn)
+      | ST    (name)  -> evalStraightforward(c, insn)
+      | STI           -> evalStraightforward(c, insn)
+      | CONST (int)   -> evalStraightforward(c, insn)
+      | DUP           -> evalStraightforward(c, insn)
+      | DROP          -> evalStraightforward(c, insn)
+      | LABEL (_)     -> Next(c)
+      | JMP   (label) -> FromLabel(c, label)
+      | CJMP  (key, label) ->
+        case stack of
+          v : tail ->
+            var newC = [tail, cStack, st, world];
+            if key === "z" && v == 0 !! key === "nz" && v != 0
+              then FromLabel(newC, label)
+              else Next(newC)
+            fi
+        esac
+      | GLOBAL (name) -> st.assign(Glb(name), 0); Next(c)
+      | BEGIN (_, args, locals) ->
+        case stack.take(args) of
+          [stack, values] ->
+            var st = makeState(args, locals);
+            foldl(
+              fun (idx, curArg) {
+                assign(st, Arg(idx), curArg);
+                idx + 1
+              },
+              0,
+              values
+            );
+            Next([stack, cStack, st, world])
+        esac
+      | END ->
+        case cStack of
+          [st, tail] : cStack -> FromTail([stack, cStack, st, world], tail)
+          | {}                -> FromTail([stack, {}, st, world], {})
+        esac
+      | CALL(label, _) -> FromLabel([stack, [st, tail]:cStack, st, world], label)
+    esac
+  }
+
+  -- Core interpreter: takes a configuration and a program, returns a configuration
+  (* Assignment *)
+  fun eval(c@[st, cst, s, w], insns) {
+    fun isNotEmpty(l) {
+      case l of
+        {}  -> false
+        | _ -> true
+      esac
+    }
+
+    var currentInsns = insns;
+    var currentC = c;
+    while currentInsns.isNotEmpty do
+      case currentInsns of
+        insn : tail ->
+          case evalIns(currentC, insn, tail) of
+            Next(c) ->
+              currentC := c;
+              currentInsns := tail
+            | FromLabel(c, label) ->
+              currentC := c;
+              currentInsns := env.fromLabel(label)
+            | FromTail(c, tail) ->
+              currentC := c;
+              currentInsns := tail
+          esac
+      esac
+    od;
+    currentC
+  }
+  (* End *)
+
+  eval([{}, {}, makeState(0, 0), w], insns)[3].getOutput
+}
+
+-- Runs a stack machine for a given input and a given program, returns an output
+public fun evalSM(input, insns) {
+  eval(initEvalEnv(insns), createWorld(input), insns)
+}
