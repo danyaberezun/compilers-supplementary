@@ -1,4 +1,4 @@
--- Parser 
+-- Parser
 
 import Ostap;
 import Lexer;
@@ -22,11 +22,23 @@ public fun error (msg, loc) {
 
 -- Checks if a plain value "val" can be used in the context described by
 -- the attribute "atr".
-fun assertValue (atr, vl, loc) {
+fun assertBoxed (atr, vl, loc) {
   case atr of
     Ref  -> error ("reference expected", loc)
   | Void -> Ignore (vl)
-  | _    -> vl
+  | Unboxed -> Unbox (vl)
+  | Boxed -> vl
+  | Weak -> vl
+  esac
+}
+
+fun assertUnboxed (atr, vl, loc) {
+  case atr of
+    Ref  -> error ("reference expected", loc)
+  | Void -> Ignore (vl)
+  | Unboxed -> vl
+  | Boxed -> Box (vl)
+  | Weak -> Box (vl)
   esac
 }
 
@@ -36,7 +48,7 @@ fun assertVoid (atr, vl, loc) {
   case atr of
     Void -> vl
   | Val  -> error ("value expected", loc)
-  | Weak -> Seq (vl, Const (0))
+  | Weak -> Seq (vl, Box (Const (0)))
   | _    -> error ("reference expected", loc)
   esac
 }
@@ -51,7 +63,7 @@ fun inbr (l, p, r) {
 fun binop (op) {
   [syntax (pos -s[op]), fun (l, loc, r) {
                           fun (a) {
-                            assertValue (a, Binop (op, l (Val), r (Val)), loc)
+                            assertUnboxed (a, Binop (op, l (Unboxed), r (Unboxed)), loc)
                           }
                         }
   ]
@@ -82,7 +94,7 @@ fun expandScope (defs, expr) {
   }
 
   fun expandValDefs (defs, expr) {
-    foldr (fun ([defs, expr], [ident, value]) {     
+    foldr (fun ([defs, expr], [ident, value]) {
              [ident : defs, Seq (Ignore (Assn (ident, value)), expr)]
            },
            [{}, expr],
@@ -97,7 +109,7 @@ fun expandScope (defs, expr) {
                  case expandValDefs (ds, expr) of
                    [ds, expr] -> [Val (ds) : defs, expr]
                  esac
-             | Var (ds) ->             
+             | Var (ds) ->
                  case expandVarDefs (ds, expr) of
                    [ds, expr] -> [Var (ds) : defs, expr]
                  esac
@@ -116,49 +128,53 @@ fun distributeScope (expr, exprConstructor) {
   | _                   -> exprConstructor (expr)
   esac
 }
- 
+
 var primary    = memo $ eta syntax (
                                       -- array constant
-                                      loc=pos x=inbr[s("["), list0(syntax (e=exp {e(Val)})), s("]")] {fun (a) {assertValue (a, Array (x), loc)}}    |
-                                      
+                                      loc=pos x=inbr[s("["), list0(syntax (e=exp {e(Boxed)})), s("]")] {fun (a) {assertBoxed (a, Array (x), loc)}}    |
+
                                       -- string constant
-                                      loc=pos x=strlit                                               {fun (a) {assertValue (a, String (x), loc)}}   |
-                                      
+                                      loc=pos x=strlit                                               {fun (a) {assertBoxed (a, String (x), loc)}}   |
+
                                       -- character literal
-                                      loc=pos x=chrlit                                               {fun (a) {assertValue (a, Const (x), loc)}}    |
-                                      
+                                      loc=pos x=chrlit                                               {fun (a) {assertUnboxed (a, Const (x), loc)}}    |
+
                                       -- decimal constant
-                                      loc=pos x=decimal                                              {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
+                                      loc=pos x=decimal                                              {fun (a) {assertUnboxed (a, Const (stringInt (x)), loc)}}     |
 
                                       -- identifier
-                                      x=lident args=inbr[s("("), list0(syntax(e=exp {e(Val)})), s(")")]? {fun (a) {
+                                      x=lident args=inbr[s("("), list0(syntax(e=exp {e(Boxed)})), s(")")]? {fun (a) {
                                                                                                             case args of
                                                                                                               None -> case a of
                                                                                                                         Ref  -> Ref (x)
                                                                                                                       | Void -> Ignore (Var (x))
-                                                                                                                      | _    -> Var (x)
+                                                                                                                      | Boxed    -> Var (x)
+                                                                                                                      | Weak    -> Var (x)
+                                                                                                                      | Unboxed    -> Unbox (Var (x))
                                                                                                                       esac
-                                                                                                            | Some (args) -> assertValue (a, Call (x, args))
+                                                                                                            | Some (args) -> assertBoxed (a, Call (x, args))
                                                                                                             esac
                                                                                                          }} |
 
                                       -- S-expression
-                                      loc=pos x=uident args=inbr[s("("), list0(syntax(e=exp {e(Val)})), s(")")]? {fun (a) {assertValue (a, Sexp (x, case args of
+                                      loc=pos x=uident args=inbr[s("("), list0(syntax(e=exp {e(Boxed)})), s(")")]? {fun (a) {assertBoxed (a, Sexp (x, case args of
                                                                                                                                                       None        -> {}
                                                                                                                                                     | Some (args) -> args
                                                                                                                                                     esac), loc)}}
                                  | inbr[s("("), exp, s(")")]
                                  | kIf res=someIf { res }
-                                 | loc=pos kWhile e=exp kDo s=scopeExpr kOd { fun(a) { assertVoid(a, While (e(Val), s(Void)), loc) } }
-                                 | loc=pos kDo ds=definition* s=exp kWhile e=exp kOd { fun(a) { assertVoid(a, distributeScope(expandScope(ds, Skip), fun (ini) { DoWhile (Seq (ini, s(Void)), e(Val)) }, loc)) } }
+                                 | loc=pos kWhile e=exp kDo s=scopeExpr kOd { fun(a) { assertVoid(a, While (e(Unboxed), s(Void)), loc) } }
+                                 | loc=pos kDo ds=definition* s=exp kWhile e=exp kOd { fun(a) { assertVoid(a, distributeScope(expandScope(ds, Skip), fun (ini) { DoWhile (Seq (ini, s(Void)), e(Unboxed)) }, loc)) } }
                                  | loc=pos kSkip { fun(a) { assertVoid(a, Skip, loc) } }
-                                 | loc=pos kFor ds=definition* bef=exp s[","] cond=exp s[","] aft=exp kDo body=scopeExpr kOd { fun(a) {
-                                        assertVoid(a, expandScope(ds, Seq (bef(Void), While (cond(Val), Seq (body(Void), aft(Void)))), loc))
+                                 | loc=pos kFor ds=definition* bef=exp? s[","] cond=exp s[","] aft=exp? kDo body=scopeExpr kOd { fun(a) {
+                                        bef := case bef of None -> fun (a) { assertVoid(a, Skip) } | Some (b) -> b esac;
+                                        aft := case aft of None -> fun (a) { assertVoid(a, Skip) } | Some (b) -> b esac;
+                                        assertVoid(a, expandScope(ds, Seq (bef(Void), While (cond(Unboxed), Seq (body(Void), aft(Void)))), loc))
                                       } }
                           ),
       basic      = memo $ eta (expr ({[Right, {[s (":="),
                                                 fun (l, loc, r) {
-                                                  fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
+                                                  fun (a) {assertBoxed (a, Assn (l (Ref), r (Boxed)), loc)}
                                               }]}],
                                       [Left , map (binop, {"!!"})],
                                       [Left , map (binop, {"&&"})],
@@ -167,15 +183,16 @@ var primary    = memo $ eta syntax (
                                       [Left , map (binop, {"*", "/", "%"})]
                                      },
                                      postfix)),
-      postfix    = memo $ eta syntax (loc=pos e=primary ps=(i=inbr[s("["), exp, s("]")] {Index (i (Val))})* {fun (a) {foldl (fun (e, p) {                                                                                                                                                    case p of                                                                                   
+      postfix    = memo $ eta syntax (loc=pos e=primary ps=(i=inbr[s("["), exp, s("]")] {Index (i (Unboxed))})* {fun (a) {foldl (fun (e, p) {
+                                                                                case p of
                                                                                    Index (i) ->
                                                                                      fun (a) {
                                                                                        case a of
-                                                                                         Ref -> ElemRef (e (Val), i)
-                                                                                       | _   -> assertValue (a, Elem (e (Val), i), loc)
+                                                                                         Ref -> ElemRef (e (Boxed), i)
+                                                                                       | _   -> assertBoxed (a, Elem (e (Boxed), i), loc)
                                                                                        esac
                                                                                      }
-                                                                                 esac                                                                            
+                                                                                 esac
                                                                                }, e, ps) (a)
                                                               }}
                                      ),
@@ -185,13 +202,13 @@ var primary    = memo $ eta syntax (
                                                                           {} -> e
                                                                         | _  -> expandScope (ds, e)
                                                                         esac
-                                                                      } (case e of 
+                                                                      } (case e of
                                                                            Some (e) -> e (a)
                                                                          | _        -> Skip
                                                                          esac)
                                                                       }}),
-      definition = memo $ eta syntax (kVar ds=list[syntax (lident (s["="] e=basic {e (Val)})?)] s[";"] {Var (ds)} |
-                                      kVal ds=list[syntax (lident (s["="] e=basic {e (Val)}))]  s[";"] {Val (ds)} |
+      definition = memo $ eta syntax (kVar ds=list[syntax (lident (s["="] e=basic {e (Boxed)})?)] s[";"] {Var (ds)} |
+                                      kVal ds=list[syntax (lident (s["="] e=basic {e (Boxed)}))]  s[";"] {Val (ds)} |
                                       kFun name=lident
                                            args=inbr[s("("), list0 (lident), s(")")]
                                            body=inbr[s("{"), scopeExpr, s("}")] {
@@ -201,11 +218,11 @@ var primary    = memo $ eta syntax (
       exp        = memo $ eta syntax (postBasic | s1=postBasic s[";"] s2=exp {fun (a) {Seq (s1 (Void), s2 (a))}}),
 
       mkElse = fun (f) { fun(cond, tr) { fun (a) {
-          If (cond(Val), tr (a), f (a))
+          If (cond(Unboxed), tr (a), f (a))
         } } },
       elsePart = memo $ eta syntax ( kElse f=scopeExpr kFi { mkElse(f) }
                                    | kElif f=someIf  { mkElse(f) }
-                                   | loc=pos kFi { fun(cond, tr) { fun(a) { assertVoid (a, If (cond(Val), tr (Void), Skip), loc) } } }
+                                   | loc=pos kFi { fun(cond, tr) { fun(a) { assertVoid (a, If (cond(Unboxed), tr (Void), Skip), loc) } } }
                                    ),
       someIf   = memo $ eta syntax (e=exp kThen t=scopeExpr f=elsePart { f(e, t) })
       ;

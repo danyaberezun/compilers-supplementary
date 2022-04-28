@@ -3,9 +3,15 @@
 # include <stdarg.h>
 # include <string.h>
 
+#if 1
 # define UNBOXED(x)  (((int) (x)) &  0x0001)
 # define UNBOX(x)    (((int) (x)) >> 1)
 # define BOX(x)      ((((int) (x)) << 1) | 0x0001)
+#else
+# define UNBOXED(x)  (0)
+# define UNBOX(x)    (x)
+# define BOX(x)      (x)
+#endif
 
 # define STRING_TAG  0x00000001
 # define ARRAY_TAG   0x00000003
@@ -14,8 +20,8 @@
 # define LEN(x) ((x & 0xFFFFFFF8) >> 3)
 # define TAG(x) (x & 0x00000007)
 
-# define TO_DATA(x) ((data*)((char*)(x)-sizeof(int)))
-# define TO_SEXP(x) ((sexp*)((char*)(x)-2*sizeof(int)))
+# define TO_DATA(x) ((data*)((char*)x-sizeof(int)))
+# define TO_SEXP(x) ((sexp*)((char*)x)-2*sizeof(int))
 
 typedef struct {
   int tag; 
@@ -39,7 +45,7 @@ extern void* Bsexp (int bn, ...) {
   size_t *p;  
   sexp   *r;  
   data   *d;  
-  int n = UNBOX(bn);
+  int n = bn; //UNBOX(bn);
 
   r = (sexp*) malloc (sizeof(int) * (n+1));
   d = &(r->contents);
@@ -64,7 +70,7 @@ extern void* Bsexp (int bn, ...) {
 }
 
 void* Barray (int n0, ...) {
-  int     n = UNBOX(n0);
+  int     n = n0;
   va_list args; 
   int     i, ai; 
   data    *r; 
@@ -97,7 +103,7 @@ void* Bstring (void *p) {
 }
 
 void* Belem (void *p, int i0) {
-  int i = UNBOX(i0);
+  int i = i0; //UNBOX(i0);
   data *a = TO_DATA(p);
   
   if (TAG(a->tag) == STRING_TAG) {
@@ -108,10 +114,9 @@ void* Belem (void *p, int i0) {
 }
 
 void* Bsta (void *x, int i, void *v) {
-  //if (UNBOXED(i)) {
-  if (1) {
-    if (TAG(TO_DATA(x)->tag) == STRING_TAG) { ((char*) x)[UNBOX(i)] = (char) UNBOX(v); }
-    else ((int*) x)[UNBOX(i)] = (int) v;
+  if (i != 0x0fffffff) {
+    if (TAG(TO_DATA(x)->tag) == STRING_TAG) { ((char*) x)[i] = (char) UNBOX(v); }
+    else ((int*) x)[i] = (int) v;
 
     return v;
   }
