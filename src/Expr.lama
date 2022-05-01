@@ -82,11 +82,30 @@ fun addNames (state, names) {
   foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
 }
 
+fun addNamesWithValues (state, names, values) {
+  foldl (
+    fun (s, [n, v]) { s.addName (n, v) },
+    state,
+    zip (names, values)
+  )
+}
+
 -- Helper function: adds a function in current scope
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
+  
+fun addDef (state, def) {
+  case def of
+    Var (names)            -> addNames (state, names)
+  | Fun (name, args, body) -> addFunction (state, name, args, body)
+  esac
+}
+
+fun addDefs (state, defs) {
+  foldl (addDef, state, defs)
+}
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -101,10 +120,95 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (c@[st, world], expr) {
+  case (expr) of
+    Assn  (left, right) ->
+      case evalList (c, {left, right}) of [[st, w], assn] ->
+        case assn of 
+          Ref (name)        :value:_ -> [[st <- [name, value], w], value]
+        | ElemRef (arr, idx):value:_ -> arr[idx] := value; [[st, w], value]
+        esac
+      esac
+  | Set (name, expr) -> eval (c, Assn (Ref (name), expr))
+  | Seq (e1, e2) ->
+      case eval (c, e1) of
+        [c, _] -> eval (c, e2)
+      esac
+  | Skip -> [c, None]
+  | Read (s) -> 
+      case readWorld (world) of
+        [n, world] -> [[st <- [s, n], world], None]
+      esac
+  | Write (e) ->
+      case eval (c, e) of
+        [[st, world], v] -> [[st, writeWorld (v, world)], None]
+      esac
+  | If (cond, bt, bf) ->
+      case eval (c, cond) of
+        [c, v] -> if v then eval (c, bt) else eval (c, bf) fi
+      esac
+  | While (e, s) ->
+      case eval (c, e) of
+        [c, v] -> if v then eval (c, Seq (s, While (e, s))) else [c, None] fi
+      esac
+  | DoWhile (b, cond) -> eval (c, Seq (b, While (cond, b)))
+  | Var (s) -> [c, st.lookup (s)]
+  | Ref (s) -> [c, Ref (s)]
+  | Const (n) -> [c, n]
+  | Ignore (e) -> eval (c, e)
+  | Binop (o, e1, e2) ->
+      case eval (c, e1) of
+        [c, v1] ->
+          case eval (c, e2) of
+            [c, v2] -> [c, evalOp (o, v1, v2)]
+          esac
+      esac
+  | Call (name, args) ->
+      case st.lookup (name) of
+        Fun (argNames, body) -> 
+          case evalList (c, args) of [[stArgs, w], argValues] ->
+            case body of
+              External -> case evalBuiltin (name, argValues, w) of [ret, w] -> [[st, w], ret] esac
+            | _ ->
+              case eval ([addNamesWithValues (enterFunction (stArgs), argNames, argValues), w], body) of [[st, w], ret] ->
+                [[c[0].leaveFunction (st.getGlobal), w], ret]
+              esac
+            esac
+          esac
+        | _ -> failure ("'%s' is not a name of any function\n", name.string)
+      esac
+  | Scope (defs, expr) ->
+      case st.enterScope.addDefs (defs) of
+        stWithDefs ->
+          case eval ([stWithDefs, world], expr) of
+            [[stAfterScope, wAfterScope], ret] -> [[stAfterScope.leaveScope, wAfterScope], ret]
+          esac
+      esac
+  | Array (elemExprs) ->
+      case evalList (c, elemExprs) of [c, elems] ->
+        [c, listArray (elems)]
+      esac
+  | String (s) -> [c, s]
+  | Elem (arrExpr, idxExpr) ->
+      case evalList (c, { arrExpr, idxExpr }) of [c, { arr, idx }] ->
+        case arr of
+          Sexp (_, arr) -> [c, arr[idx]]
+        | _             -> [c, arr[idx]]
+        esac
+      esac
+  | ElemRef (arrExpr, idxExpr) ->
+      case evalList (c, { arrExpr, idxExpr }) of [c, { arr, idx }] ->
+        case arr of
+          Sexp (_, arr) -> [c, ElemRef (arr, idx)]
+        | _             -> [c, ElemRef (arr, idx)]
+        esac
+      esac
+  | Sexp (name, argExprs) ->
+      case evalList (c, argExprs) of [c, args] ->
+        [c, Sexp (name, listArray (args))]
+      esac
+  esac
 }
-
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
