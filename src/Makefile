@@ -17,13 +17,15 @@ State.o: Lexer.o Parser.o
 
 Expr.o: State.o Builtins.o
 
-SM.o: State.o World.o Expr.o Parser.o Lexer.o Builtins.o
+ExprEval.o: Expr.o State.o Builtins.o
+
+SM.o: State.o World.o ExprEval.o Parser.o Lexer.o Builtins.o
 
 SMCompile.o: SM.o SMCompileExpr.o
 
-SMEval.o: SM.o State.o World.o Expr.o Parser.o Lexer.o
+SMEval.o: SM.o State.o World.o ExprEval.o Parser.o Lexer.o
 
-SMCompileExpr.o: SM.o State.o World.o Expr.o Parser.o Lexer.o
+SMCompileExpr.o: SM.o State.o World.o ExprEval.o Parser.o Lexer.o
 
 X86.o: Manifest.o
 
