@@ -108,7 +108,7 @@ void* Belem (void *p, int i0) {
 }
 
 void* Bsta (void *x, int i, void *v) {
-  if (UNBOXED(i)) {
+  if (!UNBOXED(i)) {
     if (TAG(TO_DATA(x)->tag) == STRING_TAG)((char*) x)[UNBOX(i)] = (char) UNBOX(v);
     else ((int*) x)[UNBOX(i)] = (int) v;
 
