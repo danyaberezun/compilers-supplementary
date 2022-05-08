@@ -369,6 +369,14 @@ fun staticSize (env) {
   env [19] ()
 }
 
+fun solveBarrier (env, l) {
+  if isBarrier(env) then 
+    retrieveStack (env, l)
+  else 
+    env
+  fi
+}
+
 -- Creates an initial environment
 fun initEnv () {
   makeEnv ({}, 0, emptySet (compare), emptySet (compare), 0, false, emptyMap (compare), "", 0)
@@ -440,6 +448,13 @@ fun move (from, to) {
   fi
 }
 
+fun lea (from, to, pad) {
+  if memOpnd (from) && memOpnd (to)
+  then singletonBuffer (Lea (from, eax)) <+ Mov (eax, to) <+ Mov (eax, pad)
+  else singletonBuffer (Lea (from, to)) <+ Mov (to, pad)
+  fi
+}
+
 -- Gets a suffix for Set instruction from
 -- source language comparison operator
 fun suffix (op) {
@@ -458,10 +473,18 @@ fun makeBox (n) {
   n * 2 + 1
 }
 
+fun lvalue(n) {
+  L (makeBox (n))
+}
+
 -- Generates a fixednum representation
 -- conversion
 fun toFixedNum (r) {
   singletonBuffer (Sal1 (r)) <+ Or1 (r)
+}
+
+fun fromFixedNum(r) {
+  singletonBuffer (Sar1(r))
 }
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
@@ -471,39 +494,172 @@ fun compile (env, code) {
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-
         case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+          STA -> compileCall(env, code, "Bsta", 3, {})
+        | LD (x) -> 
+            case allocate(env) of
+              [s, env] -> [env, code <+> move (loc(env, x), s)]
             esac
-        
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-               
+        | LDA (x) -> 
+            case allocate(env) of
+              [s, env] -> case allocate(env) of
+                [pad, env] -> [env, code <+> lea (loc(env, x), s, pad)]
+              esac
+            esac
+        | ELEM -> compileCall(env, code, "Belem", 2, {})
+        | CONST (n) ->
+            case allocate(env) of
+              [s, env] -> [env, code <+ Mov (lvalue(n), s)]
+            esac
+        | STRING (s) ->
+            case addString(env, s) of
+              [env, sname] -> 
+                case allocate(env) of
+                  [s, env] -> compileCall(env, code <+> move(M ("$" ++ sname), s), "Bstring", 1, {})
+                esac
+            esac
+        | ARRAY (n) -> compileCall(env, code, "Barray", n, {lvalue(n)})
+        | SEXP (name, n) -> 
+            case allocate(env) of
+              [hash, env] -> compileCall(env, code <+> move (lvalue(tagHash(name)), hash), "Bsexp", n + 1, {lvalue(n + 1)})
+            esac
+        | BINOP (op) -> compileBinop(env, code, op)
+        | LABEL (s) -> [solveBarrier(env, s), code <+ Label (s)]
+        | JMP (l) -> [setBarrier(setStack(env, l)), code <+ Jmp (l)]
+        | CJMP (c, l) -> 
+              case pop(env) of
+                [s, env] -> [setStack(env, l), code <+> fromFixedNum(s) <+> toBool(s) <+ CJmp(c, l)]
+              esac
+        | DUP ->
+            case peek(env) of
+              v -> case allocate(env) of
+                  [vv, env] -> [env, code <+> move(v, vv)]
+              esac
+            esac
+        | DROP ->
+            case pop(env) of
+              [_, env] -> [env, code]
+            esac
+        | GLOBAL (x) -> [addGlobal(env, x), code]
+        | BEGIN (lab, na, nl) -> [enterFunction(env, lab, nl), code <+> prologue (lab)]
+        | CALL (f, na) -> compileCall(env, code, f, na, {})
+        | BUILTIN (f, na) -> compileCall(env, code, "L" ++ f, na, {})
+        | END -> 
+          case epilogue(env) of
+            [env, end] -> [env, code <+> end]
+          esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
   }
 
   compile (env, code) 
+}
+
+fun saveRegs(regs) {
+  fun saveReg([pushCode, popCode], reg) {
+    [pushCode <+ Push (reg), singletonBuffer (Pop (reg)) <+> popCode]
+  }
+  foldl(saveReg, [emptyBuffer (), emptyBuffer ()], regs)
+}
+
+fun placeArgs(env, na, extraArgs) {
+  fun range(a, b) {
+    if a >= b then {} else a : range(a+1, b) fi
+  }
+  fun placeArg([env, code], i) {
+    case pop(env) of
+      [s, env] -> [env, code <+ Push (s)]
+    esac
+  }
+
+  fun placeExtra([env, code], s) {
+    [env, code <+ Push (s)]
+  }
+
+  foldl(placeExtra, foldl(placeArg, [env, emptyBuffer ()], range(0, na)), extraArgs)
+}
+
+fun compileCall(env, code, f, na, extraArgs) {
+  case liveRegisters(env, na) of
+    live -> case saveRegs(live) of
+      [pushRegs, popRegs] -> case placeArgs(env, na, extraArgs) of
+        [env, argsPlace] -> case allocate(env) of
+          [ret, env] -> [
+            env,
+            code <+> 
+            pushRegs <+> 
+            argsPlace <+ 
+            Call (f) <+ 
+            Binop ("+", L (wordSize * (na + size(extraArgs))), esp) <+> 
+            popRegs <+> 
+            move(eax, ret)
+          ]
+        esac
+      esac
+    esac
+  esac
+}
+
+fun cmp(a, b, op, res) {
+    var base = if stackOpnd(a) && stackOpnd(b) then
+      move(a, eax) <+ Binop ("cmp", eax, b)
+    else
+      singletonBuffer (Binop ("cmp", a, b))
+    fi;
+    base  <+> move(L (0), eax) <+ Set (suffix (op), "%al") <+> move(eax, res)
+}
+
+fun toBool(a) {
+    move (L (0), eax) <+> cmp(a, eax, "!=", a)
+}
+
+fun compileBinop(env, code, op) {
+  fun basic(a, b, op, res) {
+    if stackOpnd (a) then
+      move(b, eax) <+ Binop (op, a, eax) <+> move(eax, res)
+    else
+      singletonBuffer (Binop (op, a, b)) <+> move(b, res)
+    fi
+  }
+  
+  fun div(a, b, op, res) {
+    var reg = case op of
+      "/" -> eax
+    | "%" -> edx
+    esac;
+    move(b, eax) <+ Cltd <+ IDiv (a) <+> move(reg, res)
+  }
+
+  fun logic(a, b, op, res) {
+    toBool(a) <+> toBool(b) <+ Binop(op, a, eax) <+> move(eax, res)
+  }
+
+  fun select(op) {
+    case op of
+      "+"  -> basic
+    | "*"  -> basic
+    | "-"  -> basic
+    | "/"  -> div
+    | "%"  -> div
+    | "<"  -> cmp
+    | "<=" -> cmp
+    | ">=" -> cmp
+    | ">"  -> cmp
+    | "==" -> cmp
+    | "!=" -> cmp
+    | "&&" -> logic
+    | "!!" -> logic
+    | _    -> failure("Operation %s is not yet implemented\n", op)
+    esac
+  }
+
+  case pop2(env) of
+    [a, b, env] -> case allocate(env) of
+      [res, env] -> 
+        [env, code <+> fromFixedNum(a) <+> fromFixedNum(b) <+> select(op) (a, b, op, res) <+> toFixedNum(res)]
+    esac
+  esac
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
