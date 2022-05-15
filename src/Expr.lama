@@ -86,6 +86,19 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
+
+fun addDefs (st, v) {
+  case v of
+	  {}    -> st
+	| h : t ->
+      st := case h of 
+              Var (name)             -> st.addNames (name)
+            | Fun (name, args, body) -> st.addFunction (name, args, body)
+            esac;
+      
+      addDefs (st, t)
+	esac  
+}
                                         
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
@@ -101,10 +114,76 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (c@[st, w], expr) {
+  case expr of
+    Assn    (x, e)       ->
+      case evalList (c, {x, e}) of
+        [c@[st, w], {x, e}] ->
+          case x of
+            Ref (x) -> [[st <- [x, Val (e)], w], e]
+          | ElemRef (xs, i) -> [c, xs[i] := e]
+          esac 
+      esac
+  | Set     (x, e)       -> eval (c, Assn (Ref (x), e))
+  | Seq     (f, s)       ->
+      case eval (c, f) of [c, _] -> eval (c, s) esac
+  | Skip                 -> [c, 0]
+  | Read    (v)          ->
+      case readWorld (w) of [x, w] -> [[st <- [v, Val (x)], w], 0] esac
+  | Write   (e)          ->
+      case eval (c, e) of [[st, w], v] -> [[st, writeWorld (v, w)], 0] esac
+  | If      (e, t, f)    ->
+      case eval (c, e) of [c, e] -> eval (c, if e then t else f fi) esac
+  | While   (e, b)       ->
+      case eval (c, e) of
+        [c, v] -> if v then eval (eval (c, b).fst, expr) else [c, 0] fi
+      esac
+  | DoWhile (b, e)       ->
+      case eval (c, b) of
+        [c, _] ->
+          case eval (c, e) of
+            [c, v] -> if v then eval (c, expr) else [c, 0] fi
+          esac
+      esac
+  | Var     (v)          -> [c, case st.lookup (v) of Val (v) -> v esac]
+  | Ref     (r)          -> [c, Ref (r)]
+  | Const   (x)          -> [c, x]
+  | Binop   (op, x, y)   ->
+      case evalList (c, {x, y}) of
+        [c, {x, y}] -> [c, evalOp (op, x, y)]
+      esac
+  | Scope   (v, es)      ->
+      st := addDefs (st.enterScope, v);
+      case eval ([st, w], es) of 
+        [[st, w], v] -> [[st.leaveScope, w], v]
+      esac
+  | Call    (n, eas)     ->
+      case st.lookup (n) of
+        Fun (as, b) -> 
+          case evalList (c, eas) of
+            [[st, w], eas] -> 
+              case b of 
+                External -> case evalBuiltin (n, eas, w) of [v, w] -> [[st, w], v] esac
+              | _        ->
+                  var nc = [foldl (fun (st, [a, ea]) { st.addName (a, Val (ea)) }, 
+                                   st.enterFunction, 
+                                   as.zip (eas)),
+                            w];
+                  case eval (nc, b) of
+                    [[nst, w], v] -> [[st.leaveFunction (nst.getGlobal), w], v]
+                  esac
+              esac
+              
+          esac
+      esac
+  | Ignore  (e)          -> eval (c, e)
+  | String  (x)          -> [c, x]
+  | Sexp    (_, as)      -> eval (c, Array (as))
+  | Array   (es)         -> case evalList (c, es) of [c, es] -> [c, listArray (es)] esac
+  | Elem    (es, i)      -> case evalList (c, {es, i}) of [c, {es, i}] -> [c, es[i]] esac
+  | ElemRef (es, i)      -> case evalList (c, {es, i}) of [c, {es, i}] -> [c, ElemRef (es, i)] esac
+  esac
 }
-
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
