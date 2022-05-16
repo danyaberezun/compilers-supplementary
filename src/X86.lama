@@ -464,6 +464,83 @@ fun toFixedNum (r) {
   singletonBuffer (Sal1 (r)) <+ Or1 (r)
 }
 
+fun compileMul(op, a, b) {
+  move(b, eax) <+ Sar1(a) <+ Sar1(eax) <+ Binop(op, a, eax) <+> toFixedNum(eax) <+> move(eax, b)
+}
+
+fun compileAdd(op, a, b) {
+  move(b, eax) <+ Binop(op, a, eax) <+ Dec(eax) <+> move(eax, b)
+}
+
+fun compileSub(op, a, b) {
+  move(b, edx) <+> move(a, eax) <+ Binop(op, eax, edx) <+ Or1(edx) <+> move(edx, b)
+}
+
+fun compileDivOp(reg, a, b) {
+  move(b, eax) <+> move (L(0), edx) <+ Sar1(a) <+ Sar1(eax) <+ Cltd <+ IDiv(a) <+> toFixedNum(reg) <+> move(reg, b)
+}
+
+fun compileCompare(op, a, b) {
+  singletonBuffer(Mov(a, edx)) <+ Binop("cmp", edx, b) <+ Mov(L(0), eax) <+ Set(suffix(op), "%al") <+> toFixedNum(eax) <+> move(eax, b)
+}
+
+fun compileBoolBinOp(op, a, b) {
+  fun convertToBool(v) {
+    listBuffer({Sar1(v), Mov(L(0), eax), Binop("cmp", L(0), v), Set("g", "%al"), Mov(eax, v)})
+  }
+
+  convertToBool(a) <+> convertToBool(b) <+> move(b, eax) <+ Binop(op, a, eax) <+> toFixedNum(eax) <+> move(eax, b)
+}
+
+
+fun opCode(op, a, b) {
+  case op of
+    "+" -> compileAdd(op, a, b)                          |
+    "-" -> compileSub(op, a, b)                          |
+    "*" -> compileMul(op, a, b)                          |
+    "/" -> compileDivOp(eax, a, b)                      |
+    "%" -> compileDivOp(edx, a, b)                      |
+    "&&" -> compileBoolBinOp(op, a, b)                  |
+    "!!" -> compileBoolBinOp(op, a, b)                  |
+    cmp -> compileCompare(cmp, a, b)             
+  esac
+}
+
+fun saveRegs() {
+  emptyBuffer()
+    <+ Push (ebx)
+    <+ Push (ecx)
+    <+ Push (esi)
+    <+ Push (edi)
+}
+
+fun restoreRegs() {
+  emptyBuffer()
+    <+ Pop (edi)
+    <+ Pop (esi)
+    <+ Pop (ecx)
+    <+ Pop (ebx)
+}
+fun compileArgs(env, n) {
+  case n of
+    0 -> [env, emptyBuffer(), emptyBuffer()]
+  | x -> case env.pop of
+      [a, env] -> case compileArgs(env, x - 1) of
+          [env, inCode, outCode] -> [env, singletonBuffer(Push(a)) <+> inCode, singletonBuffer(Pop(edi)) <+> outCode]
+        esac
+    esac
+  esac
+}
+
+fun compileCall(env, f, n) {
+  case compileArgs(env, n) of
+    [env, inCode, outCode] -> 
+      case env.allocate of
+        [s, env] -> [env, saveRegs() <+> inCode <+ Call(f) <+> outCode <+> restoreRegs() <+> move(eax, s)]
+      esac
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {  
@@ -498,6 +575,117 @@ fun compile (env, code) {
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
                
+        | CONST(c) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move(L (c.makeBox), s)]
+          esac
+        | LD(x) -> 
+            case env.allocate of
+              [s, env] -> [env, code <+> move(env.loc(x), s)]
+            esac
+        | LDA(x) -> 
+            case env.allocate of
+              [s, env] -> case env.allocate of
+               [s1, env] -> [env, code <+ Lea(env.loc(x), eax) <+> move(eax, s1) <+> move(eax, s)]
+               esac
+            esac
+        | ST(x) ->
+            case env.peek of
+              s -> [env.push(s), code <+> move(s, env.loc(x))]
+            esac
+        | STI ->
+            case env.pop2 of
+              [v, x, env] -> 
+                case env.allocate of 
+                  [s, env] -> [env, code <+> move(x, eax) <+> move(v, edx) <+> move(edx, I(0, eax)) <+> move(edx, s)]
+                esac
+            esac
+        | BINOP(op) ->
+            case env.pop2 of
+              [a, b, env] -> [env.push(b), code <+> opCode(op, a, b)]  
+            esac
+        | LABEL(l) -> [if isBarrier(env) then retrieveStack(env, l) else env fi, code <+ Label(l)]
+        | JMP (l) -> [setBarrier(setStack(env, l)), code <+ Jmp(l)]
+        | CJMP (0, l) -> 
+            case env.pop of
+              [s, env] -> [setStack(env, l), code <+ Sar1(s) <+ Binop("cmp", L(0), s) <+ CJmp ("z", l)]
+            esac
+        | CJMP (_, l) -> 
+            case env.pop of
+              [s, env] -> [setStack(env, l), code <+ Sar1(s) <+ Binop("cmp", L(0), s) <+ CJmp ("nz", l)]
+            esac
+        | DROP -> 
+            case env.pop of
+              [s, env] -> [env, code]
+            esac
+        | DUP -> 
+            case env.pop of
+              [s, env] -> 
+                case env.allocate of
+                  [a, env] ->
+                    case env.allocate of
+                      [b, env] -> [env, code <+> move(s, eax) <+> move(eax, a) <+> move(eax, b)]
+                    esac
+                esac
+            esac 
+        | GLOBAL (x) -> 
+            case env.addGlobal(x) of
+              env -> [env, code <+> move(L(0), eax) <+> move(eax, env.loc(Glb(x)))]
+            esac 
+        | BEGIN (f, n, l) -> [enterFunction(env, f, l), code <+> prologue(f)]
+        | END ->
+            case epilogue(env) of
+              [env, r] -> [env, code <+> r]
+            esac
+        | CALL (f, n) -> 
+          case compileCall(env, f, size(n)) of
+            [env, cCode] -> [env, code <+> cCode]
+          esac
+        | STRING (x) -> 
+          case addString(env, x) of
+            [env, xn] -> 
+              case env.allocate of
+                [s, env] ->
+                  case compileCall(env, "Bstring", 1) of
+                    [env, cCode] -> [env, code <+ Lea(M(xn), s) <+> cCode]
+                  esac
+              esac
+          esac
+        | ELEM -> 
+          case compileCall(env, "Belem", 2) of
+            [env, cCode] -> [env, code <+> cCode]
+          esac
+        | ARRAY (n) ->
+          case compileArgs(env, n) of
+            [env, inCode, outCode] -> 
+              case env.allocate of
+                [s, env] -> 
+                  [env, code <+> saveRegs() <+> inCode <+ 
+                  Push(L(n.makeBox)) <+ Call("Barray") <+> 
+                  outCode <+ Pop(edi) <+> restoreRegs() <+> move(eax, s)]
+              esac
+          esac
+        | SEXP (s, n) -> 
+          case addString(env, s) of
+            [env, sn] -> 
+              case compileArgs(env, n) of
+                [env, inCode, outCode] -> 
+                  case env.allocate of
+                    [s, env] -> 
+                      [env, code <+> saveRegs() <+ Push(M(sn)) <+> inCode <+ 
+                      Push(L((n + 1).makeBox)) <+ Call("Bsexp") <+ Pop(edi) <+> 
+                      outCode <+ Pop(edi) <+> restoreRegs() <+> move(eax, s)]
+                  esac
+              esac
+          esac
+        | STA -> 
+          case compileCall(env, "Bsta", 3) of
+            [env, cCode] -> [env, code <+> cCode]
+          esac
+        | BUILTIN (f, n) ->
+          case compileCall(env, "L" ++ f, n) of
+            [env, cCode] -> [env, code <+> cCode]
+          esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
