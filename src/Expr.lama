@@ -86,7 +86,7 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -101,10 +101,218 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun processDefs (state, defs) {
+  case defs of
+    {} -> state
+    | h : tail ->
+      case h of
+        Fun (name, args, body) -> processDefs (state.addFunction (name, args, body), tail)
+        | Var (names) -> processDefs (state.addNames (names), tail)
+        | Val (names) -> processDefs (state.addNames (names), tail)
+      esac
+  esac
 }
 
+fun eval (c@[s, w], expr) {
+  case expr of
+    Assn (lhs, rhs) -> (
+      case evalList (c, {lhs, rhs}) of
+        [
+          c@[s, w],
+          {Ref (lhs), rhs}
+        ] -> 
+          (
+            var newConf = [s <- [lhs, rhs], w];
+            [newConf, rhs]
+          )
+        | [c, {ElemRef (lhs, indx), rhs} ] ->
+            (
+              lhs[indx] := rhs;
+              [c, rhs]
+            )
+      esac
+      )
+    | Seq (st, stR) ->
+        case eval (c, st) of
+          [newConf, v] -> eval (newConf, stR)
+        esac
+    | Skip -> [c, Void]
+    | If (cond, tb, fb) ->
+        case eval (c, cond) of
+          [newConf, condR] ->
+            if condR
+              then eval (newConf, tb)
+            else eval (newConf, fb)
+            fi
+        esac
+    | While (cond, stt) ->
+        case eval (c, cond) of
+          [newConf, condR] ->
+            if condR
+              then
+                (
+                  var blockR = eval (newConf, stt);
+                  eval (blockR.fst, While (cond, stt))
+                )
+            else [newConf, Void]
+            fi
+        esac
+    | DoWhile (stt, cond) ->
+        case eval (c, stt) of
+          [newConf, blockR] ->
+            case eval (newConf, cond) of
+                [newConf, condR] ->
+                  if condR
+                    then (eval (newConf, While (cond, stt)))
+                  else [newConf, Void]
+                  fi
+              esac
+          esac
+    | Ref (x) -> [c, Ref (x)]
+    | Var (x) -> [c, lookup (s, x)]
+    | Const (x) -> [c, x]
+    | Binop (op, x, y) -> (
+        case evalList (c, {x, y}) of
+          [newConf, {a, b}] -> [newConf, evalOp (op, a, b)]
+        esac
+      )
+    | Ignore (ex) -> [eval (c, ex).fst, Void]
+    | Scope (defs, ex) ->
+        case processDefs (enterScope (s), defs) of
+          newState ->
+            case eval ([newState, w], ex) of
+              [[newState, w], res] ->
+                (
+                  var newConf = [leaveScope (newState), w];
+                  [newConf, res]
+                )
+            esac
+        esac
+    | String (str_) -> [c, str_]
+    | Set (lhs, x) -> eval (c, Assn (Ref (lhs), x))
+    | Sexp (exp, data) ->
+        case evalList(c, data) of
+          [newConf, elems] ->
+            [newConf, Sexp (exp, listArray (elems))]
+        esac
+    | Elem (containerExpr, indx) ->
+        case evalList (c, { containerExpr, indx }) of
+          [newConf, {Sexp (ex, lhs), ind}] -> [newConf, lhs[ind]]
+          | [newConf, {container, ind} ] -> [newConf, container[ind]]
+        esac
+    | ElemRef (containerExpr, indx) ->
+        case evalList (c, { containerExpr, indx } ) of
+          [newConf, {container, ind} ] -> [newConf, ElemRef (container, ind)]
+        esac
+    | Array (contElements) ->
+        case evalList (c, contElements) of
+          [newConf, actElements] -> [newConf, listArray (actElements) ]
+        esac
+    | Call (func, args) ->
+        case func of
+          "write" ->
+            case eval (c, args.fst) of
+              [newConf@[s, w], res] -> [[s, writeWorld (res, w)], Void]
+            esac
+          | "read" ->
+              case readWorld (w) of
+                [v, newW] -> (var newConf = [s, newW]; [newConf, v])
+              esac
+        | _ ->
+          case s.lookup (func) of
+            Fun (fArgs, External) ->
+              case evalList (c, args) of
+                [c@[s, w], evaluatedArgs] ->
+                  case evalBuiltin (func, evaluatedArgs, w) of
+                    [res, w] -> [[s, w], res]
+                  esac
+              esac
+            | Fun (fArgs, body) ->
+                case evalList (c, args) of
+                  [c@[st, w], evaluatedArgs] ->
+                    (
+                      var updState = enterFunction (st);
+                      var newState = foldl (fun (s, [arg, v]) {addName (s, arg, v)}, updState, zip (fArgs, evaluatedArgs));
+                      case eval ([newState, w], body) of
+                        [c@[newSt, w], res] ->
+                          (
+                            var newConf = [st.leaveFunction (getGlobal (newSt)), w];
+                            [newConf, res]
+                          )
+                      esac
+                    )
+                esac
+          esac
+      esac
+    | Case (n, ways) ->
+        case lookup (s, n) of
+          v ->
+            case handleCase (c, v, ways) of
+              Some (res) -> res
+            esac
+        esac
+  esac
+}
+
+fun handleCase(c, lookedName, ways) {
+   foldl(fun (matched, elem@[casePatt, rhs]) {
+     case matched of
+        Some (_) -> matched
+       | _ ->  if doMatch(lookedName, casePatt) then Some (eval(c, rhs)) else MatchFailed fi
+     esac
+   }, MatchFailed, ways)
+}
+
+fun doMatch (target, patt) {
+  case patt of
+    ANY -> true
+    | Const (x) ->
+        case target of
+          #val -> compare (x, target) == 0
+          | _ -> false
+        esac
+    | String (s) ->
+      case target of
+        #str -> compare (s, target) == 0
+        | _ -> false
+      esac
+    | Array (data) ->
+      case target of
+        Array (dataT) ->
+          (
+            var asArraylhs = arrayList (data);
+            var asArrayRhs = arrayList (dataT);
+            var matchSz = size (asArraylhs) == size (asArrayRhs);
+            if matchSz then matchArrays (asArraylhs, asArrayRhs)
+            else false
+            fi
+          )
+        | _ -> false
+      esac
+    | Sexp (exp, data) ->
+      case target of
+        Sexp (expT, dataT) ->
+          (
+            var matchNames = compare (exp, expT) == 0;
+            if matchNames then doMatch (Array (listArray (data)), Array (dataT))
+            else false
+            fi
+          )
+        | _ -> false
+      esac
+    | Named (_, None) -> true
+    | Named (_, Some (pt)) -> doMatch (target, pt)
+  esac
+}
+
+fun matchArrays (lhs, rhs) {
+   foldl (fun (ans, [x, y]) {
+    if ans then
+      doMatch (x, y)
+    else false fi
+   }, true, zip (lhs, rhs)
+  )
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
