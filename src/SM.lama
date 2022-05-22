@@ -14,6 +14,12 @@ import Builtins;
 import Buffer;
 
 
+fun log(value) {
+  var f = fopen("/proc/self/fd/2", "a");
+  fprintf(f, "%s\n", string(value));
+  fclose(f)
+}
+
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
 public fun showSMInsn (i) {
@@ -155,8 +161,19 @@ fun eval (env, w, insns) {
     [s, sc, v, ww]
   }
 
+  fun createArray(c@[s, sc, v, w], n) {
+    case take(s, n) of [s, args] -> [setStack(c, s), listArray(args)] esac
+  }
+
   -- Core interpreter: takes a configuration and a program, returns a configuration
   fun eval (c@[s, sc, v, w], insns) {
+    fun toArray(v) {
+      case v of
+        Sexp (_, a) -> a
+      | _ -> v
+      esac
+    }
+
     case insns of
       {} -> c
     | i : tail ->
@@ -170,7 +187,10 @@ fun eval (env, w, insns) {
               case s of Ref (x) : ass : s ->
                 setState(setStack(c, s), v <- x :=: ass)
               esac *)
-          | SEXP (id, n) -> tail := ARRAY (n) : tail; c
+          | SEXP (id, n) ->
+              case createArray(c, n) of [c@[s, sc, v, w], a] ->
+                setStack(c, Sexp (id, a) : s)
+              esac
           | CONST (n)    -> setStack(c, n : s)
           | LABEL (s, _) -> c
           | JMP   (l)    -> tail := fromLabel (env, l); c
@@ -199,29 +219,50 @@ fun eval (env, w, insns) {
           | DUP  -> case s of n : _ -> setStack(c, n : s) esac
           | DROP -> case s of n : s -> setStack(c, s) esac
           | STRING (st) -> setStack(c, st : s)
-          | ARRAY (n) -> case take(s, n) of [s, args] ->
-                setStack(c, listArray(args) : s)
+          | ARRAY (n) ->
+              case createArray(c, n) of [c@[s, sc, v, w], a] ->
+                setStack(c, a : s)
               esac
           | STA ->
               case s of
                 Ref (x) : va : s -> setState(setStack(c, s), v <- x :=: va)
               | i : a : va : s ->
-                  a[i] := va;
+                  toArray(a)[i] := va;
                   setStack(c, s)
               esac
           | ELEM -> case s of i : a : s ->
-                setStack(c, a[i] : s)
+                setStack(c, toArray(a)[i] : s)
               esac
           | BUILTIN (f, n) -> case take(s, n) of [s, args] ->
                 case evalBuiltin(f, args, w) of [va, w] ->
                   setStack(setWorld(c, w), va : s)
                 esac
               esac
+          | META (name) ->
+              case name of
+                "MF" -> failure("Match failure.")
+              | _ -> c
+              esac
+          | PATT (pat) ->
+              case s of v : s ->
+                setStack(
+                  c,
+                  case pat of
+                    Arr (len) -> case v of #array -> length(v) == len | _ -> false esac
+                  | Sexp (x, len) ->
+                      case v of
+                        Sexp (y, args) -> compare(x, y) == 0 && length(args) == len
+                      | _ -> false
+                      esac
+                  esac : s
+                )
+              esac
           esac;
         eval (c, tail)
     esac
   }
 
+  -- log(insns);
   getOutput(eval ([{}, {}, makeState (0, 0), w], insns) [3])
 }
 
@@ -514,6 +555,48 @@ public fun compileSM (stmt) {
     }, [env, emptyBuffer()], list)
   }
 
+  fun getPatternFailLbl(failLblPref, depth) {
+    failLblPref ++ if depth != 0 then "_drop_" ++ string(depth) else "" fi
+  }
+
+  fun patternMatch(pat, failLblPref, depth) {
+    fun goToFail() {
+      singletonBuffer(CJMP ("z", getPatternFailLbl(failLblPref, depth)))
+    }
+
+    fun matchArray(pattArg, pats) {
+      case foldl(
+        fun ([code, i, curMaxDepth], pat) {
+          case patternMatch(pat, failLblPref, depth + 1) of [_, pCode, maxDepth] ->
+            [
+              code <+ DUP <+ CONST (i) <+ ELEM <+> pCode,
+              i + 1,
+              if maxDepth > curMaxDepth then maxDepth else curMaxDepth fi
+            ]
+          esac
+        }, [emptyBuffer(), 0, depth], pats
+      ) of [code, _, maxDepth] ->
+        [false, DUP <<+ PATT (pattArg) <+> goToFail(depth) <+> code <+ DROP, maxDepth]
+      esac
+    }
+
+    case pat of
+      Number (x) -> [false, DUP <<+ CONST (x) <+ BINOP ("==") <+> goToFail() <+ DROP, depth]
+    | Wildcard -> [true, singletonBuffer (DROP), 0]
+    | Array (pats) -> matchArray(Arr (size(pats)), pats)
+    | Sexp (x, pats) -> matchArray(Sexp (x, size(pats)), pats)
+    | Named (x, pat) -> patternMatch(pat, failLblPref, depth)
+    esac
+  }
+
+  fun genPatternFail(maxDepth, failLblPref) {
+    var code = emptyBuffer();
+    for var i; i := maxDepth, i > 0, i := i - 1 do
+      code := code <+ LABEL (getPatternFailLbl(failLblPref, i), 0) <+ DROP
+    od;
+    code <+ LABEL (failLblPref, 0)
+  }
+
   -- Generates SM code for a given statement
   --    lab  --- a label th go to after the statement is executed
   --    env  --- compilation environment
@@ -523,6 +606,10 @@ public fun compileSM (stmt) {
   --    updated environment
   --    code buffer  
   fun compile (lab, env, stmt) {
+    fun compileAssigner(env, e, name, lookuper) {
+      case compileWithEndLabel (env, e) of [env, code] -> [false, env, code <+ DUP <+ ST (lookuper(env, name))] esac
+    }
+
     case stmt of
       Ignore (e)  -> case compileWithEndLabel (env, e) of [env, code] -> [false, env, code <+ DROP] esac
     | Skip        -> [false, env, emptyBuffer ()]
@@ -546,8 +633,8 @@ public fun compileSM (stmt) {
         case compileListWithEndLabel(env, {lhs_e, rhs_e}) of [env, lrhs_code] ->
           [false, env, lrhs_code <+ BINOP (op)]
         esac
-    | Set (name, e) -> compile(lab, env, Assn (Ref (name), e))
-    | Assn (Ref (name), e) -> case compileWithEndLabel (env, e) of [env, code] -> [false, env, code <+ DUP <+ ST (lookupVar(env, name))] esac
+    | Set (name, e) -> compileAssigner(env, e, name, lookupVal)
+    | Assn (Ref (name), e) -> compileAssigner(env, e, name, lookupVar)
     | Assn (refe, e) ->
         case compileWithEndLabel (env, refe) of [env, refe_code] ->
           case compileWithEndLabel (env, e) of [env, code] ->
@@ -579,6 +666,29 @@ public fun compileSM (stmt) {
             esac
           esac
         esac
+    | Case (matched, list) ->
+        case compileWithEndLabel(env, Var (matched)) of [env, code] ->
+          case foldl(
+            fun (acc@[env, oldCode, oldAlwaysMatch], [pat, br]) {
+              if oldAlwaysMatch then acc else
+                case genLabel(env) of [failLblPref, env] ->
+                  case patternMatch(pat, failLblPref, 0) of [alwaysMatch, pCode, maxDepth] ->
+                    case compile (lab, env, br) of [_, env, brCode] ->
+                      [
+                        env,
+                        oldCode <+> pCode <+> brCode <+ JMP (lab) <+>
+                          if alwaysMatch then emptyBuffer() else genPatternFail(maxDepth, failLblPref) fi,
+                        alwaysMatch
+                      ]
+                    esac
+                  esac
+                esac
+              fi
+            }, [env, code, false], list
+          ) of [env, code, alwaysMatch] ->
+            [true, env, code <+> if alwaysMatch then emptyBuffer() else DROP <<+ META ("MF") fi]
+          esac
+        esac
     | While (cond, body) ->
         case genLabel(env) of [beginLab, env] ->
           case compileWithEndLabel (env, cond) of [env, condCode] ->
@@ -597,10 +707,12 @@ public fun compileSM (stmt) {
         esac
     | Scope (defs, expr) ->
         case foldl(fun ([env, code], d) {
+          fun addGlobals(env, xs) {
+            if isGlobal(env) then foldl(fun (c, x) { c <+ GLOBAL (x) }, code, xs) else code fi
+          }
           case d of
-            Var (xs) ->
-              [addVars(env, xs),
-               if isGlobal(env) then foldl(fun (c, x) { c <+ GLOBAL (x) }, code, xs) else code fi]
+            Var (xs) -> [addVars(env, xs), addGlobals(env, xs)]
+          | Val (xs) -> [addVals(env, xs), addGlobals(env, xs)]
           | Fun (name, args, body) ->
               case genFunLabel(env, name) of [fLabel, env] ->
                 [addFun(env, name, fLabel, size(args)), code]
@@ -612,7 +724,8 @@ public fun compileSM (stmt) {
               Fun (name, args, body) -> case lookupFun(env, name) of Fun (fLabel, _) ->
                 rememberFun(env, fLabel, args, body)
               esac
-            | Var (x) -> env
+            | Var (_) -> env
+            | Val (_) -> env
             esac
           }, env, defs) of env ->
             case compile(lab, env, expr) of [labUsed, env, code] ->
@@ -632,6 +745,7 @@ public fun compileSM (stmt) {
             esac
         esac
     esac
+    -- log(string(stmt) ++ " : " ++ string(getBuffer(res[2])));
   }
 
   fun functionFrame(env, fLabel, na, code) {

@@ -399,3 +399,7 @@ extern void Bmatch_failure (void *v, char *fname, int line, int col) {
   failure ("match failure at %s:%d:%d, value '%s'\n",
 	   fname, UNBOX(line), UNBOX(col), stringBuf.contents);
 }
+
+extern void Bdumb_match_failure () {
+  failure ("match failure :(\n");
+}
