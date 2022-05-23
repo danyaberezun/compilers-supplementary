@@ -150,7 +150,7 @@ fun expandScope(defs, expr) {
 -- Helper AST function: distributes a scope through an expression
 fun distributeScope(expr, exprConstructor) {
   case expr of
-    Scope (defs, sexpr) -> Scope(defs, exprConstructor(sexpr))
+    Scope (defs, sexpr) -> exprConstructor(sexpr) => fun (exprConstructor) { Scope(defs, exprConstructor) }
     | _                 -> exprConstructor(expr)
   esac
 }
@@ -212,7 +212,7 @@ var elseOrSkip = memo $ eta syntax (
   -kElse scopeExpr |
   loc=pos empty {
     fun (a) {
-      assertVoid(a, Skip, loc)
+      assertVoid(a, returnST $ Skip, loc)
     }
   }
 );
@@ -221,7 +221,13 @@ var elseOrSkip = memo $ eta syntax (
 var ifBody = memo $ eta syntax (
   condition=basic -kThen body=scopeExpr next=elseBody {
     fun (a) {
-      If(condition(Val), body(a), next(a))
+      condition(Val) =>> fun (condition) {
+        body(a) =>> fun (body) {
+          next(a) => fun (next) {
+            If(condition, body, next)
+          }
+        }
+      }
     }
   }
 );
@@ -231,33 +237,79 @@ var elseBody = memo $ eta syntax (
   -kElif ifBody | elseOrSkip
 );
 
-var primary = memo $ eta syntax (
-  -- Array constant
-  loc=pos x=inbr[s("["), list0(syntax (e=exp { e(Val) })), s("]")] {
-    fun (a) { assertValue(a, chainST(x) => fun (x) { Array(x) }, loc) }
-  } |
+fun primitive(exp) {
+  memo $ eta syntax (
+    -- Array constant
+    loc=pos x=inbr[s("["), list0(syntax (e=exp { e(Val) })), s("]")] {
+      fun (a) { assertValue(a, chainST(x) => fun (x) { Array(x) }, loc) }
+    } |
 
-  -- String constant
-  loc=pos x=strlit {
-    fun (a) { assertValue(a, returnST $ String(x), loc) }
-  } |
+    -- String constant
+    loc=pos x=strlit {
+      fun (a) { assertValue(a, returnST $ String(x), loc) }
+    } |
 
-  -- Character literal
-  loc=pos x=chrlit {
-    fun (a) { assertValue(a, returnST $ Const(x), loc) }
-  } |
+    -- Character literal
+    loc=pos x=chrlit {
+      fun (a) { assertValue(a, returnST $ Const(x), loc) }
+    } |
 
-  -- Decimal constant
-  loc=pos x=decimal {
-    fun (a) { assertValue(a, returnST $ Const(stringInt(x)), loc) }
-  } |
+    -- Decimal constant
+    loc=pos x=decimal {
+      fun (a) { assertValue(a, returnST $ Const(stringInt(x)), loc) }
+    } |
 
-  -- Function call
-  loc=pos name=lident args=inbr[lParen, list0(arg), rParen] {
-    fun (a) {
-      assertValue(a, Call(name, args), loc)
+    -- S-expression
+    loc=pos x=uident args=inbr[s("("), list0(syntax(e=exp { e(Val) })), s(")")]? {
+      fun (a) {
+        assertValue(
+          a,
+          case args of
+            None        -> returnST $ Sexp(x, {})
+            | Some (args) -> chainST(args) => fun (args) { Sexp(x, args) }
+          esac,
+          loc
+        )
+      }
     }
+  )
+}
+
+var pattern = memo $ eta syntax (
+  -- Number | String | Char | Array | Sexp
+  primitive[pattern] |
+
+  -- Wildcard
+  -s["_"] {
+    fun (a) { returnST $ Wildcard }
   } |
+
+  -- At expr
+  name=lident pattern=(-s["@"] pattern)? {
+    fun (a) {
+      case pattern of
+          None           -> returnST $ Named(name, None)
+        | Some (pattern) -> pattern(a) => fun (pattern) { Named(name, pattern) }
+      esac
+    }
+  }
+);
+
+var caseBranch = memo $ eta syntax (
+  pattern=pattern -s["->"] exp=scopeExpr {
+    fun (a) {
+      pattern(Val) =>> fun (pattern) {
+        exp(a) => fun (exp) {
+          [pattern, exp]
+        }
+      }
+    }
+  }
+);
+
+var primary = memo $ eta syntax (
+  -- Number | String | Char | Array | Sexp
+  primitive[exp] |
 
   -- Identifier
   loc=pos x=lident args=inbr[s("("), list0(syntax(e=exp { e(Val) })), s(")")]? {
@@ -273,51 +325,41 @@ var primary = memo $ eta syntax (
       esac }
   } |
 
-  -- S-expression
-  loc=pos x=uident args=inbr[s("("), list0(syntax(e=exp { e(Val) })), s(")")]? {
-    fun (a) {
-      assertValue(
-        a,
-        case args of
-            None        -> returnST $ Sexp(x, {})
-          | Some (args) -> chainST(args) => fun (args) { Sexp(x, args) }
-        esac,
-        loc
-      )
-    }
-  } |
-
   -- Parethesis
   inbr[lParen, scopeExpr, rParen] |
 
   -- Skip
   loc=pos kSkip {
-    fun (a) { assertVoid(a, Skip, loc) }
+    fun (a) { assertVoid(a, returnST $ Skip, loc) }
   } |
 
   -- If
-  -kIf ifBody=ifBody -kFi {
-    fun (a) {
-      ifBody(a)
-    }
-  } |
+  -kIf ifBody=ifBody -kFi |
 
   -- While
   loc=pos -kWhile condition=basic -kDo body=scopeExpr -kOd {
     fun (a) {
-      assertVoid(a, While(condition(Val), body(Void)), loc)
+      condition(Val) =>> fun (condition) {
+        body(Void) =>> fun (body) {
+          assertVoid(a, returnST $ While(condition, body), loc)
+        }
+      }
     }
   } |
 
   -- Repeat
   loc=pos -kDo body=scopeExpr -kWhile condition=basic -kOd {
     fun (a) {
-      distributeScope(
-        body(Void),
-        fun (loopBody) {
-          assertVoid(a, DoWhile(loopBody, condition(Val)), loc)
+      body(Void) =>> fun (body) {
+        condition(Val) =>> fun (condition) {
+          distributeScope(
+            body,
+            fun (loopBody) {
+              assertVoid(a, returnST $ DoWhile(loopBody, condition), loc)
+            }
+          )
         }
-      )
+      }
     }
   } |
 
@@ -330,18 +372,48 @@ var primary = memo $ eta syntax (
     body=scopeExpr
   -kOd {
     fun (a) {
-      var whileRes = While(condition(Val), Seq(body(Void), afterAll(a)));
-      distributeScope(
-        beforeAll(Void),
-        fun (initPart) {
-          assertVoid(a, Seq(initPart, whileRes), loc)
+      beforeAll(Void) =>> fun (beforeAll) {
+        condition(Val) =>> fun (condition) {
+          afterAll(a) =>> fun (afterAll) {
+            body(Void) =>> fun (body) {
+              var whileRes = While(condition, Seq(body, afterAll));
+              distributeScope(
+                beforeAll,
+                fun (initPart) {
+                  assertVoid(a, returnST $ Seq(initPart, whileRes), loc)
+                }
+              )
+            }
+          }
         }
-      )
+      }
+    }
+  } |
+
+  -- Case
+  -kCase
+    loc=pos
+    scrutinee=exp
+  -kOf
+    branches=listBy[caseBranch, s("|")]
+  -kEsac {
+    fun (a) {
+      var mappedBranches = map(fun (x) { x(a) }, branches);
+      freshName =>> fun (name) {
+        scrutinee(Val) =>> fun (scrutinee) {
+          chainST(mappedBranches) => fun (branches) {
+            expandScope(
+              { Val({[name, scrutinee]}) },
+              Case(loc, name, reifyPatternBindings(name, branches))
+            )
+          }
+        }
+      }
     }
   }
 );
 
-var arg = memo $ eta syntax(arg=exp { arg(Val) });
+var arg = memo $ eta syntax(arg=exp { returnST $ arg(Val) });
 
 var basic = memo $ eta (
   expr(
@@ -416,11 +488,12 @@ var scopeExpr = memo $ eta syntax (
     fun (a) {
       fun (e) {
         case ds of
-          { } -> e
+          {}  -> e
           | _ -> chainST(ds) =>> fun (ds) {
             e => fun (e)  {
               expandScope(ds, e)
-            } }
+            }
+          }
         esac
       }(
         case e of
