@@ -5,9 +5,9 @@
 # include <sys/mman.h>
 # include <assert.h>
 
-#define NIMPL fprintf (stderr, "Internal error: "			\
-		       "function %s at file %s, line %d is not implemented yet", \
-		       __func__, __FILE__, __LINE__);			\
+#define NIMPL fprintf (stderr, "Internal error: "                      \
+                      "function %s at file %s, line %d is not implemented yet", \
+                      __func__, __FILE__, __LINE__);                   \
   exit(1);
 
 extern void nimpl (void) { NIMPL }
@@ -62,22 +62,13 @@ static inline void init_extra_roots (void) {
 # define STRING_TAG  0x00000001
 # define ARRAY_TAG   0x00000003
 # define SEXP_TAG    0x00000005
-# define CLOSURE_TAG 0x00000007 
-# define UNBOXED_TAG 0x00000009 // Not actually a tag; used to return from LkindOf
+# define PTR_TAG     0x00000002
 
 # define LEN(x) ((x & 0xFFFFFFF8) >> 3)
 # define TAG(x) (x & 0x00000007)
 
-# define TO_DATA(x) ((data*)((char*)(x)-sizeof(int)))
-# define TO_SEXP(x) ((sexp*)((char*)(x)-2*sizeof(int)))
-
-# define ASSERT_BOXED(memo, x)               \
-  do if (UNBOXED(x)) failure ("boxed value expected in %s\n", memo); while (0)
-# define ASSERT_UNBOXED(memo, x)             \
-  do if (!UNBOXED(x)) failure ("unboxed value expected in %s\n", memo); while (0)
-# define ASSERT_STRING(memo, x)              \
-  do if (!UNBOXED(x) && TAG(TO_DATA(x)->tag) \
-	 != STRING_TAG) failure ("string value expected in %s\n", memo); while (0)
+# define TO_DATA(x) ((data*)((char*)x-sizeof(int)))
+# define TO_SEXP(x) ((sexp*)((char*)x-2*sizeof(int)))
 
 typedef struct {
   int tag; 
@@ -88,39 +79,6 @@ typedef struct {
   int tag; 
   data contents; 
 } sexp;
-
-static char* chars = "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'";
-
-extern char* de_hash (int);
-
-char* de_hash (int n) {
-  //  static char *chars = (char*) BOX (NULL);
-  static char buf[6] = {0,0,0,0,0,0};
-  char *p = (char *) BOX (NULL);
-  p = &buf[5];
-
-#ifdef DEBUG_PRINT
-  indent++; print_indent ();
-  printf ("de_hash: tag: %d\n", n); fflush (stdout);
-#endif
-  
-  *p-- = 0;
-
-  while (n != 0) {
-#ifdef DEBUG_PRINT
-    print_indent ();
-    printf ("char: %c\n", chars [n & 0x003F]); fflush (stdout);
-#endif
-    *p-- = chars [n & 0x003F];
-    n = n >> 6;
-  }
-
-#ifdef DEBUG_PRINT
-  indent--;
-#endif
-  
-  return ++p;
-}
 
 int Llength (void *p) {
   data *a = TO_DATA(p);
@@ -134,9 +92,11 @@ extern void* Bsexp (int bn, ...) {
   size_t *p;  
   sexp   *r;  
   data   *d;  
-  int n = UNBOX(bn);
+  int n = bn;
 
+  __pre_gc();
   r = (sexp*) alloc (sizeof(int) * (n+1));
+  __post_gc();
   d = &(r->contents);
   r->tag = 0;
     
@@ -151,7 +111,7 @@ extern void* Bsexp (int bn, ...) {
     ((int*)d->contents)[i] = ai;
   }
 
-  r->tag = UNBOX(va_arg(args, int));
+  r->tag = va_arg(args, int);
 
   va_end(args);
 
@@ -159,12 +119,14 @@ extern void* Bsexp (int bn, ...) {
 }
 
 void* Barray (int n0, ...) {
-  int     n = UNBOX(n0);
+  int     n = n0;
   va_list args; 
   int     i, ai; 
   data    *r; 
 
+  __pre_gc();
   r = (data*) alloc (sizeof(int) * (n+1));
+  __post_gc();
 
   r->tag = ARRAY_TAG | (n << 3);
   
@@ -176,6 +138,7 @@ void* Barray (int n0, ...) {
   }
   
   va_end(args);
+
   return r->contents;
 }
 
@@ -183,20 +146,17 @@ void* Bstring (void *p) {
   int   n = strlen (p);
   data *s;
 
-  __pre_gc ();
-  push_extra_root (&p);
+  __pre_gc();
   s = (data*) alloc (n + 1 + sizeof (int));
+  __post_gc();
   s->tag = STRING_TAG | (n << 3);
-  pop_extra_root (&p);
 
   strncpy (s->contents, p, n + 1);
-
-  __post_gc ();
   return s->contents;
 }
 
 void* Belem (void *p, int i0) {
-  int i = UNBOX(i0);
+  int i = i0; //UNBOX(i0);
   data *a = TO_DATA(p);
   
   if (TAG(a->tag) == STRING_TAG) {
@@ -207,9 +167,9 @@ void* Belem (void *p, int i0) {
 }
 
 void* Bsta (void *x, int i, void *v) {
-  if (UNBOXED(i)) {
-    if (TAG(TO_DATA(x)->tag) == STRING_TAG)((char*) x)[UNBOX(i)] = (char) UNBOX(v);
-    else ((int*) x)[UNBOX(i)] = (int) v;
+  if (i != 0x0fffffff) {
+    if (TAG(TO_DATA(x)->tag) == STRING_TAG) { ((char*) x)[i] = (char) UNBOX(v); }
+    else ((int*) x)[i] = (int) v;
 
     return v;
   }
@@ -217,49 +177,6 @@ void* Bsta (void *x, int i, void *v) {
   * (void**) x = v;
 
   return v;
-}
-
-extern int Btag (void *d, int t, int n) {
-  data *r; 
-  
-  if (UNBOXED(d)) return BOX(0);
-  else {
-    r = TO_DATA(d);
-#ifndef DEBUG_PRINT
-    return BOX(TAG(r->tag) == SEXP_TAG && TO_SEXP(d)->tag == UNBOX(t) && LEN(r->tag) == UNBOX(n));
-#else
-    return BOX(TAG(r->tag) == SEXP_TAG &&
-               GET_SEXP_TAG(TO_SEXP(d)->tag) == UNBOX(t) && LEN(r->tag) == UNBOX(n));
-#endif
-  }
-}
-
-extern int Barray_patt (void *d, int n) {
-  data *r; 
-  
-  if (UNBOXED(d)) return BOX(0);
-  else {
-    r = TO_DATA(d);
-    return BOX(TAG(r->tag) == ARRAY_TAG && LEN(r->tag) == UNBOX(n));
-  }
-}
-
-static void failure (char *s, ...);
-  
-extern int Bstring_patt (void *x, void *y) {
-  data *rx = (data *) BOX (NULL),
-       *ry = (data *) BOX (NULL);
-  
-  ASSERT_STRING(".string_patt:2", y);
-      
-  if (UNBOXED(x)) return BOX(0);
-  else {
-    rx = TO_DATA(x); ry = TO_DATA(y);
-
-    if (TAG(rx->tag) != STRING_TAG) return BOX(0);
-    
-    return BOX(strcmp (rx->contents, ry->contents) == 0 ? 1 : 0);
-  }
 }
 
 void Lwrite (int x) {
@@ -274,188 +191,21 @@ int Lread () {
   return BOX(result);
 }
 
-typedef struct {
-  char *contents;
-  int ptr;
-  int len;
-} StringBuf;
-
-static StringBuf stringBuf;
-
-# define STRINGBUF_INIT 128
-
-static void createStringBuf () {
-  stringBuf.contents = (char*) malloc (STRINGBUF_INIT);
-  stringBuf.ptr      = 0;
-  stringBuf.len      = STRINGBUF_INIT;
-}
-
-static void deleteStringBuf () {
-  free (stringBuf.contents);
-}
-
-static void extendStringBuf () {
-  int len = stringBuf.len << 1;
-
-  stringBuf.contents = (char*) realloc (stringBuf.contents, len);
-  stringBuf.len      = len;
-}
-
-static void vprintStringBuf (char *fmt, va_list args) {
-  int     written = 0,
-          rest    = 0;
-  char   *buf     = (char*) BOX(NULL);
-
- again:
-  buf     = &stringBuf.contents[stringBuf.ptr];
-  rest    = stringBuf.len - stringBuf.ptr;
-  written = vsnprintf (buf, rest, fmt, args);
-  
-  if (written >= rest) {
-    extendStringBuf ();
-    goto again;
-  }
-
-  stringBuf.ptr += written;
-}
-
-static void printStringBuf (char *fmt, ...) {
-  va_list args;
-
-  va_start (args, fmt);
-  vprintStringBuf (fmt, args);
-}
-
-
-int is_valid_heap_pointer (void *p) {
-  return 1;
-}
-
-static void printValue (void *p) {
-  data *a = (data*) BOX(NULL);
-  int i   = BOX(0);
-  if (UNBOXED(p)) printStringBuf ("%d", UNBOX(p));
-  else {
-    if (! is_valid_heap_pointer(p)) {
-      printStringBuf ("0x%x", p);
-      return;
-    }
-    
-    a = TO_DATA(p);
-
-    switch (TAG(a->tag)) {      
-    case STRING_TAG:
-      printStringBuf ("\"%s\"", a->contents);
-      break;
-
-    case CLOSURE_TAG:
-      printStringBuf ("<closure ");
-      for (i = 0; i < LEN(a->tag); i++) {
-	if (i) printValue ((void*)((int*) a->contents)[i]);
-	else printStringBuf ("0x%x", (void*)((int*) a->contents)[i]);
-	
-	if (i != LEN(a->tag) - 1) printStringBuf (", ");
-      }
-      printStringBuf (">");
-      break;
-      
-    case ARRAY_TAG:
-      printStringBuf ("[");
-      for (i = 0; i < LEN(a->tag); i++) {
-        printValue ((void*)((int*) a->contents)[i]);
-	if (i != LEN(a->tag) - 1) printStringBuf (", ");
-      }
-      printStringBuf ("]");
-      break;
-      
-    case SEXP_TAG: {
-#ifndef DEBUG_PRINT
-      char * tag = de_hash (TO_SEXP(p)->tag);
-#else
-      char * tag = de_hash (GET_SEXP_TAG(TO_SEXP(p)->tag));
-#endif      
-      
-      if (strcmp (tag, "cons") == 0) {
-	data *b = a;
-	
-	printStringBuf ("{");
-
-	while (LEN(a->tag)) {
-	  printValue ((void*)((int*) b->contents)[0]);
-	  b = (data*)((int*) b->contents)[1];
-	  if (! UNBOXED(b)) {
-	    printStringBuf (", ");
-	    b = TO_DATA(b);
-	  }
-	  else break;
-	}
-	
-	printStringBuf ("}");
-      }
-      else {
-	printStringBuf ("%s", tag);
-	if (LEN(a->tag)) {
-	  printStringBuf (" (");
-	  for (i = 0; i < LEN(a->tag); i++) {
-	    printValue ((void*)((int*) a->contents)[i]);
-	    if (i != LEN(a->tag) - 1) printStringBuf (", ");
-	  }
-	  printStringBuf (")");
-	}
-      }
-    }
-    break;
-
-    default:
-      printStringBuf ("*** invalid tag: 0x%x ***", TAG(a->tag));
-    }
+extern int Btag (void *d, char* t, int n) {
+  if (UNBOXED(d)) {
+    return 0;
+  } else {
+    data* r = TO_DATA(d);
+    data* s = TO_SEXP(d);
+    //fprintf(stderr, "@@@@@@@@@ %u MATCH TAG %u %s\n", d, TAG(r->tag), TAG(r->tag) == SEXP_TAG ? s->tag : "<wrong>");
+    return TAG(r->tag) == SEXP_TAG && LEN(r->tag) == n && strcmp(s->tag, t) == 0;
   }
 }
 
-static void vfailure (char *s, va_list args) {
-  fprintf  (stderr, "*** FAILURE: ");
-  vfprintf (stderr, s, args); // vprintf (char *, va_list) <-> printf (char *, ...)
-  exit     (255);
+extern void Bfail() {
+  printf("match failed\n");
+  exit(30);
 }
-
-static void failure (char *s, ...) {
-  va_list args;
-
-  va_start (args, s);
-  vfailure (s, args);
-}
-
-static void fix_unboxed (char *s, va_list va) {
-  size_t *p = (size_t*)va;
-  int i = 0;
-  
-  while (*s) {
-    if (*s == '%') {
-      size_t n = p [i];
-      if (UNBOXED (n)) {
-	p[i] = UNBOX(n);
-      }
-      i++;
-    }
-    s++;
-  }
-}
-
-extern void Lfailure (char *s, ...) {
-  va_list args;
-  
-  va_start    (args, s);
-  fix_unboxed (s, args);
-  vfailure    (s, args);
-}
-
-extern void Bmatch_failure (void *v, char *fname, int line, int col) {
-  createStringBuf ();
-  printValue (v);
-  failure ("match failure at %s:%d:%d, value '%s'\n",
-	   fname, UNBOX(line), UNBOX(col), stringBuf.contents);
-}
-
 
 /* ======================================== */
 /*         GC: Mark-and-Copy                */
@@ -534,8 +284,7 @@ static pool   to_space;   // To-space   (passive) semi-heap
 static size_t *current;   // Pointer to the free space begin in active space
 
 // initial semi-space size
-static size_t SPACE_SIZE = 8;
-# define POOL_SIZE (2*SPACE_SIZE)
+static const size_t POOL_SIZE = 0;
 
 // @init_to_space initializes to_space
 // @flag is a flag: if @SPACE_SIZE has to be increased or not
@@ -549,17 +298,17 @@ static void gc_swap_spaces (void) { NIMPL }
 
 // checks if @p is a valid pointer to the active (from-) space
 # define IS_VALID_HEAP_POINTER(p)\
-  (!UNBOXED(p) &&		 \
-   from_space.begin <= p &&	 \
+  (!UNBOXED(p) &&               \
+   from_space.begin <= p &&     \
    from_space.end   >  p)
 
 // checks if @p points to the passive (to-) space
-# define IN_PASSIVE_SPACE(p)	\
-  (to_space.begin <= p	&&	\
+# define IN_PASSIVE_SPACE(p)   \
+  (to_space.begin <= p &&      \
    to_space.end   >  p)
 
 // chekcs if @p is a forward pointer
-# define IS_FORWARD_PTR(p)			\
+# define IS_FORWARD_PTR(p)                     \
   (!UNBOXED(p) && IN_PASSIVE_SPACE(p))
 
 extern size_t * gc_copy (size_t *obj);
@@ -581,13 +330,109 @@ extern size_t * gc_copy (size_t *obj) { NIMPL }
 //   and, if so, calls @gc_copy for each found root
 extern void gc_test_and_copy_root (size_t ** root) { NIMPL }
 
+static void* trivial_alloc_in (size_t size, pool* in) {
+    size_t roundedSize = (size + sizeof(size_t) - 1) / sizeof(size_t);
+    if (in->current + roundedSize <= in->end) {
+      void* res = in->current;
+      fprintf(stderr, "allocated %u+%u in [%u, %u)\n", res, size, in->begin, in->end);
+      in->current += roundedSize;
+      if ((int)res&0x3 == 0x2) {
+        abort();
+      }
+      return res;
+    }
+    return 0;
+}
+
+static void* trivial_alloc (size_t size) {
+  return trivial_alloc_in(size, &from_space);
+}
+
+extern unsigned __gc_stack_top;
+extern unsigned __gc_stack_bottom;
+
+static size_t trace (size_t d, int indent) {
+  fprintf(stderr, "TRACED: %u\n", d);
+  if (d == Bsexp || d == Barray || d == Bsexp) {
+    return d;
+  }
+  if (UNBOXED((int)d)) {
+    return d;
+  }
+  // unfortunatelly for now my code passes size without 1, but they are small, right?..
+  if (d < from_space.begin || d >= from_space.current) {
+    return d;
+  }
+  fprintf(stderr, "in pool %d\n", d);
+  data* r = TO_DATA(d);
+  data* s = TO_SEXP(d);
+  if (TAG(r->tag) == SEXP_TAG) {
+    int n = LEN(r->tag);
+    sexp* res = trivial_alloc_in(sizeof(int) * (n+2), &to_space);
+    data* resd = &res->contents;
+    size_t retn = &resd->contents;
+    fprintf(stderr, "%*cSEXP %s %d\n", indent+1, '\t', s->tag, n);
+    res->tag = s->tag;
+    resd->tag = r->tag;
+    r->tag = (int)retn | PTR_TAG;
+    for (int i = 0; i < n; i++) {
+      ((size_t*)resd->contents)[i] = trace(((size_t*)r->contents)[i], indent + 1);
+    }
+    return retn;
+  } else if (TAG(r->tag) == STRING_TAG) {
+    fprintf(stderr, "STRING\n");
+  } else if (TAG(r->tag) == ARRAY_TAG) {
+    int n = LEN(r->tag);
+    fprintf(stderr, "ARRAY\n");
+    data* res = trivial_alloc_in(sizeof(int) * (n+1), &to_space);
+    size_t retn = &res->contents;
+    fprintf(stderr, "%*cSEXP %s %d\n", indent+1, '\t', s->tag, n);
+    res->tag = s->tag;
+    r->tag = (int)retn | PTR_TAG;
+    for (int i = 0; i < n; i++) {
+      ((size_t*)res->contents)[i] = trace(((size_t*)r->contents)[i], indent + 1);
+    }
+    return retn;
+  } else if ((r->tag & 0x3) == PTR_TAG) {
+    size_t retn = r->tag & ~PTR_TAG;
+    fprintf(stderr, "PTR %u\n", retn);
+    return retn;
+  }
+  fprintf(stderr, "!!! unknown %u (%u)\n", d, TAG(r->tag));
+  abort();
+}
+
 // @gc_root_scan_data scans static area for root
 //   for each root it calls @gc_test_and_copy_root
-extern void gc_root_scan_data (void) { NIMPL }
+extern void gc_root_scan_data (void) {
+  fprintf(stderr, "bottom-top %u %u\n", __gc_stack_bottom, __gc_stack_top);
+  fprintf(stderr, "begin-end  %u %u\n", from_space.begin, from_space.end);
+
+  fprintf(stderr, "====== stack ======\n");
+  for (size_t* s = __gc_stack_top; s < __gc_stack_bottom; s++) {
+    size_t dat = *s;
+    *s = trace(dat, 0);
+  }
+  fprintf(stderr, "====== data ======\n");
+  for (size_t* s = &__gc_data_start; s < &__gc_data_end; s++) {
+    size_t dat = *s;
+    *s = trace(dat, 0);
+  }
+}
+
+void refill_pool (pool* p) {
+  p->end = p->begin + p->size;
+  p->current = p->begin;
+}
 
 // @init_pool is a memory pools initialization function
 //   (is called by L__gc_init from runtime/gc_runtime.s)
-extern void init_pool (void) { NIMPL }
+extern void init_pool (void) {
+  from_space.size = POOL_SIZE;
+  from_space.begin = malloc(sizeof(size_t) * from_space.size);
+  fprintf(stderr, "INITED WITH: %u\n", from_space.begin);
+  refill_pool(&from_space);
+}
 
 // @gc performs stop-the-world mark-and-copy garbage collection
 //   and extends pools (i.e. calls @extend_spaces) if necessarily
@@ -599,10 +444,33 @@ extern void init_pool (void) { NIMPL }
 //   2) call @__gc_root_scan_stack (finds roots in program stack
 //        and calls @gc_test_and_copy_root for each found root)
 //   3) extends spaces if there is not enough space to be allocated after gc
-static void * gc (size_t size) { NIMPL }
+static void * gc (size_t size) {
+    //size_t s = (from_space.size + size) * 2;
+    size_t s = from_space.size + size;
+    fprintf(stderr, "allocating pool of %d\n", s);
+    to_space.size = s;
+    to_space.begin = malloc(to_space.size * sizeof(size_t));
+    refill_pool(&to_space);
+
+    gc_root_scan_data();
+
+    void* dealloc = from_space.begin;
+    from_space = to_space;
+    fprintf(stderr, "deallocating %u\n", dealloc);
+    free(dealloc);
+
+    return trivial_alloc(size);
+}
 
 // @alloc allocates @size memory words
 //   it enaibles garbage collection if out-of-memory,
 //   i.e. calls @gc when @current + @size > @from_space.end
 // returns a pointer to the allocated block of size @size
-extern void * alloc (size_t size) { NIMPL }
+extern void * alloc (size_t size) {
+    void* t = trivial_alloc(size);
+    if (t != 0) {
+      return t;
+    }
+    fprintf(stderr, "alloc failed: collecting\n");
+    return gc(size);
+}

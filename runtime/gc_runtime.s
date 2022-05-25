@@ -30,14 +30,17 @@ L__gc_init:		movl	%esp, __gc_stack_bottom
 // then  set @__gc_stack_top to %ebp
 // else  return
 __pre_gc:
-			call nimpl
+			movl %ebp, __gc_stack_top
+			ret
 
 // ==================================================
 // if __gc_stack_top was set by one of the callers
 // then return
 // else set __gc_stack_top to 0
 __post_gc:
-			call nimpl
+			movl $0, __gc_stack_top
+			ret
+
 
 // ==================================================
 // Scan stack for roots
