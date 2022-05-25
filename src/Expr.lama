@@ -9,6 +9,13 @@ import Parser;
 import Fun;
 import Builtins;
 
+fun log(value) {
+  var f = fopen("/proc/self/fd/2", "a");
+  fprintf(f, "%s\n", string(value));
+  fclose(f)
+}
+
+
 -- As association map which maps "\otimes" into "\oplus"
 var ops = {
   ["+" , infix + ],
@@ -64,6 +71,13 @@ public fun evalOp (op, l, r) {
 fun lookupVal (state, name) {
   case state.lookup (name) of
     x@Val (_) -> x
+  | _         -> error (sprintf ("the name ""%s"" does not designate a valiable", name), getLoc (name))
+  esac
+}
+
+fun lookupVar (state, name) {
+  case state.lookup (name) of
+    x@Var (_) -> x
   | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
   esac
 }
@@ -78,15 +92,20 @@ fun lookupFun (state, name) {
 }
 
 -- Helper function: adds a bunch of regular variables current scope
-fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
+fun addNames (state, names, init) {
+  foldl (fun (s, name) {addName(s, name, init)}, state, names)
+}
+
+-- Helper function: adds initialized variables to the current scope
+fun addNamesInit (state, names, vals) {
+  foldl (fun (s, [name, v]) {addName(s, name, Var (v))}, state, zip(names, vals))
 }
 
 -- Helper function: adds a function in current scope
 fun addFunction (state, name, args, body) {
-  state.addName (name, Fun (args, body))
+  addName(state, name, Fun (args, body))
 }
-                                        
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -101,8 +120,115 @@ fun evalList (c, exprs) {
   esac
 }
 
+fun handleDefs(s, defs) {
+  case defs of
+    {} -> s
+  | d : ds ->
+      handleDefs(
+        case d of
+          Var (x) -> addNames(s, x, Var (0))
+        | Val (x) -> addNames(s, x, Val (0))
+        | Fun (name, args, body) -> addFunction(s, name, args, body)
+        esac,
+        ds
+      )
+  esac
+}
+
+
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  fun assigner(name) {
+    fun (s, v) { s <- name :=: v }
+  }
+
+  fun patternMatch(v, pat) {
+    fun matchArray(vals, pats) {
+      if length(vals) != size(pats) then false else
+        foldl(fun (acc, [v, p]) { acc && patternMatch(v, p) }, true, zip(arrayList(vals), pats))
+      fi
+    }
+
+    case pat of
+      Number (x) -> compare(v, x) == 0
+    | Wildcard -> true
+    | Array (pats) -> case v of vals@#array -> matchArray(vals, pats) esac
+    | Sexp (x, pats) -> case v of Sexp (x_, vals) -> if compare(x_, x) != 0 then false else matchArray(vals, pats) fi esac
+    | Named (x, pat) -> patternMatch(v, pat)
+    esac
+  }
+
+  (* log(expr); *)
+  case expr of
+    Scope (defs, expr) ->
+      case eval([handleDefs(enterScope(s), defs), w], expr) of [c@[s, w], v] ->
+        [[leaveScope(s), w], v]
+      esac
+  | Ignore (x) -> eval (c, x)
+  | Skip       -> [c, 0]
+  | Var (name) -> case lookup(s, name) of Var (v) -> [c, v] esac
+  | Ref (name) -> case lookupVar(s, name) of _ -> [c, assigner(name)] esac
+  | Const (n) -> [c, n]
+  | String (x) -> [c, x]
+  | Array  (x) -> case evalList(c, x) of [c, l] -> [c, listArray(l)] esac
+  | Sexp (name, args) -> case eval(c, Array (args)) of [c, args] -> (* log(args); *)[c, Sexp (name, args)] esac
+  | Binop (op, lhs_e, rhs_e) ->
+      case eval(c, lhs_e) of [c, lhs] ->
+        case eval(c, rhs_e) of [c, rhs] ->
+          [c, evalOp(op, lhs, rhs)]
+        esac
+      esac
+  | Set (name, expr) -> case eval (c, expr) of [[s, w], v] ->
+        [[assigner(name)(s, v), w], v]
+      esac
+  | Assn (ref, expr) -> case eval (c, ref) of [c@[s, w], action] ->
+        case eval (c, expr) of [[s, w], v] -> [[action(s, v), w], v] esac
+      esac
+  | Seq (s1, s2) ->
+      case eval(c, s1) of [c, _] ->
+        case eval(c, s2) of [c, v] ->
+          [c, v]
+        esac
+      esac
+  | Elem (arr, ind) -> case evalList(c, {arr, ind}) of
+        [c, {arr, ind}] -> case arr of Sexp(_, arrn) -> arr := arrn | _ -> skip esac; [c, arr[ind]]
+      esac
+  | ElemRef (arr, ind) -> case evalList(c, {arr, ind}) of
+        [c, {arr, ind}] -> case arr of Sexp(_, arrn) -> arr := arrn | _ -> skip esac; [c, fun (s, v) { arr[ind] := v; s }]
+      esac
+  | If (cond, ifBody, elseBody) -> case eval(c, cond) of [c, v] ->
+        eval (c, if v then ifBody else elseBody fi)
+      esac
+  | Case (matched, list) -> case eval(c, Var (matched)) of [c, v] ->
+        case foldl(
+          fun ([c, res], [pat, br]) {
+            case res of
+              None -> if patternMatch(v, pat) then case eval(c, br) of [c, res] -> [c, Some (res)] esac else [c, res] fi
+            | _ -> [c, res]
+            esac
+          }, [c, None], list
+        ) of [c, Some (x)] -> [c, x] esac
+      esac
+  | While (cond, body) -> case eval(c, cond) of [c, v] ->
+        if v then case eval (c, body) of [c, _] -> eval (c, While (cond, body)) esac else [c, 0] fi
+      esac
+  | DoWhile (body, cond) ->
+      case eval (c, body) of [c, _] ->
+        case eval (c, cond) of [c, v] ->
+          if v then eval (c, DoWhile (body, cond)) else [c, 0] fi
+        esac
+      esac
+  | Call (name, args) ->
+      case lookupFun(s, name) of Fun (argNames, body) ->
+        case evalList(c, args) of [c@[s, w], argVals] ->
+          case body of
+            External -> case evalBuiltin(name, argVals, w) of [v, w] -> [[s, w], v] esac
+          | _ -> case eval([addNamesInit(enterFunction(s), argNames, argVals), w], body) of [[s_res, w], res] ->
+                [[leaveFunction(s, getGlobal(s_res)), w], res]
+              esac
+          esac
+        esac
+      esac
+  esac
 }
 
 
@@ -111,6 +237,6 @@ public fun evalExpr (input, expr) {
   case eval ([emptyState ().enterScope.addName ("read",   Fun ({}, External))
                                       .addName ("write",  Fun ({"a"}, External))
                                       .addName ("length", Fun ({"a"}, External)), createWorld (input)], expr) of
-    [c, _] -> c.snd.getOutput
+    [c, _] -> getOutput(snd(c))
   esac
 }

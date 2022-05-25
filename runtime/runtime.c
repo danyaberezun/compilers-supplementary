@@ -456,6 +456,10 @@ extern void Bmatch_failure (void *v, char *fname, int line, int col) {
 	   fname, UNBOX(line), UNBOX(col), stringBuf.contents);
 }
 
+extern void Bdumb_match_failure () {
+  failure ("match failure :(\n");
+}
+
 
 /* ======================================== */
 /*         GC: Mark-and-Copy                */
