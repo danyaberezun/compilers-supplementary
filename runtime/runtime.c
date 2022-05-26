@@ -1,9 +1,15 @@
+#define _GNU_SOURCE
 # include <stdio.h>
 # include <stdlib.h>
 # include <stdarg.h>
 # include <string.h>
 # include <sys/mman.h>
+#include <errno.h>
 # include <assert.h>
+
+#define DEBUG_PRINT
+
+static void printValue (void *p) ;
 
 #define NIMPL fprintf (stderr, "Internal error: "			\
 		       "function %s at file %s, line %d is not implemented yet", \
@@ -93,6 +99,12 @@ static char* chars = "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234
 
 extern char* de_hash (int);
 
+int indent = 0;
+
+void print_indent() {
+  printf("%*c", indent, ' ');
+}
+
 char* de_hash (int n) {
   //  static char *chars = (char*) BOX (NULL);
   static char buf[6] = {0,0,0,0,0,0};
@@ -136,25 +148,44 @@ extern void* Bsexp (int bn, ...) {
   data   *d;  
   int n = UNBOX(bn);
 
+  __pre_gc();
+#ifdef DEBUG_PRINT
+  fprintf(stderr, "New sexp(%d) [\n", n-1);
+#endif
   r = (sexp*) alloc (sizeof(int) * (n+1));
+#ifdef DEBUG_PRINT
+  fprintf(stderr, "@%p\n", r);
+#endif
+
   d = &(r->contents);
   r->tag = 0;
-    
+
   d->tag = SEXP_TAG | ((n-1) << 3);
-  
+
   va_start(args, bn);
-  
+
   for (i=0; i<n-1; i++) {
     ai = va_arg(args, int);
     
     p = (size_t*) ai;
     ((int*)d->contents)[i] = ai;
+#ifdef DEBUG_PRINT
+    fprintf(stderr, "a%p\n", ai);
+    printValue(ai);
+#endif
   }
+#ifdef DEBUG_PRINT
+  fprintf(stderr, "]\n", ai);
+#endif
 
   r->tag = UNBOX(va_arg(args, int));
 
   va_end(args);
 
+  __post_gc();
+#ifdef DEBUG_PRINT
+  fprintf(stderr, "returned %p\n", d->contents);
+#endif
   return d->contents;
 }
 
@@ -164,18 +195,32 @@ void* Barray (int n0, ...) {
   int     i, ai; 
   data    *r; 
 
+  __pre_gc ();
+#ifdef DEBUG_PRINT
+  fprintf(stderr, "New array(%d) [\n", n);
+#endif
   r = (data*) alloc (sizeof(int) * (n+1));
+#ifdef DEBUG_PRINT
+  fprintf(stderr, "Alloced to %p\n", r);
+#endif
 
   r->tag = ARRAY_TAG | (n << 3);
   
-  va_start(args, n);
+  va_start(args, n0);
   
   for (i = 0; i<n; i++) {
     ai = va_arg(args, int);
     ((int*) r->contents)[i] = ai;
+#ifdef DEBUG_PRINT
+    printValue((void *)ai);
+#endif
   }
+#ifdef DEBUG_PRINT
+  fprintf(stderr, "]\n", n);
+#endif
   
   va_end(args);
+  __post_gc();
   return r->contents;
 }
 
@@ -184,10 +229,9 @@ void* Bstring (void *p) {
   data *s;
 
   __pre_gc ();
-  push_extra_root (&p);
+  // `p` is already on stack higher than $ebp so no extra is necessary???
   s = (data*) alloc (n + 1 + sizeof (int));
   s->tag = STRING_TAG | (n << 3);
-  pop_extra_root (&p);
 
   strncpy (s->contents, p, n + 1);
 
@@ -225,12 +269,7 @@ extern int Btag (void *d, int t, int n) {
   if (UNBOXED(d)) return BOX(0);
   else {
     r = TO_DATA(d);
-#ifndef DEBUG_PRINT
     return BOX(TAG(r->tag) == SEXP_TAG && TO_SEXP(d)->tag == UNBOX(t) && LEN(r->tag) == UNBOX(n));
-#else
-    return BOX(TAG(r->tag) == SEXP_TAG &&
-               GET_SEXP_TAG(TO_SEXP(d)->tag) == UNBOX(t) && LEN(r->tag) == UNBOX(n));
-#endif
   }
 }
 
@@ -332,82 +371,69 @@ int is_valid_heap_pointer (void *p) {
 }
 
 static void printValue (void *p) {
+  printf("%p\n", p);
   data *a = (data*) BOX(NULL);
   int i   = BOX(0);
-  if (UNBOXED(p)) printStringBuf ("%d", UNBOX(p));
+  if (UNBOXED(p)) printf ("%d\n", UNBOX(p));
   else {
     if (! is_valid_heap_pointer(p)) {
-      printStringBuf ("0x%x", p);
+      printf ("0x%x\n", p);
       return;
     }
+
     
     a = TO_DATA(p);
 
     switch (TAG(a->tag)) {      
     case STRING_TAG:
-      printStringBuf ("\"%s\"", a->contents);
+      printf ("\"%s\"\n", a->contents);
       break;
 
-    case CLOSURE_TAG:
-      printStringBuf ("<closure ");
-      for (i = 0; i < LEN(a->tag); i++) {
-	if (i) printValue ((void*)((int*) a->contents)[i]);
-	else printStringBuf ("0x%x", (void*)((int*) a->contents)[i]);
-	
-	if (i != LEN(a->tag) - 1) printStringBuf (", ");
-      }
-      printStringBuf (">");
-      break;
-      
     case ARRAY_TAG:
-      printStringBuf ("[");
+      printf ("[");
       for (i = 0; i < LEN(a->tag); i++) {
         printValue ((void*)((int*) a->contents)[i]);
-	if (i != LEN(a->tag) - 1) printStringBuf (", ");
+	if (i != LEN(a->tag) - 1) printf (", ");
       }
-      printStringBuf ("]");
+      printf ("]\n");
       break;
       
     case SEXP_TAG: {
-#ifndef DEBUG_PRINT
       char * tag = de_hash (TO_SEXP(p)->tag);
-#else
-      char * tag = de_hash (GET_SEXP_TAG(TO_SEXP(p)->tag));
-#endif      
       
       if (strcmp (tag, "cons") == 0) {
 	data *b = a;
 	
-	printStringBuf ("{");
+	printf ("{");
 
 	while (LEN(a->tag)) {
 	  printValue ((void*)((int*) b->contents)[0]);
 	  b = (data*)((int*) b->contents)[1];
 	  if (! UNBOXED(b)) {
-	    printStringBuf (", ");
+	    printf (", ");
 	    b = TO_DATA(b);
 	  }
 	  else break;
 	}
 	
-	printStringBuf ("}");
+	printf ("}\n");
       }
       else {
-	printStringBuf ("%s", tag);
+	printf ("%s\n", tag);
 	if (LEN(a->tag)) {
-	  printStringBuf (" (");
+	  printf (" (");
 	  for (i = 0; i < LEN(a->tag); i++) {
 	    printValue ((void*)((int*) a->contents)[i]);
-	    if (i != LEN(a->tag) - 1) printStringBuf (", ");
+	    if (i != LEN(a->tag) - 1) printf (", ");
 	  }
-	  printStringBuf (")");
+	  printf (")\n");
 	}
       }
     }
     break;
 
     default:
-      printStringBuf ("*** invalid tag: 0x%x ***", TAG(a->tag));
+      fprintf(stderr, "*** invalid tag: 0x%x ***\n", TAG(a->tag));
     }
   }
 }
@@ -535,21 +561,41 @@ typedef struct {
 
 static pool   from_space; // From-space (active ) semi-heap
 static pool   to_space;   // To-space   (passive) semi-heap
-static size_t *current;   // Pointer to the free space begin in active space
+#define the_current (from_space.current) // Pointer to the free space begin in active space
 
 // initial semi-space size
-static size_t SPACE_SIZE = 8;
+static size_t SPACE_SIZE = 1;
 # define POOL_SIZE (2*SPACE_SIZE)
 
-// @init_to_space initializes to_space
-// @flag is a flag: if @SPACE_SIZE has to be increased or not
-static void init_to_space (int flag) { NIMPL }
+static void my_init_pool(pool *p, size_t size) {
+  p->size = size;
+  p->end = p->begin + p->size / sizeof(size_t);
+}
 
-// @free_pool frees memory pool p
-static int free_pool (pool * p) { NIMPL }
+static void rewind_pool(pool *p) {
+  p->current = p->begin;
+}
+
+// @init_to_space initializes to_space
+static void init_to_space () {
+  my_init_pool(&to_space, SPACE_SIZE);
+  rewind_pool(&to_space);
+}
+
+static void init_spaces(void *data) {
+  from_space.begin = data;
+  my_init_pool(&from_space, SPACE_SIZE);
+  to_space.begin = (char *)data + SPACE_SIZE;
+  init_to_space();
+}
 
 // swaps active and passive spaces
-static void gc_swap_spaces (void) { NIMPL }
+static void gc_swap_spaces (void) {
+  pool tmp = to_space;
+  to_space = from_space;
+  from_space = tmp;
+  memset(to_space.begin, 0xcc, to_space.size);
+}
 
 // checks if @p is a valid pointer to the active (from-) space
 # define IS_VALID_HEAP_POINTER(p)\
@@ -571,27 +617,188 @@ extern size_t * gc_copy (size_t *obj);
 // @copy_elements
 //   1) copies @len words from @from to @where
 //   2) calls @gc_copy for those of these words which are valid pointers to from_space
-static void copy_elements (size_t *where, size_t *from, int len) { NIMPL }
+static void copy_elements (size_t *where, size_t *from, int len) {
+  for (int i = 0; i < len; i++, from++) {
+    size_t val = *from;
+#ifdef DEBUG_PRINT
+    fprintf(stderr, "test element\n");
+#endif
+    if (IS_VALID_HEAP_POINTER(*from))
+      val = gc_copy(from);
+#ifdef DEBUG_PRINT
+    fprintf(stderr, "set %p\n", where);
+#endif
+    *where++ = val;
+  }
+}
 
+static void do_gc();
 // @extend_spaces extends size of both from- and to- spaces
-static void extend_spaces (void) { NIMPL }
+static void extend_spaces (void) {
+  if (from_space.begin > to_space.begin)
+    do_gc();
+
+  mremap(from_space.begin, POOL_SIZE, POOL_SIZE * 2, 0);
+  if (errno) {
+    printf("mremap failed: %s\n", strerror(errno));
+    exit(1);
+  }
+  SPACE_SIZE *= 2;
+  init_spaces(from_space.begin);
+#ifdef DEBUG_PRINT
+  fprintf(stderr, "from: %p\n", from_space.begin);
+  fprintf(stderr, "to: %p\n", to_space.begin);
+#endif
+}
+
+size_t *on_transfered_to_space(size_t len) {
+  size_t *saved = to_space.current;
+  to_space.current += (len + sizeof(size_t) - 1) / sizeof(size_t);
+  return saved;
+}
+
+static size_t *raw_transfer_to_space(void *from, size_t len) {
+  memcpy(to_space.current, from, len);
+  return on_transfered_to_space(len);
+}
+
+static size_t *transfer_to_space(void *from, int len) {
+  size_t *saved = on_transfered_to_space(len * sizeof(size_t)); // alloc space
+  copy_elements(saved, from, len);
+  return saved;
+}
 
 // @gc_copy takes a pointer to an object, copies it
 //   (i.e. moves from from_space to to_space)
 //   , rests a forward pointer, and returns new object location.
-extern size_t * gc_copy (size_t *obj) { NIMPL }
+extern size_t * gc_copy (size_t *obj_ptr) {
+  size_t *obj = *(size_t **)obj_ptr;
+
+#ifdef DEBUG_PRINT
+  fprintf(stderr, "copy object %p to %p\n", obj, to_space.current);
+#endif
+
+  data *a = TO_DATA(obj);
+  size_t *res = NULL;
+  if (IS_FORWARD_PTR(a->tag)) {
+    res = a->tag;
+  } else {
+    switch (TAG(a->tag)) {
+    case STRING_TAG: {
+#ifdef DEBUG_PRINT
+      fprintf(stderr, "Copy string '%s' (%d)\n", a->contents, LEN(a->tag) + 1);
+#endif
+      size_t *tt = raw_transfer_to_space(a, sizeof(int));
+      res = raw_transfer_to_space(obj, LEN(a->tag) + 1);
+      break;
+    } case ARRAY_TAG:
+#ifdef DEBUG_PRINT
+      fprintf(stderr, "Copy array (%d) [\n", LEN(a->tag));
+#endif
+      raw_transfer_to_space(a, sizeof(int));
+      res = transfer_to_space(obj, LEN(a->tag));
+#ifdef DEBUG_PRINT
+      fprintf(stderr, "]\n");
+#endif
+      break;
+    case SEXP_TAG:
+#ifdef DEBUG_PRINT
+      fprintf(stderr, "Copy sexp (%d, %d) [\n", TO_SEXP(obj)->tag, LEN(a->tag));
+#endif
+      raw_transfer_to_space(TO_SEXP(obj), sizeof(int) * 2);
+      res = transfer_to_space(obj, LEN(a->tag));
+#ifdef DEBUG_PRINT
+      fprintf(stderr, "]\n");
+#endif
+      break;
+    default:
+      printf("*** invalid tag: 0x%x ***\n", TAG(a->tag));
+    }
+  }
+
+#ifdef DEBUG_PRINT
+  fprintf(stderr, "set %p\n", &a->tag);
+#endif
+  return a->tag = res;
+}
 
 // @gc_test_and_copy_root checks if pointer is a root (i.e. valid heap pointer)
 //   and, if so, calls @gc_copy for each found root
-extern void gc_test_and_copy_root (size_t ** root) { NIMPL }
+extern void gc_test_and_copy_root (size_t ** root) {
+#ifdef DEBUG_PRINT
+  fprintf(stderr, "test root\n");
+#endif
+  if (IS_VALID_HEAP_POINTER(*root)) {
+    *root = gc_copy((size_t *)root);
+#ifdef DEBUG_PRINT
+    fprintf(stderr, "set %p to %p\n", root, *root);
+#endif
+  }
+}
+
+static void gc_root_scan_range(size_t start, size_t end) {
+#ifdef DEBUG_PRINT
+  if (end > start)
+    fprintf(stderr, "gc testing *%p(%p):*%p(%p)\n", (size_t**)start, *(size_t**)start, (size_t**)end-1, *((size_t**)end-1));
+#endif
+  for (size_t **el_data = (size_t **)start; el_data < (size_t **)end; el_data++)
+    gc_test_and_copy_root(el_data);
+}
 
 // @gc_root_scan_data scans static area for root
 //   for each root it calls @gc_test_and_copy_root
-extern void gc_root_scan_data (void) { NIMPL }
+extern void gc_root_scan_data (void) {
+#ifdef DEBUG_PRINT
+  fprintf(stderr, "go scan data\n");
+#endif
+  gc_root_scan_range(&__gc_data_start, &__gc_data_end);
+}
+
+// @__gc_root_scan_stack scans stack for roots
+//   starting from __gc_stack_top till __gc_stack_bottom
+//   and calls @gc_test_and_copy_root for each found root
+extern size_t __gc_stack_top, __gc_stack_bottom;
+extern void __gc_root_scan_stack (void) {
+#ifdef DEBUG_PRINT
+  fprintf(stderr, "go scan stack\n");
+#endif
+  gc_root_scan_range(__gc_stack_top, __gc_stack_bottom);
+}
 
 // @init_pool is a memory pools initialization function
 //   (is called by L__gc_init from runtime/gc_runtime.s)
-extern void init_pool (void) { NIMPL }
+extern void init_pool (void) {
+  void *data = mmap(NULL, POOL_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (errno) {
+    printf("mmap failed: %s\n", strerror(errno));
+    exit(1);
+  }
+  init_spaces(data);
+  rewind_pool(&from_space);
+}
+
+static int can_alloc(size_t size) {
+  return from_space.current + size <= from_space.end;
+}
+static void *do_alloc(size_t size) {
+  size_t *res = from_space.current;
+  from_space.current += size;
+  return res;
+}
+
+static void do_gc() {
+#ifdef DEBUG_PRINT
+  fprintf(stderr, "do_gc\n");
+#endif
+  init_to_space();
+  gc_root_scan_data();
+  __gc_root_scan_stack();
+  gc_swap_spaces();
+#ifdef DEBUG_PRINT
+  fprintf(stderr, "from: %p\n", from_space.begin);
+  fprintf(stderr, "to: %p\n", to_space.begin);
+#endif
+}
 
 // @gc performs stop-the-world mark-and-copy garbage collection
 //   and extends pools (i.e. calls @extend_spaces) if necessarily
@@ -603,10 +810,22 @@ extern void init_pool (void) { NIMPL }
 //   2) call @__gc_root_scan_stack (finds roots in program stack
 //        and calls @gc_test_and_copy_root for each found root)
 //   3) extends spaces if there is not enough space to be allocated after gc
-static void * gc (size_t size) { NIMPL }
+static void * gc (size_t size) {
+  do_gc();
+  while (!can_alloc(size)) {
+#ifdef DEBUG_PRINT
+    fprintf(stderr, "extend\n");
+#endif
+    extend_spaces();
+  }
+}
 
 // @alloc allocates @size memory words
 //   it enaibles garbage collection if out-of-memory,
 //   i.e. calls @gc when @current + @size > @from_space.end
 // returns a pointer to the allocated block of size @size
-extern void * alloc (size_t size) { NIMPL }
+extern void * alloc (size_t size) {
+  if (!can_alloc(size))
+    gc(size);
+  return do_alloc(size);
+}
