@@ -1,3 +1,4 @@
+
 # include <stdio.h>
 # include <stdlib.h>
 # include <stdarg.h>
@@ -472,4 +473,5 @@ extern void * alloc (size_t size) {
       return t;
     }
     fprintf(stderr, "alloc failed: collecting\n");
-    return
+    return gc(size);
+}

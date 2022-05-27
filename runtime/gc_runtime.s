@@ -1,4 +1,4 @@
-		.data
+.data
 printf_format:		.string	"Stack root: %lx\n"
 printf_format2:		.string	"BOT: %lx\n"
 printf_format3:		.string	"TOP: %lx\n"
