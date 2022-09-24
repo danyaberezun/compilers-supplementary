@@ -1,2 +1,2 @@
-# compilers-2021-spring
+# compilers-supplementary
 A supplementary repository for the course on compilers.
