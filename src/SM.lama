@@ -55,20 +55,20 @@ fun fromLabel (env, lab) {
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-    fun evalInstruction(c@[stack, st, w], instr) {
+    fun evalInstruction(c@[stack, st, w], instr, insns) {
         case instr of
               READ       -> (
                 var data = readWorld (w);
                 var v = data.fst;
                 var new_world = data.snd;
                 var new_stack = v : stack;
-                [new_stack, st, new_world]
+                [insns, [new_stack, st, new_world]]
               )
             | WRITE      -> (
                 case stack of
                   v : vs -> (
                     var new_world = writeWorld (v, w);
-                    [vs, st, new_world]
+                    [insns, [vs, st, new_world]]
                   )
                 esac
               )
@@ -77,26 +77,48 @@ fun eval (env, c, insns) {
                   y : x : vs -> (
                     var result = evalExpr (st, Binop (op, Const (x), Const (y)));
                     var new_stack = result : vs;
-                    [new_stack, st, w]
+                    [insns, [new_stack, st, w]]
                   )
                 esac
               )
             | LD (x)     -> (
                 var new_stack = st (x) : stack;
-                [new_stack, st, w]
+                [insns, [new_stack, st, w]]
               )
             | ST (x)     -> (
                 case stack of
-                  v : vs -> [vs, st <- [x, v], w]
+                  v : vs -> [insns, [vs, st <- [x, v], w]]
                 esac
               )
-            | CONST (n)  -> [n : stack, st, w]
-            | _ -> TODO(new instructions)
-            | {}              -> c
+            | CONST (n)    -> [insns, [n : stack, st, w]]
+            | LABEL (label)    -> [insns, [stack, st, w]]
+            | JMP   (label)    -> [env.fromLabel (label), [stack, st, w]]
+            | CJMP  (condition, label) ->
+              case stack of
+                x : xs ->
+                  case condition of
+                    Z  ->
+                      if x == 0
+                        then [env.fromLabel (label), [xs, st, w]]
+                        else [insns, [xs, st, w]]
+                      fi
+                    | NZ ->
+                      if x == 0
+                        then [insns, [xs, st, w]]
+                        else [env.fromLabel (label), [xs, st, w]]
+                      fi
+                  esac
+              esac
         esac
     }
 
-    foldl(evalInstruction, c, insns)
+    case insns of
+      ins : insns ->
+        case evalInstruction (c, ins, insns) of
+          [insns, c] -> eval (env, c, insns)
+        esac
+    | {} -> c
+    esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -138,9 +160,9 @@ fun genLabels (env, n) {
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
     case expr of
-      Var (x)          -> {LD (x)}
-    | Const (n)        -> {CONST (n)}
-    | Binop (op, l, r) -> compileExpr (l) +++ compileExpr (r) +++ {BINOP (op)}
+      Var (x)          -> singletonBuffer (LD (x))
+    | Const (n)        -> singletonBuffer (CONST (n))
+    | Binop (op, l, r) -> compileExpr (l) <+> compileExpr (r) <+ BINOP (op)
     esac
 }
 
@@ -182,7 +204,41 @@ public fun compileSM (stmt) {
                   esac
              esac
         esac
-    | _              -> failure ("compileSM not implemented\n")
+    | If (condition, thenBranch, elseBranch) ->
+      case env.genLabel of
+        [elseLabel, env] ->
+          case compile (lab, env, thenBranch) of
+            [_, env, thenCode] ->
+              case compile (lab, env, elseBranch) of
+                [_, env, elseCode] ->
+                  [true, env,
+                    compileExpr (condition)
+                    <+ CJMP (Z, elseLabel)
+                    <+> thenCode
+                    <+ JMP (lab)
+                    <+ LABEL (elseLabel)
+                    <+> elseCode]
+                esac
+            esac
+        esac
+    | While (condition, body)                ->
+      case env.genLabels (2) of
+        [condLabel, bodyLabel, env] ->
+          case compile (condLabel, env, body) of
+            [condLabelUsed, env, bodyCode] ->
+              [false, env,
+                singletonBuffer (JMP (condLabel))
+                <+ LABEL (bodyLabel)
+                <+> bodyCode
+                <+ LABEL (condLabel)
+                <+> compileExpr(condition)
+                <+ CJMP (NZ, bodyLabel)]
+          esac
+      esac
+    | DoWhile (body, condition)              -> (
+      var loop = While (condition, body);
+      compile (lab, env, Seq (body, loop))
+    )
     esac
   }
 
