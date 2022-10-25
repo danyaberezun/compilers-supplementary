@@ -55,7 +55,43 @@ fun fromLabel (env, lab) {
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+  
+  fun evaluateInstruction(c@[stack, state, world], instr) {
+    fun evaluateCJump(cond, label){
+      case stack of value:rest ->
+        case cond of
+          "z"  -> if value
+                  then [None, [rest, state, world]]
+                  else [Some (env.fromLabel (label)), [rest, state, world]]
+                  fi
+        | "nz" -> if value
+                  then [Some (env.fromLabel (label)), [rest, state, world]]
+                  else [None, [rest, state, world]]
+                  fi
+        esac
+      esac
+    }
+    case instr of 
+      JMP (label)        -> [Some (env.fromLabel(label)), c]
+    | CJMP (cond, label) -> evaluateCJump(cond, label)
+    | BINOP (op)         -> [None, case stack of (y:x:rest) -> [op.evalArithmOp(x, y) : rest, state, world] esac]
+    | CONST (value)      -> [None, [value:stack, state, world]]
+    | READ               -> [None, case world.readWorld of [n, nworld] -> [n:stack, state, nworld] esac]
+    | WRITE              -> [None, case stack of (z:rest) -> [rest, state, writeWorld (z, world)] esac]
+    | LD(x)              -> [None, [state(x) : stack, state, world]]
+    | ST(x)              -> [None, case stack of (z:rest) -> [rest, state <- [x, z], world] esac]
+    | LABEL(_)           -> [None, c]
+    | _                  -> failure("unrecognised instruction: %s", instr.string)
+    esac
+  }
+  case insns of
+    instr : insns ->
+      case c.evaluateInstruction(instr) of
+        [None, c]         -> eval (env, c, insns)
+      | [Some (insns), c] -> eval (env, c, insns)
+      esac
+  | {} -> c
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -96,7 +132,12 @@ fun genLabels (env, n) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of
+     Const (n)         -> singletonBuffer(CONST (n))
+  |  Var (x)           -> singletonBuffer(LD (x)) 
+  | Binop (op, e1, e2) -> e1.compileExpr <+> e2.compileExpr <+ BINOP (op)
+  | _                  -> failure("unrecognised expression: %s", expr.string)
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
@@ -122,22 +163,55 @@ public fun compileSM (stmt) {
   --    updated environment
   --    code buffer  
   fun compile (lab, env, stmt) {
-    case stmt of
-      Skip           -> [false, env, emptyBuffer ()]
-    | Read  (x)      -> [false, env, singletonBuffer (READ) <+ ST (x)]
-    | Write (e)      -> [false, env, compileExpr (e) <+ WRITE]
-    | Assn  (x, e)   -> [false, env, compileExpr (e) <+ ST (x)]
-    | Seq   (s1, s2) ->
-        case env.genLabel of
-          [s2Lab, env] ->
-             case compile (s2Lab, env, s1) of
-               [s2LabUsed, env, s1Code] ->
-                  case compile (lab, env, s2) of
-                    [labUsed, env, s2Code] -> [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
-                  esac
-             esac
+    fun compileSeq(first, second){
+      case env.genLabel of 
+        [s2Lab, env] -> 
+          case compile (s2Lab, env, first) of
+            [s2LabUsed, env, s1Code] -> 
+              case compile (lab, env, second) of
+                [labUsed, env, s2Code] -> [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
+              esac
+          esac
         esac
-    | _              -> failure ("compileSM not implemented\n")
+    }
+    fun compileIf(cond, left, right){
+      case env.genLabel of [else_label, env] ->
+          case compile (lab, env, left) of [_, env, left_buffer] ->
+            case compile (lab, env, right) of [_, env, right_buffer] ->
+              [true, env,
+                compileExpr (cond)
+                  <+ CJMP ("z", else_label)
+                  <+> left_buffer
+                  <+ JMP (lab)
+                  <+ LABEL (else_label)
+                  <+> right_buffer]
+            esac
+          esac
+        esac
+    }
+    fun compileWhile(cond, bdy){
+      case env.genLabels (2) of [cond_label, body_label, env] ->
+          case compile (cond_label, env, bdy) of [_, env, bdy_buffer] ->
+            [false, env,
+              singletonBuffer (JMP (cond_label))
+                <+ LABEL (body_label)
+                <+> bdy_buffer
+                <+ LABEL (cond_label)
+                <+> compileExpr(cond)
+                <+ CJMP ("nz", body_label)]
+          esac
+        esac
+    }
+    case stmt of
+      Skip                        -> [false, env, emptyBuffer ()]
+    | Read  (x)                   -> [false, env, singletonBuffer (READ) <+ ST (x)]
+    | Write (e)                   -> [false, env, compileExpr (e)        <+ WRITE]
+    | Assn  (x, e)                -> [false, env, compileExpr (e)        <+ ST (x)]
+    | Seq   (s1, s2)              -> compileSeq(s1, s2)
+    | If (cond, lbranch, rbranch) -> compileIf(cond, lbranch, rbranch)
+    | While (cond, bdy)           -> compileWhile(cond, bdy)
+    | DoWhile (bdy, cnd)          -> compile (lab, env, Seq (bdy, While (cnd, bdy)))
+    | _                           -> failure("unreconginsed statement: %s\n", stmt.string)
     esac
   }  
 
