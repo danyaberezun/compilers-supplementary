@@ -24,9 +24,12 @@ public fun showSMInsn (i) {
   | CONST (n)    -> sprintf ("CONST %d", n)
   | LABEL (s)    -> sprintf ("LABEL %s", s)
   | JMP   (l)    -> sprintf ("JMP %s", l)
-  | CJMP  (c, l) -> sprintf ("CJMP %s, %s", c, l)
+  | CJMP  (c, l) -> case c of
+      Z   -> sprintf ("CJMP Z, %s", l)
+    | NZ  -> sprintf ("CJMP NZ, %s", l)
+    esac  
   | DUP          -> "DUP"
-  | DROP         -> "DROP"  
+  | DROP         -> "DROP"
   esac
 }
 
@@ -59,8 +62,65 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, c@[stack, state, world], insns) {
+  fun evalInsn([stack, state, world], i) {
+    -- printf("evaluating insn: %s\n", sehowSMInsn (i));
+    case i of
+      READ        ->
+      case readWorld(world) of
+        [value, world1] -> [value : stack, state, world1]
+      esac
+    | WRITE       -> 
+      case stack of
+        value : s1 -> [s1, state, writeWorld(value, world)]
+      esac
+    | BINOP (s)   -> 
+      case stack of
+        y : x : s1 -> [evalOp(s, x, y) : s1, state, world]
+      esac
+    | LD    (x)   -> [state(x) : stack, state, world]
+    | LDA   (x)   -> [Ref (x) : stack, state, world]
+    | ST    (x)   -> 
+      case stack of
+        value : s1 -> [s1, state <- [x, value], world]
+      esac
+    | STI         ->
+      case stack of
+        value : Ref (x) : s1 -> [value : s1, state <- [x, value], world]
+      esac
+    | DUP         ->
+      case stack of
+        value : s1 -> [value : value : s1, state, world]
+      esac
+    | DROP        -> 
+      case stack of
+        _ : s1 -> [s1, state, world]
+      esac
+    | CONST (n)   -> [n : stack, state, world]
+    | LABEL (_)   -> [stack, state, world]
+    esac
+  }
+
+  case insns of
+    {} -> c
+  | insn : restInsns -> 
+    case insn of
+      JMP   (l)    -> eval(env, c, env.fromLabel(l))
+    | CJMP  (j, l) -> case stack of
+        value : s1 -> (
+          var tail;
+          -- printf("CJMP to label %s\n", l);
+          -- printf("value on stack %d\n", value);
+          tail := case j of
+            Z   -> if value == 0 then env.fromLabel(l) else restInsns fi
+          | NZ  -> if value != 0 then env.fromLabel(l) else restInsns fi
+          esac;
+          eval(env, [s1, state, world], tail)
+        )
+      esac
+    | _              -> eval(env, evalInsn(c, insn), restInsns)
+    esac
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -108,14 +168,98 @@ public fun compileSM (stmt) {
     else emptyBuffer ()
     fi
   }
+
+  fun comileWithLabel(env, stmt) {
+    case env.genLabel of
+      [lab, env] -> 
+        case compile(lab, env, stmt) of
+          [labUsed, env, code] -> [env, code <+> label(lab, labUsed)]
+        esac
+    esac
+  }
   
   fun compile (lab, env, stmt) {
     case stmt of
-      Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 ->  failure ("compileSM not implemented\n")
+      Skip                    -> [false, env, emptyBuffer ()]
+    | Var     (x)             -> [false, env, singletonBuffer (LD (x))]
+    | Ref     (x)             -> [false, env, singletonBuffer (LDA (x))]
+    | Const   (n)             -> [false, env, singletonBuffer (CONST (n))]
+    | Ignore  (expr)          ->
+      case comileWithLabel(env, expr) of
+        [env, code] -> [false, env, code <+ DROP]
+      esac
+    | Seq     (s1, s2)        -> 
+      case comileWithLabel(env, s1) of
+        [env, s1Code] -> 
+          case comileWithLabel(env, s2) of
+            [env, s2Code] -> [false, env, s1Code <+> s2Code]
+          esac
+      esac
+    | Binop   (op, lhs, rhs)  ->
+      case comileWithLabel(env, lhs) of
+        [env, lhsCode] -> 
+          case comileWithLabel(env, rhs) of
+            [env, rhsCode] -> [false, env, lhsCode <+> rhsCode <+ BINOP(op)]
+          esac
+      esac
+    | Assn    (ref, expr)     ->
+      case comileWithLabel(env, ref) of
+        [env, refCode] -> 
+          case comileWithLabel(env, expr) of
+            [env, exprCode] -> [false, env, refCode <+> exprCode <+ STI]
+          esac
+      esac
+    | Read    (ref)           -> 
+      case comileWithLabel(env, ref) of
+        [env, code] -> [false, env, code <+ READ <+ STI <+ DROP]
+      esac
+    | Write   (expr)          ->
+      case comileWithLabel(env, expr) of
+        [env, code] -> [false, env, code <+ WRITE]
+      esac
+    | If      (cond, t, e)    -> 
+      case comileWithLabel(env, cond) of
+        [env, condCode] -> 
+          case comileWithLabel(env, t) of
+            [env, tCode] -> 
+            case env.genLabel of
+              [eLab, env] ->
+                case compile(lab, env, e) of
+                  [_, env, eCode] -> [
+                    true,
+                    env,
+                    condCode <+
+                    CJMP(Z, eLab) <+>
+                    tCode <+
+                    JMP(lab) <+>
+                    label(eLab, true) <+>
+                    eCode
+                  ]
+                esac
+            esac
+          esac
+      esac
+    | While   (cond, body)    -> 
+      case comileWithLabel(env, cond) of
+        [env, condCode] -> 
+          case comileWithLabel(env, body) of
+            [env, bodyCode] -> 
+              case env.genLabels(2) of
+                [condLab, bodyLab, env] -> [
+                  false,
+                  env,
+                  emptyBuffer() <+
+                  JMP(condLab) <+
+                  LABEL(bodyLab) <+>
+                  bodyCode <+
+                  LABEL(condLab) <+>
+                  condCode <+
+                  CJMP(NZ, bodyLab)
+                ]
+              esac
+          esac
+      esac
+    | DoWhile (body, cond)    -> compile(lab, env, Seq(body, While(cond, body)))
     esac
   }
 
