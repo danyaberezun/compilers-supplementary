@@ -6,6 +6,7 @@ import List;
 import Buffer;
 import Fun;
 import Manifest;
+import Std;
 
 -- Assembler language interface
 -- The registers: 
@@ -347,28 +348,102 @@ fun suffix (op) {
   esac
 }
 
+fun boolCast(addr) {
+  Binop("cmp", L(0), addr).singletonBuffer <+ Mov(L(0), eax) <+ Set(suffix("!="), "%al") <+ Mov(eax, addr)
+}
+
+-- Compiles BinOp to a buffer of X86 commands
+fun compileBinOp(addr_l, addr_r, op, addr_to_write) {
+  case op of 
+    "+" -> move(addr_l, eax) <+ Binop(op, addr_r, eax) <+> move(eax, addr_to_write)
+  | "-" -> move(addr_l, eax) <+ Binop(op, addr_r, eax) <+> move(eax, addr_to_write)
+  | "*" -> move(addr_l, eax) <+ Binop(op, addr_r, eax) <+> move(eax, addr_to_write)
+  | "&&" -> boolCast(addr_l) <+> boolCast(addr_r) <+> move(addr_l, eax) <+ Binop(op, addr_r, eax) <+> move(eax, addr_to_write)
+  | "!!" -> boolCast(addr_l) <+> boolCast(addr_r) <+> move(addr_l, eax) <+ Binop(op, addr_r, eax) <+> move(eax, addr_to_write)
+  | "/" -> move(addr_l, eax) <+ Cltd <+ IDiv (addr_r) <+> move(eax, addr_to_write)
+  | "%" -> move(addr_l, eax) <+ Cltd <+ IDiv (addr_r) <+> move(edx, addr_to_write)
+  | "==" -> singletonBuffer(Binop("^", eax, eax)) <+> move(addr_l, edx) <+ Binop("cmp", addr_r, edx)  <+ Set (suffix(op), "%al") <+> move(eax, addr_to_write)
+  | "!=" -> singletonBuffer(Binop("^", eax, eax)) <+> move(addr_l, edx) <+ Binop("cmp", addr_r, edx)  <+ Set (suffix(op), "%al") <+> move(eax, addr_to_write)
+  | "<=" -> singletonBuffer(Binop("^", eax, eax)) <+> move(addr_l, edx) <+ Binop("cmp", addr_r, edx)  <+ Set (suffix(op), "%al") <+> move(eax, addr_to_write)
+  | ">=" -> singletonBuffer(Binop("^", eax, eax)) <+> move(addr_l, edx) <+ Binop("cmp", addr_r, edx)  <+ Set (suffix(op), "%al") <+> move(eax, addr_to_write)
+  | "<" -> singletonBuffer(Binop("^", eax, eax)) <+> move(addr_l, edx) <+ Binop("cmp", addr_r, edx)  <+ Set (suffix(op), "%al") <+> move(eax, addr_to_write)
+  | ">" -> singletonBuffer(Binop("^", eax, eax)) <+> move(addr_l, edx) <+ Binop("cmp", addr_r, edx)  <+ Set (suffix(op), "%al") <+> move(eax, addr_to_write)
+  esac
+}
+
+
+fun spill() {
+  singletonBuffer(Push (ecx))
+}
+
+fun reload() {
+  singletonBuffer(Pop (ecx))
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  fun compile (env, code) {
+  fun compile2 (env, code) {
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
         case i of
           READ ->
             case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+              [s, env] -> [env, code <+> spill() <+ Call ("Lread") <+> reload() <+ Mov (eax, s)]
             esac             
         | WRITE ->
             case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+              [s, env] -> [env, code <+> spill() <+ Push (s) <+ Call ("Lwrite") <+> reload() <+ Pop (eax)]
+            esac
+        | LD(x) ->
+            case env.addGlobal(x).allocate of
+              [addr, env] -> [env, code <+> move(env.loc(x), addr)]
+            esac
+        | ST(x) ->
+            case env.pop of
+              [addr, env] -> [env.addGlobal(x), code <+> move(addr, env.loc(x))]
+            esac
+        | CONST(n) ->
+            case env.allocate of
+              [addr, env] -> [env, code <+> move(L(n), addr)]
+            esac
+        | BINOP(op) ->
+            case env.pop2 of
+              [addr_r, addr_l, env] -> 
+                case env.allocate of 
+                  [addr_to_write, env_upd] -> [env_upd, code <+> compileBinOp(addr_l, addr_r, op, addr_to_write)]
+                esac
+            esac
+        | LABEL(l) -> [if env.isBarrier then env.retrieveStack(l) else env fi , code <+ Label(l)]
+        | JMP(l) -> [env.setStack(l).setBarrier, code <+ Jmp(l)]
+        | CJMP(c, l) -> 
+            case env.pop of
+              [s, env] -> [env.setStack(l), code <+ Binop ("cmp", L (0), s) <+ CJmp (c, l)]
+            esac
+        
+        | DROP ->
+            case env.pop of
+              [_, env] -> [env, code]
+            esac
+        | STI ->
+            case env.pop2 of
+              [addr, x, env] ->
+                case env.allocate of
+                  [s, env] -> [env, code <+> move (x, edx) <+> move (addr, I (0, edx)) <+> move (addr, s)]
+                esac
+            esac
+        | LDA (x) ->
+            case env.addGlobal(x).allocate of
+              [addr, env] -> [env, code <+ Lea(env.loc(x), eax) <+> move(eax, addr)]
             esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-      }, [env, emptyBuffer ()], code)
+          esac
+        }, [env, emptyBuffer ()], code)
   }
 
-  compile (env, code) 
+  var tmp = compile2 (env, code);
+  tmp
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
