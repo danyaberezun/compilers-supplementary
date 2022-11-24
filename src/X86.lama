@@ -80,6 +80,7 @@ fun insnString (insn) {
     | L (i)    -> sprintf ("$%d", i)
     | I (0, x) -> sprintf ("(%s)", opndString (x))
     | I (n, x) -> sprintf ("%d(%s)", n, opndString (x))
+    | _ -> failure("unknown opnd: %s\n", opnd.string)
     esac
   }
 
@@ -144,6 +145,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
   fun pop () {
     case stack of
       x : stack -> [x, makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals)]
+    | {} -> [L(0), makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals)]
     esac
   }
 
@@ -324,6 +326,10 @@ fun liveRegisters (env, depth) {
   env [16] (depth)
 }
 
+fun calleeSavedRegisters() {
+  {ebx, ecx, edi, esi}
+}
+
 fun staticSize (env) {
   env [17] ()
 }
@@ -431,37 +437,79 @@ fun compileBinOp(addr_l, addr_r, op, addr_to_write) {
 }
 
 
-fun spill() {
-  singletonBuffer(Push (ecx))
+fun spill(regs) {
+  fun spillSingle(code, reg) {
+    code <+ Push(reg)
+  }
+  foldl(spillSingle, emptyBuffer(), regs)
 }
 
-fun reload() {
-  singletonBuffer(Pop (ecx))
+fun reload(regs) {
+  fun spillSingle(code, reg) {
+    code <+ Pop(reg)
+  }
+  foldl(spillSingle, emptyBuffer(), reverse(regs))
 }
+
+fun storeArgs(env, argCnt) {
+  case argCnt of 
+    0 -> [env, emptyBuffer()]
+  | argCnt -> 
+    case env.pop of 
+      [addr, env] ->
+        case storeArgs(env, argCnt - 1) of 
+          [env, code] -> [env, singletonBuffer(Push(addr)) <+> code]
+        esac
+    esac
+  esac
+}
+
+
+
+        (* Assignment *)
+        
+         -- Some guidelines for generating function calls:
+         --
+         -- 1. generate instructions to save live registers on the X86 stack (use
+         --    env.liveRegisters (number of arguments);
+         -- 2. generate instructions to move actual parameters from the symbolic
+         --    stack to the hardware one;
+         -- 3. generate the call itself;
+         -- 4. discard the actual parameters from the stack;
+         -- 5. restore saved live registers.
+         --
+         -- Some guidelines for generating functions:
+         --
+         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
+         --    env.enterFunction to create a proper environment;
+         -- 2. generate epilogue for END instruction.
+               
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
-fun compile (env, code) {
-  fun compile2 (env, code) {
+fun compile (env, codeList) {
+  fun compile2 (env, codeList) {
+    -- var tttt = printf("Inside compile2!!!\n");
     foldl (
       fun ([env, scode], i) {
+        -- var kekek = printf("Cur instr: %s\n", i.string);
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
         case i of
           READ ->
             case env.allocate of
-              [s, env] -> [env, code <+> spill() <+ Call ("Lread") <+> reload() <+ Mov (eax, s)]
+              [s, env] -> [env, code <+> spill({ebx, ecx, edx, esi, edi}) <+ Call ("Lread") <+> reload({ebx, ecx, edx, esi, edi}) <+ Mov (eax, s)]
             esac             
         | WRITE ->
             case env.pop of
-              [s, env] -> [env, code <+> spill() <+ Push (s) <+ Call ("Lwrite") <+> reload() <+ Pop (eax)]
+              [s, env] -> [env, code <+> spill({ebx, ecx, edx, esi, edi}) <+ Push (s) <+ Call ("Lwrite") <+> reload({ebx, ecx, edx, esi, edi}) <+ Pop (eax)]
             esac
         | LD(x) ->
-            case env.addGlobal(x).allocate of
+            case env.allocate of
               [addr, env] -> [env, code <+> move(env.loc(x), addr)]
             esac
         | ST(x) ->
-            case env.pop of
-              [addr, env] -> [env.addGlobal(x), code <+> move(addr, env.loc(x))]
+            case env.addGlobal(x) of
+              env -> [env, code <+> move(env.peek(), env.loc(x))]
             esac
         | CONST(n) ->
             case env.allocate of
@@ -493,39 +541,52 @@ fun compile (env, code) {
                 esac
             esac
         | LDA (x) ->
-            case env.addGlobal(x).allocate of
+            case env.allocate of
               [addr, env] -> [env, code <+ Lea(env.loc(x), eax) <+> move(eax, addr)]
             esac
-        (* Assignment *)
-        
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-               
+        | GLOBA (name) -> [addGlobal (env, name), code]
+        | BEGIN (funcLabel, argCnt, localCnt) ->
+            [enterFunction(env, funcLabel, localCnt), code <+> prologue(funcLabel)]
+        | END ->
+            case epilogue(env) of 
+              [env, resCode] -> [env, code <+> resCode]
+            esac
+        | CALL (funcLabel, argCnt) -> 
+          (
+            var liveRegs = env.liveRegisters(argCnt); 
+            case storeArgs(env, argCnt) of 
+              [env, storedArgs] -> (
+                case env.allocate of 
+                  [addr, env] -> (
+                  var kkk = [
+                    env, 
+                    code <+> 
+                    spill(liveRegs) <+>
+                    storedArgs <+
+                    Call(funcLabel) <+
+                    Binop("+", L(wordSize * argCnt), esp) <+>
+                    move(eax, addr) <+>
+                    reload(liveRegs)
+                  ];
+                  kkk
+                  )
+                esac
+              )
+            esac
+          )
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
           esac
-        }, [env, emptyBuffer ()], code)
+        }, [env, emptyBuffer ()], codeList)
   }
-
-  var tmp = compile2 (env, code);
+  -- var xxx = printf("\nCODE LIST:\n%s\n", codeList.string);
+  var tmp = compile2 (env, codeList);
   tmp
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
 public fun compileX86 (args, code) {
+  -- skip
   case compile (initEnv (), code) of
     [env, code] ->
        var asmFile = args.getBaseName ++ ".s",
