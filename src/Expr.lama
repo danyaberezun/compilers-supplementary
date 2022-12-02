@@ -101,8 +101,143 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun unwrapVals(vals) {
+  fun unwrapVal(v) {
+    case v of
+      Val(x) -> x
+    esac
+  }
+
+  map(unwrapVal, vals)
+}
+
+fun eval (c@[st, w], expr) {
+  case expr of
+    Var     (name)                      -> [c, Val(st.lookup(name))]
+  | Ref     (name)                      -> [c, Ref(name)]
+  | Const   (n)                         -> [c, Val(n)]
+  | Skip                                -> [c, Bot]
+  | Ignore  (expr)                      -> 
+    case evalList (c, {expr}) of
+      [c, _] -> [c, Bot]
+    esac
+  | Seq     (exp1, exp2)                -> 
+    case evalList (c, {exp1, exp2}) of
+      [c, {_, ev_2}] -> [c, ev_2]
+    esac
+  | Binop   (op, l, r)                  -> 
+    case evalList (c, {l, r}) of
+      [c, {Val(ev_l), Val(ev_r)}] -> [c, Val(evalOp (op, ev_l, ev_r))]
+    esac
+  | Assn    (ref, rhs)                  ->
+    case evalList (c, {ref, rhs}) of
+      [[st1, w1], {Ref (name), Val(ev_rhs)}] -> [[st1 <- [name, ev_rhs], w1], Val(ev_rhs)]
+    | [c1, {ElemRef (arr, idx), Val(ev_rhs)}] -> (
+        arr[idx] := ev_rhs;
+        [c1, Val(ev_rhs)]
+      )
+    esac
+  | Set     (name, val_exp)  -> eval(c, Assn(Ref(name), val_exp))
+  | If      (cond, then_exp, else_exp)  ->
+    case eval (c, cond) of
+      [c1, Val(v)] -> if v != 0 then
+        eval (c1, then_exp)
+      else
+        eval (c1, else_exp)
+      fi
+    esac
+  | While   (cond, body)                -> (
+      var ev = [c, 0];
+      while (
+        case eval (ev.fst, cond) of
+          [c, Val(v)] -> (
+            ev := [c, v];
+            v != 0
+          )
+        esac
+      ) do
+        ev := eval (ev.fst, body)
+      od;
+      [ev.fst, Bot]
+    )
+  | DoWhile (body, cond)                -> (
+      var ev = [c, 0];
+      do
+        ev := eval (ev.fst, body)
+      while (
+        case eval (ev.fst, cond) of
+          [c, Val(v)] -> (
+            ev := [c, v];
+            v != 0
+          )
+        esac
+      ) od;
+      [ev.fst, Bot]
+    )
+  | Scope (defs, expr)                  -> (
+      fun addDef(st, def) {
+        case def of
+          Fun (name, args, body)  -> st.addFunction(name, args, body)
+        | Var (names)             -> st.addNames(names)
+        esac
+      }
+      var st1 = foldl(addDef, st.enterScope, defs);
+      case eval ([st1, w], expr) of
+        [[st2, w2], v] -> [[st2.leaveScope, w2], v]
+      esac
+    )
+
+  | Call (name, args)                     -> (
+      case evalList(c, args) of
+        [[st, w], valueParams] -> 
+          case st.lookup (name) of
+            Fun(argNames, body) -> (
+              fun addArg(st, [argName, valueParam]) {
+                st.addName(argName, valueParam)
+              }
+
+              var unwrappedParams = unwrapVals(valueParams);
+              case body of
+                External  -> 
+                  case evalBuiltin(name, unwrappedParams, w) of
+                    [retVal, w1] -> [[st, w1], Val(retVal)]
+                  esac
+              | _         -> (
+                  var st1 = foldl(addArg, st.enterFunction, zip(argNames, unwrappedParams));
+                  case eval ([st1, w], body) of
+                    [[st2, w2], retVal] -> [[st.leaveFunction(st2.getGlobal), w2], retVal]
+                  esac
+                )
+              esac
+            )
+          esac
+      esac
+    )
+  | String  (s)         -> [c, Val(s)]
+  | Array   (elems)       -> 
+    case evalList (c, elems) of
+      [c, ev_elems] -> [c, Val(listArray(unwrapVals(ev_elems)))]
+    esac
+  | Elem    (arr_exp, loc_exp)  -> 
+    case evalList(c, {arr_exp, loc_exp}) of
+      [c, {Val(arr_val), Val(loc_val)}] -> (
+        var items = case arr_val of
+          Sexp(_, v)  -> v
+        | v           -> v 
+        esac;
+        [c, Val(items[loc_val])]
+      )
+    esac
+  | ElemRef (arr_exp, loc_exp)  -> 
+    case evalList(c, {arr_exp, loc_exp}) of
+      [c, {Val(arr_val), Val(loc_val)}] -> [c, ElemRef(arr_val, loc_val)]
+    esac
+  | Sexp    (name, vals)  -> 
+    case evalList (c, vals) of
+      [c, ev_elems] -> [c, Val(Sexp(name, listArray(unwrapVals(ev_elems))))]
+    esac
+  | _ -> failure ("unknown expression: %s\n", expr.string)
+  esac
 }
 
 
