@@ -407,47 +407,124 @@ fun suffix (op) {
   esac
 }
 
+fun moveArgs(env, n) {
+  if n == 0 then [{ }, env]
+    else case env.pop of [s, env] -> case moveArgs(env, n - 1) of [code, env] -> [Push(s):code, env] esac esac
+  fi
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
-fun compile (env, code) {
-  fun compile (env, code) {
-    foldl (
+fun compile(env, code) {
+  fun compile(env, code) {
+    foldl(
       fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+        var code = scode <+ Meta("# " ++ showSMInsn(i) ++ "\n");
         case i of
-          READ ->
+          READ               ->
             case env.allocate of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
+              [s, env] -> [env, code <+> listBuffer({ Push(ebx), Push(ecx), Push(esi), Push(edi) }) <+ Call("Lread") <+> listBuffer({ Pop(edi), Pop(esi), Pop(ecx), Pop(ebx) }) <+ Mov(eax, s)]
             esac
-        (* Assignment *)
-        
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-               
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        (* End *)
+          | WRITE            ->
+            case env.pop of
+              [s, env] -> [env, code <+> listBuffer({ Push(ebx), Push(ecx), Push(esi), Push(edi) }) <+ Push(s) <+ Call("Lwrite") <+ Pop(eax) <+> listBuffer({ Pop(edi), Pop(esi), Pop(ecx), Pop(ebx) })]
+            esac
+          | CONST (n)        -> case env.allocate of [s, env] -> [env, code <+> move(L(n), s)] esac
+          | ST (x)           -> case addGlobal(env, x).pop of [s, env] -> [env, code <+> move(s, loc(env, x))] esac
+          | STI              -> case pop2(env) of [v, x, env] ->
+            case allocate(env) of [s, env] ->
+              [env, code <+ Mov(x, eax) <+ Mov(v, edx) <+ Mov(edx, I(0, eax)) <+ Mov(edx, s)]
+            esac
+          esac
+          | LD (x)           -> case env.allocate of [s, env] -> [env, code <+> move(loc(env, x), s)] esac
+          | LDA (x)          -> case env.allocate of [s, env] -> [env, code <+ Lea(loc(env, x), eax) <+ Mov(eax, s)] esac
+          | BINOP (op)       ->
+            case pop2(env) of
+              [x, y, env] -> case env.allocate of
+                [s, env] -> case op of
+                  "+"    -> [env, sim(s, code, x, y, op)]
+                  | "-"  -> [env, sim(s, code, x, y, op)]
+                  | "*"  -> [env, sim(s, code, x, y, op)]
+                  | "&&" -> [env, log(s, code, x, y, op)]
+                  | "!!" -> [env, log(s, code, x, y, op)]
+                  | "/"  -> [env, div(s, code, x, y, eax)]
+                  | "%"  -> [env, div(s, code, x, y, edx)]
+                  | "<"  -> [env, cmp(s, code, x, y, op)]
+                  | ">"  -> [env, cmp(s, code, x, y, op)]
+                  | "<=" -> [env, cmp(s, code, x, y, op)]
+                  | ">=" -> [env, cmp(s, code, x, y, op)]
+                  | "==" -> [env, cmp(s, code, x, y, op)]
+                  | "!=" -> [env, cmp(s, code, x, y, op)]
+                esac
+              esac
+            esac
+          | LABEL (l)        -> [if isBarrier(env) then retrieveStack(env, l) else env fi, code <+ Label(l)]
+          | JMP (l)          -> [setBarrier(setStack(env, l)), code <+ Jmp(l)]
+          | CJMP (c, l)      -> case env.pop of
+            [s, env] -> [setStack(env, l), code <+ Mov(L(0), eax) <+ Binop("cmp", s, eax) <+ CJmp(c, l)]
+          esac
+          | DROP             -> case pop(env) of [_, env] -> [env, code] esac
+          | DUP              -> case pop(env) of [x, env] ->
+            (
+              var al1 = allocate(env);
+              var al2 = allocate(al1[1]);
+              [al2[1], code <+> move(x, eax) <+> move(eax, al1[0]) <+> move(eax, al2[0])]
+            )
+          esac
+          -- Some guidelines for generating function calls:
+          --
+          -- 1. generate instructions to save live registers on the X86 stack (use
+          --    env.liveRegisters (number of arguments);
+          -- 2. generate instructions to move actual parameters from the symbolic
+          --    stack to the hardware one;
+          -- 3. generate the call itself;
+          -- 4. discard the actual parameters from the stack;
+          -- 5. restore saved live registers.
+          --
+          -- Some guidelines for generating functions:
+          --
+          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
+          --    env.enterFunction to create a proper environment;
+          -- 2. generate epilogue for END instruction.
+
+          | CALL   (f, n)    ->
+            var save_reg_com = foldl(fun (code, reg) { code <+ Push(reg) }, { }, liveRegisters(env, n));
+            var load_reg_com = foldl(fun (code, reg) { code <+ Pop(reg) }, { }, liveRegisters(env, n));
+            case moveArgs(env, n) of [arg_pushes, env] ->
+              case env.allocate of [result, env] -> [env, code <+> save_reg_com <+> listBuffer(arg_pushes)
+                <+ Call(f) <+ Binop("+", L(wordSize * n), esp)
+                <+ Mov(eax, result)
+                <+> load_reg_com]
+              esac
+            esac
+          | GLOBAL (x)       -> [addGlobal(env, x), code]
+          | BEGIN  (f, a, l) -> [enterFunction(env, f, l), code <+> prologue(f)]
+          | END              -> case epilogue(env) of [env, ep_code] -> [env, code <+> ep_code] esac
         esac
-      }, [env, emptyBuffer ()], code)
+      }, [env, emptyBuffer()], code)
   }
 
-  compile (env, code) 
+  compile(env, code)
+}
+
+fun log(s, code, x, y, op) {
+  code <+> bool(x) <+> bool(y) <+ Mov(y, eax) <+ Binop(op, x, eax) <+ Mov(eax, s)
+}
+
+fun bool(x) {
+  singletonBuffer(Binop("cmp", L(0), x)) <+ Mov(L(0), eax) <+ Set(suffix("!="), "%al") <+ Mov(eax, x)
+}
+
+fun sim(s, code, x, y, op) {
+  code <+ Mov(y, edx) <+ Binop(op, x, edx) <+ Mov(edx, s)
+}
+
+fun div(s, code, x, y, r) {
+  code <+ Mov(y, eax) <+ Cltd <+ IDiv(x) <+ Mov(r, s)
+}
+
+fun cmp(s, code, x, y, op) {
+  code <+ Mov(x, eax) <+ Binop("cmp", eax, y) <+ Mov(L(0), eax) <+ Set(suffix(op), "%al") <+ Mov(eax, s)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
@@ -455,20 +532,21 @@ fun compile (env, code) {
 public fun compileX86 (args, code) {
   case compile (initEnv (), code) of
     [env, code] ->
-       var asmFile = args.getBaseName ++ ".s",
-             runtime = case getEnv ("LAMA_RUNTIME") of
-                         #val -> "../runtime/"
-                       | path     -> path
-                       esac ++ "/runtime.o";
+      var asmFile = args.getBaseName ++ ".s",
+          runtime = case getEnv ("LAMA_RUNTIME") of
+          #val -> "../runtime/"
+          | path     -> path
+        esac ++ "/runtime.o";
 
-       fwrite (asmFile,
-               map (insnString, 
-                    getBuffer $
-                      singletonBuffer (Meta ("\t.global\tmain\n")) <+>
-                      dataSection (listBuffer $ map (dataDef, getGlobals (env))) <+>
-                      codeSection (code)
-                   ).stringcat);
-                    
-       system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
+      fwrite (asmFile,
+        map (insnString,
+          getBuffer $
+            singletonBuffer (Meta ("\t.global\tmain\n")) <+>
+            dataSection (listBuffer $ map (dataDef, getGlobals (env))) <+>
+            codeSection (code)
+        ).stringcat);
+
+      system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
 }
+
