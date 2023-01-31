@@ -12,6 +12,9 @@ A supplementary repository for the course on compilers.
 * implement the task
 * open pull-request to this repo to the branch with the corresponding task
 * NB: your pr has to contain changes to files [`Expr.lama`](src/Expr.lama) and [`State.lama`](src/State.lama) only
+* NB: be sure that all checks have passed
+
+**Standard deadline**: next lecture
 
 **Task**:
 
