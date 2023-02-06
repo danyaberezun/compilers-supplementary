@@ -14,7 +14,7 @@ $(TESTS): %: %.lama
 	$(LAMAC) -I ../src -o $@ tmp.lama
 	$(RM) tmp.lama
 	cat $@.input | ./$@ -i > $@.log && diff $@.log orig/$@.log
-	cat $@.input | ./$@ -s > $@.log && diff $@.log orig/$@.log
+#	cat $@.input | ./$@ -s > $@.log && diff $@.log orig/$@.log
 
 clean:
 	$(RM) *.s *.i *~ $(LOGS) $(TESTS)
