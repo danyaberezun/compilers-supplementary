@@ -50,6 +50,7 @@ var wordSize = 4;
 --   Call  (string)             -- calls a function by its name 
 --   Ret                        -- returns from a function
 --   Meta  (string)             -- metainformation (declarations, etc.)
+--   Rishi                      -- (arithmetic) right shift 
                                                                
 -- Machine instruction printer
 fun insnString (insn) {
@@ -69,7 +70,7 @@ fun insnString (insn) {
   fun opndString (opnd) {
     case opnd of
       R (i) -> regs [i]
-    | S (i) -> sprintf ("-%d(%%ebp)", (i+1) * wordSize)
+    | S (i) -> sprintf ("-%d(%%ebp)", (i + 1) * wordSize)
     | M (x) -> x
     | L (i) -> sprintf ("$%d", i)
     esac
@@ -89,6 +90,7 @@ fun insnString (insn) {
   | Jmp   (l)          -> sprintf ("\tjmp\t%s\n", l)
   | CJmp  (c, l)       -> sprintf ("\tj%s\t%s\n", c, l)
   | Meta  (m)          -> m
+  | Rishi (s1, s2)     -> sprintf ("\tsarl\t%s,\t%s\n", opndString(s1), opndString(s2))
   esac
 }
 
@@ -116,11 +118,11 @@ fun makeEnv (stack, stackSlots, globals) {
     case 
       case stack of
         {}        -> [ebx, 0]
-      | S (n) : _ -> [S (n+1), n+2]
-      | R (n) : _ -> if n < nRegs then [R (n+1), stackSlots] else [S (0), 1] fi
+      | S (n) : _ -> [S (n + 1), n + 2]
+      | R (n) : _ -> if n < nRegs then [R (n + 1), stackSlots] else [S (0), 1] fi
       | _         -> [S (0), 1]
       esac
-    of [x, n] -> [x, makeEnv (x : stack, if n > stackSlots then n else stackSlots fi, globals)]esac
+    of [x, n] -> [x, makeEnv (x : stack, if n > stackSlots then n else stackSlots fi, globals)] esac
   }
 
   -- Pushes an item on the symbolic state; returns an updated envirtonment
@@ -279,24 +281,139 @@ fun suffix (op) {
   esac
 }
 
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
+
+
+  fun binopSimple(op, opnd1, opnd2) {
+    -- for simple fast operations (+, *, -)
+    case opnd1 of
+      R(_) -> singletonBuffer(Binop(op, opnd2, opnd1)) |
+      _ -> singletonBuffer(Mov(opnd1, eax)) <+ Binop(op, opnd2, eax) <+ Mov(eax, opnd1)
+    esac
+  }
+
+  fun binopLogic(op, opnd1, opnd2) {
+    binopCompare("!=", opnd1, L(0)) <+>
+    binopCompare("!=", opnd2, L(0)) <+>
+    (case opnd1 of
+      R(_) -> singletonBuffer(Binop(op, opnd2, opnd1)) |
+      _ -> singletonBuffer(Mov(opnd1, eax)) <+ Binop(op, opnd2, eax) <+ Mov(eax, opnd1)
+    esac)
+  }
+
+  fun binopDiv(opnd1, opnd2) {
+    -- must calculate (opnd1 / opnd2) and store the result in opnd1
+    -- so opnd1 must be moved to eax (because this is how idiv works)
+
+    singletonBuffer(Mov(opnd1, eax)) <+ 
+    Mov(opnd1, edx) <+
+    Rishi(L(31), edx) <+
+    IDiv(opnd2) <+ 
+    Mov(eax, opnd1)
+  }
+
+  fun binopMod(opnd1, opnd2) {
+    -- same, but the result was stored in edx
+    singletonBuffer(Mov(opnd1, eax)) <+ 
+    Mov(opnd1, edx) <+
+    Rishi(L(31), edx) <+
+    IDiv(opnd2) <+ 
+    Mov(edx, opnd1)
+  }
+
+  fun binopCompare(op, opnd1, opnd2) {
+      singletonBuffer(Mov(opnd1, eax)) <+
+      Mov(opnd2, edx) <+
+      Binop("cmp", edx, eax) <+ 
+      Mov(L(0), eax) <+
+      Set(suffix(op), "%al") <+ 
+      Mov(eax, opnd1)
+  }
+
+  fun isArithmeticOp(op) {
+    case op of
+        "+" -> 1
+      | "*" -> 1
+      | "-" -> 1
+      | _ -> 0
+    esac
+  }
+
+  fun isLogicOp(op) {
+    case op of
+      "!!" -> 1
+    | "&&" -> 1
+    | _    -> 0
+    esac
+  }
+
   foldl (
     fun ([env, scode], i) {
+      -- scode : yet implemented x86 code
+      -- i : new SM instruction to implement
+
+
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      -- here just adding comments as i understand it
+
       case i of
+        -- Read : 
         READ ->
           case env.allocate of
             [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+            -- s : new holder to store the read value (register / memory / stack)
           esac             
       | WRITE ->
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-    }, [env, emptyBuffer ()], code)}
+      | LD (x) ->
+          case env.allocate of
+            [s, env] -> [env, (code <+> move(env.loc(x), s))]
+          esac
+      | ST (x) ->
+          case env.pop of
+            [s, env] -> case env.addGlobal(x) of 
+                          env -> [env.addGlobal(x), code <+> move(s, env.loc(x)) (*<+>
+                            if stackOpnd(s) then singletonBuffer(Pop(eax)) else emptyBuffer() fi*)]
+                        esac
+          esac 
+      | CONST(n) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move(L(n), s)]
+          esac
+      | BINOP(op) ->
+        (
+          if isArithmeticOp(op) then
+            case env.pop2 of
+              [s2, s1, env] -> [env.push(s1), (code <+> binopSimple(op, s1, s2)) (*<+>
+                if stackOpnd(s2) then singletonBuffer(Pop(eax)) else emptyBuffer() fi*)]
+            esac
+          elif isLogicOp(op) then
+            case env.pop2 of
+              [s2, s1, env] -> [env.push(s1), (code <+> binopLogic(op, s1, s2)) (*<+>
+                if stackOpnd(s2) then singletonBuffer(Pop(eax)) else emptyBuffer() fi*)]
+            esac
+          else
+            case op of
+              "/" -> case env.pop2 of
+                [s2, s1, env] -> [env.push(s1), code <+> binopDiv(s1, s2)]
+                     esac                                                             |
+              "%" -> case env.pop2 of
+                [s2, s1, env] -> [env.push(s1), code <+> binopMod(s1, s2)]
+                     esac                                                             |
+              _ -> case env.pop2 of
+                [s2, s1, env] -> [env.push(s1), code <+> binopCompare(op, s1, s2)]
+                   esac
+            esac
+          fi
+        )
+      esac
+    }, [env, emptyBuffer ()], code)
+}
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
