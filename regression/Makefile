@@ -20,3 +20,5 @@ expr_tests:
 
 clean:
 	$(RM) *.s *.i *~ $(LOGS) $(TESTS) *.run
+	make clean -C expressions
+	make clean -C deep-expressions
