@@ -39,3 +39,7 @@ Important changes:
 ```bash
 $ make
 ```
+**Compile and run tests (from the root folder)**:
+```bash
+$ make
+```
