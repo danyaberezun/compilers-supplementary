@@ -4,21 +4,39 @@
 
 	.globl	LevalExpr
 
-	.globl	LevalOp
+	.globl	Lget_infix
 
 	.globl	initExpr
 
 	.data
 
-string_3:	.string	"*"
+string_13:	.string	"!!"
+
+string_11:	.string	"!="
+
+string_5:	.string	"%"
+
+string_12:	.string	"&&"
+
+string_2:	.string	"*"
 
 string_1:	.string	"+"
 
-string_2:	.string	"-"
+string_3:	.string	"-"
+
+string_4:	.string	"/"
+
+string_10:	.string	"<"
+
+string_8:	.string	"<="
+
+string_6:	.string	"=="
+
+string_9:	.string	">"
+
+string_7:	.string	">="
 
 string_0:	.string	"Expr.lama"
-
-string_4:	.string	"Not implemented"
 
 _init:	.int 0
 
@@ -40,7 +58,7 @@ filler:	.fill	4, 4, 1
 
 # PUBLIC ("initExpr") / 
 
-# PUBLIC ("LevalOp") / 
+# PUBLIC ("Lget_infix") / 
 
 # PUBLIC ("LevalExpr") / 
 
@@ -263,7 +281,7 @@ LinitExpr_epilogue:
 
 LevalExpr:
 
-# BEGIN ("LevalExpr", 2, 3, [], ["st"; "expr"], [{ blab="L4"; elab="L5"; names=[]; subs=[{ blab="L7"; elab="L8"; names=[]; subs=[{ blab="L29"; elab="L30"; names=[("op", 2); ("l", 1); ("r", 0)]; subs=[{ blab="L31"; elab="L32"; names=[]; subs=[]; }]; }; { blab="L23"; elab="L24"; names=[("n", 0)]; subs=[{ blab="L25"; elab="L26"; names=[]; subs=[]; }]; }; { blab="L14"; elab="L15"; names=[("x", 0)]; subs=[{ blab="L16"; elab="L17"; names=[]; subs=[]; }]; }]; }]; }]) / 
+# BEGIN ("LevalExpr", 2, 3, [], ["st"; "expr"], [{ blab="L4"; elab="L5"; names=[]; subs=[{ blab="L7"; elab="L8"; names=[]; subs=[{ blab="L29"; elab="L30"; names=[("op", 2); ("e1", 1); ("e2", 0)]; subs=[{ blab="L31"; elab="L32"; names=[]; subs=[]; }]; }; { blab="L23"; elab="L24"; names=[("n", 0)]; subs=[{ blab="L25"; elab="L26"; names=[]; subs=[]; }]; }; { blab="L14"; elab="L15"; names=[("x", 0)]; subs=[{ blab="L16"; elab="L17"; names=[]; subs=[]; }]; }]; }]; }]) / 
 
 	.type evalExpr, @function
 
@@ -275,9 +293,9 @@ LevalExpr:
 
 	.stabs "op:1",128,0,0,-12
 
-	.stabs "l:1",128,0,0,-8
+	.stabs "e1:1",128,0,0,-8
 
-	.stabs "r:1",128,0,0,-4
+	.stabs "e2:1",128,0,0,-4
 
 	.stabn 192,0,0,L29-LevalExpr
 
@@ -318,11 +336,11 @@ L4:
 
 L7:
 
-# LINE (27) / 
+# LINE (33) / 
 
-	.stabn 68,0,27,0
+	.stabn 68,0,33,0
 
-	.stabn 68,0,27,.L0-LevalExpr
+	.stabn 68,0,33,.L0-LevalExpr
 
 .L0:
 
@@ -537,9 +555,9 @@ L21:
 
 L25:
 
-# LINE (29) / 
+# LINE (35) / 
 
-	.stabn 68,0,29,.L1-LevalExpr
+	.stabn 68,0,35,.L1-LevalExpr
 
 .L1:
 
@@ -728,27 +746,27 @@ L27:
 
 L31:
 
-# LINE (30) / 
+# LINE (36) / 
 
-	.stabn 68,0,30,.L2-LevalExpr
+	.stabn 68,0,36,.L2-LevalExpr
 
 .L2:
 
 # LD (Local (2)) / 
 
 	movl	-12(%ebp),	%ebx
-# CALL ("LevalOp", 1, false) / 
+# CALL ("Lget_infix", 1, false) / 
 
 	pushl	%ebx
-	call	LevalOp
+	call	Lget_infix
 	addl	$4,	%esp
 	movl	%eax,	%ebx
 # LD (Arg (0)) / 
 
 	movl	8(%ebp),	%ecx
-# CONST (1) / 
+# LD (Local (1)) / 
 
-	movl	$3,	%esi
+	movl	-8(%ebp),	%esi
 # CALL ("LevalExpr", 2, false) / 
 
 	pushl	%ebx
@@ -799,10 +817,10 @@ L30:
 
 L9:
 
-# FAIL ((27, 7), true) / 
+# FAIL ((33, 7), true) / 
 
 	pushl	$15
-	pushl	$55
+	pushl	$67
 	pushl	$string_0
 	pushl	%ebx
 	call	Bmatch_failure
@@ -842,15 +860,15 @@ LLevalExpr_epilogue:
 
 	.size LevalExpr, .-LevalExpr
 
-# LABEL ("LevalOp") / 
+# LABEL ("Lget_infix") / 
 
-LevalOp:
+Lget_infix:
 
-# BEGIN ("LevalOp", 1, 0, [], ["op"], [{ blab="L41"; elab="L42"; names=[]; subs=[{ blab="L44"; elab="L45"; names=[]; subs=[{ blab="L63"; elab="L64"; names=[]; subs=[{ blab="L65"; elab="L66"; names=[]; subs=[]; }]; }; { blab="L59"; elab="L60"; names=[]; subs=[{ blab="L61"; elab="L62"; names=[]; subs=[]; }]; }; { blab="L54"; elab="L55"; names=[]; subs=[{ blab="L56"; elab="L57"; names=[]; subs=[]; }]; }; { blab="L49"; elab="L50"; names=[]; subs=[{ blab="L51"; elab="L52"; names=[]; subs=[]; }]; }]; }]; }]) / 
+# BEGIN ("Lget_infix", 1, 0, [], ["op"], [{ blab="L41"; elab="L42"; names=[]; subs=[{ blab="L44"; elab="L45"; names=[]; subs=[{ blab="L108"; elab="L109"; names=[]; subs=[{ blab="L110"; elab="L111"; names=[]; subs=[]; }]; }; { blab="L104"; elab="L105"; names=[]; subs=[{ blab="L106"; elab="L107"; names=[]; subs=[]; }]; }; { blab="L99"; elab="L100"; names=[]; subs=[{ blab="L101"; elab="L102"; names=[]; subs=[]; }]; }; { blab="L94"; elab="L95"; names=[]; subs=[{ blab="L96"; elab="L97"; names=[]; subs=[]; }]; }; { blab="L89"; elab="L90"; names=[]; subs=[{ blab="L91"; elab="L92"; names=[]; subs=[]; }]; }; { blab="L84"; elab="L85"; names=[]; subs=[{ blab="L86"; elab="L87"; names=[]; subs=[]; }]; }; { blab="L79"; elab="L80"; names=[]; subs=[{ blab="L81"; elab="L82"; names=[]; subs=[]; }]; }; { blab="L74"; elab="L75"; names=[]; subs=[{ blab="L76"; elab="L77"; names=[]; subs=[]; }]; }; { blab="L69"; elab="L70"; names=[]; subs=[{ blab="L71"; elab="L72"; names=[]; subs=[]; }]; }; { blab="L64"; elab="L65"; names=[]; subs=[{ blab="L66"; elab="L67"; names=[]; subs=[]; }]; }; { blab="L59"; elab="L60"; names=[]; subs=[{ blab="L61"; elab="L62"; names=[]; subs=[]; }]; }; { blab="L54"; elab="L55"; names=[]; subs=[{ blab="L56"; elab="L57"; names=[]; subs=[]; }]; }; { blab="L49"; elab="L50"; names=[]; subs=[{ blab="L51"; elab="L52"; names=[]; subs=[]; }]; }]; }]; }]) / 
 
-	.type evalOp, @function
+	.type get_infix, @function
 
-	.stabs "evalOp:F1",36,0,0,LevalOp
+	.stabs "get_infix:F1",36,0,0,Lget_infix
 
 	.stabs "op:p1",160,0,0,8
 
@@ -864,10 +882,10 @@ LevalOp:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLevalOp_SIZE,	%esp
+	subl	$LLget_infix_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLevalOp_SIZE,	%ecx
+	movl	$LSLget_infix_SIZE,	%ecx
 	rep movsl	
 # SLABEL ("L41") / 
 
@@ -877,11 +895,11 @@ L41:
 
 L44:
 
-# LINE (18) / 
+# LINE (15) / 
 
-	.stabn 68,0,18,0
+	.stabn 68,0,15,0
 
-	.stabn 68,0,18,.L3-LevalOp
+	.stabn 68,0,15,.L3-Lget_infix
 
 .L3:
 
@@ -926,9 +944,9 @@ L49:
 
 L51:
 
-# LINE (19) / 
+# LINE (16) / 
 
-	.stabn 68,0,19,.L4-LevalOp
+	.stabn 68,0,16,.L4-Lget_infix
 
 .L4:
 
@@ -961,7 +979,7 @@ L48:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# STRING ("-") / 
+# STRING ("*") / 
 
 	movl	$string_2,	%esi
 	pushl	%ebx
@@ -992,15 +1010,15 @@ L48:
 
 L56:
 
-# LINE (20) / 
+# LINE (17) / 
 
-	.stabn 68,0,20,.L5-LevalOp
+	.stabn 68,0,17,.L5-Lget_infix
 
 .L5:
 
-# CLOSURE ("Ls__Infix_45", []) / 
+# CLOSURE ("Ls__Infix_42", []) / 
 
-	pushl	$Ls__Infix_45
+	pushl	$Ls__Infix_42
 	pushl	$1
 	call	Bclosure
 	addl	$8,	%esp
@@ -1027,7 +1045,7 @@ L53:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# STRING ("*") / 
+# STRING ("-") / 
 
 	movl	$string_3,	%esi
 	pushl	%ebx
@@ -1058,15 +1076,15 @@ L53:
 
 L61:
 
-# LINE (21) / 
+# LINE (18) / 
 
-	.stabn 68,0,21,.L6-LevalOp
+	.stabn 68,0,18,.L6-Lget_infix
 
 .L6:
 
-# CLOSURE ("Ls__Infix_42", []) / 
+# CLOSURE ("Ls__Infix_45", []) / 
 
-	pushl	$Ls__Infix_42
+	pushl	$Ls__Infix_45
 	pushl	$1
 	call	Bclosure
 	addl	$8,	%esp
@@ -1082,9 +1100,9 @@ L62:
 
 L60:
 
-# SLABEL ("L63") / 
+# SLABEL ("L64") / 
 
-L63:
+L64:
 
 # LABEL ("L58") / 
 
@@ -1093,41 +1111,667 @@ L58:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# DROP / 
+# STRING ("/") / 
 
-# DROP / 
-
-# SLABEL ("L65") / 
-
-L65:
-
-# LINE (22) / 
-
-	.stabn 68,0,22,.L7-LevalOp
-
-.L7:
-
-# STRING ("Not implemented") / 
-
-	movl	$string_4,	%ebx
+	movl	$string_4,	%esi
 	pushl	%ebx
+	pushl	%ecx
+	pushl	%esi
 	call	Bstring
 	addl	$4,	%esp
-	movl	%eax,	%ebx
-# CALL ("Lfailure", 1, true) / 
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# PATT (StrCmp) / 
 
-	movl	%ebx,	8(%ebp)
-	movl	%ebp,	%esp
-	popl	%ebp
-	jmp	Lfailure
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Bstring_patt
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CJMP ("z", "L63") / 
+
+	sarl	%ecx
+	cmpl	$0,	%ecx
+	jz	L63
+# DROP / 
+
 # SLABEL ("L66") / 
 
 L66:
 
-# SLABEL ("L64") / 
+# LINE (19) / 
 
-L64:
+	.stabn 68,0,19,.L7-Lget_infix
 
+.L7:
+
+# CLOSURE ("Ls__Infix_47", []) / 
+
+	pushl	$Ls__Infix_47
+	pushl	$1
+	call	Bclosure
+	addl	$8,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L67") / 
+
+L67:
+
+# JMP ("L43") / 
+
+	jmp	L43
+# SLABEL ("L65") / 
+
+L65:
+
+# SLABEL ("L69") / 
+
+L69:
+
+# LABEL ("L63") / 
+
+L63:
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# STRING ("%") / 
+
+	movl	$string_5,	%esi
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%esi
+	call	Bstring
+	addl	$4,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# PATT (StrCmp) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Bstring_patt
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CJMP ("z", "L68") / 
+
+	sarl	%ecx
+	cmpl	$0,	%ecx
+	jz	L68
+# DROP / 
+
+# SLABEL ("L71") / 
+
+L71:
+
+# LINE (20) / 
+
+	.stabn 68,0,20,.L8-Lget_infix
+
+.L8:
+
+# CLOSURE ("Ls__Infix_37", []) / 
+
+	pushl	$Ls__Infix_37
+	pushl	$1
+	call	Bclosure
+	addl	$8,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L72") / 
+
+L72:
+
+# JMP ("L43") / 
+
+	jmp	L43
+# SLABEL ("L70") / 
+
+L70:
+
+# SLABEL ("L74") / 
+
+L74:
+
+# LABEL ("L68") / 
+
+L68:
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# STRING ("==") / 
+
+	movl	$string_6,	%esi
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%esi
+	call	Bstring
+	addl	$4,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# PATT (StrCmp) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Bstring_patt
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CJMP ("z", "L73") / 
+
+	sarl	%ecx
+	cmpl	$0,	%ecx
+	jz	L73
+# DROP / 
+
+# SLABEL ("L76") / 
+
+L76:
+
+# LINE (21) / 
+
+	.stabn 68,0,21,.L9-Lget_infix
+
+.L9:
+
+# CLOSURE ("Ls__Infix_6161", []) / 
+
+	pushl	$Ls__Infix_6161
+	pushl	$1
+	call	Bclosure
+	addl	$8,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L77") / 
+
+L77:
+
+# JMP ("L43") / 
+
+	jmp	L43
+# SLABEL ("L75") / 
+
+L75:
+
+# SLABEL ("L79") / 
+
+L79:
+
+# LABEL ("L73") / 
+
+L73:
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# STRING (">=") / 
+
+	movl	$string_7,	%esi
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%esi
+	call	Bstring
+	addl	$4,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# PATT (StrCmp) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Bstring_patt
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CJMP ("z", "L78") / 
+
+	sarl	%ecx
+	cmpl	$0,	%ecx
+	jz	L78
+# DROP / 
+
+# SLABEL ("L81") / 
+
+L81:
+
+# LINE (22) / 
+
+	.stabn 68,0,22,.L10-Lget_infix
+
+.L10:
+
+# CLOSURE ("Ls__Infix_6261", []) / 
+
+	pushl	$Ls__Infix_6261
+	pushl	$1
+	call	Bclosure
+	addl	$8,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L82") / 
+
+L82:
+
+# JMP ("L43") / 
+
+	jmp	L43
+# SLABEL ("L80") / 
+
+L80:
+
+# SLABEL ("L84") / 
+
+L84:
+
+# LABEL ("L78") / 
+
+L78:
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# STRING ("<=") / 
+
+	movl	$string_8,	%esi
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%esi
+	call	Bstring
+	addl	$4,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# PATT (StrCmp) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Bstring_patt
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CJMP ("z", "L83") / 
+
+	sarl	%ecx
+	cmpl	$0,	%ecx
+	jz	L83
+# DROP / 
+
+# SLABEL ("L86") / 
+
+L86:
+
+# LINE (23) / 
+
+	.stabn 68,0,23,.L11-Lget_infix
+
+.L11:
+
+# CLOSURE ("Ls__Infix_6061", []) / 
+
+	pushl	$Ls__Infix_6061
+	pushl	$1
+	call	Bclosure
+	addl	$8,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L87") / 
+
+L87:
+
+# JMP ("L43") / 
+
+	jmp	L43
+# SLABEL ("L85") / 
+
+L85:
+
+# SLABEL ("L89") / 
+
+L89:
+
+# LABEL ("L83") / 
+
+L83:
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# STRING (">") / 
+
+	movl	$string_9,	%esi
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%esi
+	call	Bstring
+	addl	$4,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# PATT (StrCmp) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Bstring_patt
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CJMP ("z", "L88") / 
+
+	sarl	%ecx
+	cmpl	$0,	%ecx
+	jz	L88
+# DROP / 
+
+# SLABEL ("L91") / 
+
+L91:
+
+# LINE (24) / 
+
+	.stabn 68,0,24,.L12-Lget_infix
+
+.L12:
+
+# CLOSURE ("Ls__Infix_62", []) / 
+
+	pushl	$Ls__Infix_62
+	pushl	$1
+	call	Bclosure
+	addl	$8,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L92") / 
+
+L92:
+
+# JMP ("L43") / 
+
+	jmp	L43
+# SLABEL ("L90") / 
+
+L90:
+
+# SLABEL ("L94") / 
+
+L94:
+
+# LABEL ("L88") / 
+
+L88:
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# STRING ("<") / 
+
+	movl	$string_10,	%esi
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%esi
+	call	Bstring
+	addl	$4,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# PATT (StrCmp) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Bstring_patt
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CJMP ("z", "L93") / 
+
+	sarl	%ecx
+	cmpl	$0,	%ecx
+	jz	L93
+# DROP / 
+
+# SLABEL ("L96") / 
+
+L96:
+
+# LINE (25) / 
+
+	.stabn 68,0,25,.L13-Lget_infix
+
+.L13:
+
+# CLOSURE ("Ls__Infix_60", []) / 
+
+	pushl	$Ls__Infix_60
+	pushl	$1
+	call	Bclosure
+	addl	$8,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L97") / 
+
+L97:
+
+# JMP ("L43") / 
+
+	jmp	L43
+# SLABEL ("L95") / 
+
+L95:
+
+# SLABEL ("L99") / 
+
+L99:
+
+# LABEL ("L93") / 
+
+L93:
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# STRING ("!=") / 
+
+	movl	$string_11,	%esi
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%esi
+	call	Bstring
+	addl	$4,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# PATT (StrCmp) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Bstring_patt
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CJMP ("z", "L98") / 
+
+	sarl	%ecx
+	cmpl	$0,	%ecx
+	jz	L98
+# DROP / 
+
+# SLABEL ("L101") / 
+
+L101:
+
+# LINE (26) / 
+
+	.stabn 68,0,26,.L14-Lget_infix
+
+.L14:
+
+# CLOSURE ("Ls__Infix_3361", []) / 
+
+	pushl	$Ls__Infix_3361
+	pushl	$1
+	call	Bclosure
+	addl	$8,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L102") / 
+
+L102:
+
+# JMP ("L43") / 
+
+	jmp	L43
+# SLABEL ("L100") / 
+
+L100:
+
+# SLABEL ("L104") / 
+
+L104:
+
+# LABEL ("L98") / 
+
+L98:
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# STRING ("&&") / 
+
+	movl	$string_12,	%esi
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%esi
+	call	Bstring
+	addl	$4,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# PATT (StrCmp) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Bstring_patt
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CJMP ("z", "L103") / 
+
+	sarl	%ecx
+	cmpl	$0,	%ecx
+	jz	L103
+# DROP / 
+
+# SLABEL ("L106") / 
+
+L106:
+
+# LINE (27) / 
+
+	.stabn 68,0,27,.L15-Lget_infix
+
+.L15:
+
+# CLOSURE ("Ls__Infix_3838", []) / 
+
+	pushl	$Ls__Infix_3838
+	pushl	$1
+	call	Bclosure
+	addl	$8,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L107") / 
+
+L107:
+
+# JMP ("L43") / 
+
+	jmp	L43
+# SLABEL ("L105") / 
+
+L105:
+
+# SLABEL ("L108") / 
+
+L108:
+
+# LABEL ("L103") / 
+
+L103:
+
+# DUP / 
+
+	movl	%ebx,	%ecx
+# STRING ("!!") / 
+
+	movl	$string_13,	%esi
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%esi
+	call	Bstring
+	addl	$4,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# PATT (StrCmp) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Bstring_patt
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CJMP ("z", "L46") / 
+
+	sarl	%ecx
+	cmpl	$0,	%ecx
+	jz	L46
+# DROP / 
+
+# SLABEL ("L110") / 
+
+L110:
+
+# LINE (28) / 
+
+	.stabn 68,0,28,.L16-Lget_infix
+
+.L16:
+
+# CLOSURE ("Ls__Infix_3333", []) / 
+
+	pushl	$Ls__Infix_3333
+	pushl	$1
+	call	Bclosure
+	addl	$8,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L111") / 
+
+L111:
+
+# SLABEL ("L109") / 
+
+L109:
+
+# JMP ("L43") / 
+
+	jmp	L43
+# LABEL ("L46") / 
+
+L46:
+
+# FAIL ((15, 7), true) / 
+
+	pushl	$15
+	pushl	$31
+	pushl	$string_0
+	pushl	%ebx
+	call	Bmatch_failure
+	addl	$16,	%esp
 # JMP ("L43") / 
 
 	jmp	L43
@@ -1146,7 +1790,7 @@ L42:
 # END / 
 
 	movl	%ebx,	%eax
-LLevalOp_epilogue:
+LLget_infix_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -1157,9 +1801,9 @@ LLevalOp_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLevalOp_SIZE,	0
+	.set	LLget_infix_SIZE,	0
 
-	.set	LSLevalOp_SIZE,	0
+	.set	LSLget_infix_SIZE,	0
 
-	.size LevalOp, .-LevalOp
+	.size Lget_infix, .-Lget_infix
 

@@ -8,45 +8,41 @@
 
 	.data
 
-string_7:	.string	"!!"
+string_5:	.string	"!!"
 
-string_13:	.string	"!="
+string_11:	.string	"!="
 
-string_15:	.string	"%"
+string_13:	.string	"%"
 
 string_3:	.string	"%d\n"
 
-string_8:	.string	"&&"
+string_6:	.string	"&&"
 
-string_17:	.string	"*"
+string_15:	.string	"*"
 
-string_19:	.string	"+"
+string_17:	.string	"+"
 
-string_18:	.string	"-"
+string_16:	.string	"-"
 
 string_0:	.string	"-i"
 
 string_1:	.string	"-s"
 
-string_16:	.string	"/"
+string_14:	.string	"/"
 
-string_12:	.string	"<"
+string_10:	.string	"<"
 
-string_11:	.string	"<="
+string_9:	.string	"<="
 
-string_14:	.string	"=="
+string_12:	.string	"=="
 
-string_10:	.string	">"
+string_8:	.string	">"
 
-string_9:	.string	">="
+string_7:	.string	">="
 
 string_2:	.string	"tmp.lama"
 
-string_4:	.string	"x"
-
-string_5:	.string	"y"
-
-string_6:	.string	"z"
+string_4:	.string	"z"
 
 _init:	.int 0
 
@@ -1045,200 +1041,164 @@ L69:
 
 .L7:
 
-# LINE (53) / 
+# LINE (44) / 
 
-	.stabn 68,0,53,.L8-Lprogram
+	.stabn 68,0,44,.L8-Lprogram
 
 .L8:
 
-# STRING ("x") / 
+# STRING ("z") / 
 
 	movl	$string_4,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# CALL ("Lread", 1, false) / 
+# LINE (21) / 
 
-	pushl	%ebx
-	call	Lread
-	addl	$4,	%esp
-	movl	%eax,	%ebx
-# LINE (48) / 
-
-	.stabn 68,0,48,.L9-Lprogram
+	.stabn 68,0,21,.L9-Lprogram
 
 .L9:
 
+# CONST (0) / 
+
+	movl	$1,	%ecx
+# CONST (1) / 
+
+	movl	$3,	%esi
+# CALL ("Li__Infix_45", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Li__Infix_45
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CONST (2) / 
+
+	movl	$5,	%esi
+# CALL ("Li__Infix_45", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Li__Infix_45
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CONST (3) / 
+
+	movl	$7,	%esi
+# CALL ("Li__Infix_45", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Li__Infix_45
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CONST (4) / 
+
+	movl	$9,	%esi
+# CALL ("Li__Infix_45", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Li__Infix_45
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CONST (5) / 
+
+	movl	$11,	%esi
+# CALL ("Li__Infix_45", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Li__Infix_45
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CONST (6) / 
+
+	movl	$13,	%esi
+# CALL ("Li__Infix_45", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Li__Infix_45
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CONST (7) / 
+
+	movl	$15,	%esi
+# CALL ("Li__Infix_45", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Li__Infix_45
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CONST (8) / 
+
+	movl	$17,	%esi
+# CALL ("Li__Infix_45", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Li__Infix_45
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CONST (9) / 
+
+	movl	$19,	%esi
+# CALL ("Li__Infix_45", 2, false) / 
+
+	pushl	%ebx
+	pushl	%esi
+	pushl	%ecx
+	call	Li__Infix_45
+	addl	$8,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# CALL ("Li__Infix_585861", 2, false) / 
+
+	pushl	%ecx
+	pushl	%ebx
+	call	Li__Infix_585861
+	addl	$8,	%esp
+	movl	%eax,	%ebx
 # LINE (54) / 
 
 	.stabn 68,0,54,.L10-Lprogram
 
 .L10:
 
-# STRING ("y") / 
+# STRING ("z") / 
 
-	movl	$string_5,	%ecx
+	movl	$string_4,	%ecx
 	pushl	%ebx
 	pushl	%ecx
 	call	Bstring
 	addl	$4,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CALL ("Lread", 1, false) / 
-
-	pushl	%ebx
-	pushl	%ecx
-	call	Lread
-	addl	$4,	%esp
-	popl	%ebx
-	movl	%eax,	%ecx
-# LINE (48) / 
-
-	.stabn 68,0,48,.L11-Lprogram
-
-.L11:
-
-# LINE (44) / 
-
-	.stabn 68,0,44,.L12-Lprogram
-
-.L12:
-
-# STRING ("z") / 
-
-	movl	$string_6,	%esi
-	pushl	%ebx
-	pushl	%ecx
-	pushl	%esi
-	call	Bstring
-	addl	$4,	%esp
-	popl	%ecx
-	popl	%ebx
-	movl	%eax,	%esi
-# LINE (22) / 
-
-	.stabn 68,0,22,.L13-Lprogram
-
-.L13:
-
-# STRING ("x") / 
-
-	movl	$string_4,	%edi
-	pushl	%ebx
-	pushl	%ecx
-	pushl	%esi
-	pushl	%edi
-	call	Bstring
-	addl	$4,	%esp
-	popl	%esi
-	popl	%ecx
-	popl	%ebx
-	movl	%eax,	%edi
-# STRING ("y") / 
-
-	movl	$string_5,	-4(%ebp)
-	pushl	%ebx
-	pushl	%ecx
-	pushl	%esi
-	pushl	%edi
-	pushl	-4(%ebp)
-	call	Bstring
-	addl	$4,	%esp
-	popl	%edi
-	popl	%esi
-	popl	%ecx
-	popl	%ebx
-	movl	%eax,	-4(%ebp)
-# CALL ("Li__Infix_42", 2, false) / 
-
-	pushl	%ebx
-	pushl	%ecx
-	pushl	%esi
-	pushl	-4(%ebp)
-	pushl	%edi
-	call	Li__Infix_42
-	addl	$8,	%esp
-	popl	%esi
-	popl	%ecx
-	popl	%ebx
-	movl	%eax,	%edi
-# CONST (3) / 
-
-	movl	$7,	-4(%ebp)
-# CALL ("Li__Infix_42", 2, false) / 
-
-	pushl	%ebx
-	pushl	%ecx
-	pushl	%esi
-	pushl	-4(%ebp)
-	pushl	%edi
-	call	Li__Infix_42
-	addl	$8,	%esp
-	popl	%esi
-	popl	%ecx
-	popl	%ebx
-	movl	%eax,	%edi
-# CALL ("Li__Infix_585861", 2, false) / 
-
-	pushl	%ebx
-	pushl	%ecx
-	pushl	%edi
-	pushl	%esi
-	call	Li__Infix_585861
-	addl	$8,	%esp
-	popl	%ecx
-	popl	%ebx
-	movl	%eax,	%esi
-# LINE (54) / 
-
-	.stabn 68,0,54,.L14-Lprogram
-
-.L14:
-
-# STRING ("z") / 
-
-	movl	$string_6,	%edi
-	pushl	%ebx
-	pushl	%ecx
-	pushl	%esi
-	pushl	%edi
-	call	Bstring
-	addl	$4,	%esp
-	popl	%esi
-	popl	%ecx
-	popl	%ebx
-	movl	%eax,	%edi
 # CALL ("Lwrite", 1, false) / 
 
 	pushl	%ebx
 	pushl	%ecx
-	pushl	%esi
-	pushl	%edi
 	call	Lwrite
 	addl	$4,	%esp
-	popl	%esi
-	popl	%ecx
-	popl	%ebx
-	movl	%eax,	%edi
-# CALL ("Li__Infix_6262", 2, false) / 
-
-	pushl	%ebx
-	pushl	%ecx
-	pushl	%edi
-	pushl	%esi
-	call	Li__Infix_6262
-	addl	$8,	%esp
-	popl	%ecx
-	popl	%ebx
-	movl	%eax,	%esi
-# CALL ("Li__Infix_6262", 2, false) / 
-
-	pushl	%ebx
-	pushl	%esi
-	pushl	%ecx
-	call	Li__Infix_6262
-	addl	$8,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
 # CALL ("Li__Infix_6262", 2, true) / 
@@ -1274,9 +1234,9 @@ LLprogram_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLprogram_SIZE,	4
+	.set	LLprogram_SIZE,	0
 
-	.set	LSLprogram_SIZE,	1
+	.set	LSLprogram_SIZE,	0
 
 	.size Lprogram, .-Lprogram
 
@@ -1284,7 +1244,7 @@ LLprogram_epilogue:
 
 Li__Infix_6262:
 
-# BEGIN ("Li__Infix_6262", 2, 0, [], ["s1"; "s2"], [{ blab="L86"; elab="L87"; names=[]; subs=[{ blab="L89"; elab="L90"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Li__Infix_6262", 2, 0, [], ["s1"; "s2"], [{ blab="L94"; elab="L95"; names=[]; subs=[{ blab="L97"; elab="L98"; names=[]; subs=[]; }]; }]) / 
 
 	.type i__Infix_6262, @function
 
@@ -1309,21 +1269,21 @@ Li__Infix_6262:
 	movl	$filler,	%esi
 	movl	$LSLi__Infix_6262_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L86") / 
+# SLABEL ("L94") / 
 
-L86:
+L94:
 
-# SLABEL ("L89") / 
+# SLABEL ("L97") / 
 
-L89:
+L97:
 
 # LINE (49) / 
 
 	.stabn 68,0,49,0
 
-	.stabn 68,0,49,.L15-Li__Infix_6262
+	.stabn 68,0,49,.L11-Li__Infix_6262
 
-.L15:
+.L11:
 
 # LD (Arg (0)) / 
 
@@ -1341,17 +1301,17 @@ L89:
 	call	Bsexp
 	addl	$16,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L90") / 
+# SLABEL ("L98") / 
 
-L90:
+L98:
 
-# LABEL ("L88") / 
+# LABEL ("L96") / 
 
-L88:
+L96:
 
-# SLABEL ("L87") / 
+# SLABEL ("L95") / 
 
-L87:
+L95:
 
 # END / 
 
@@ -1377,7 +1337,7 @@ LLi__Infix_6262_epilogue:
 
 Li__Infix_585861:
 
-# BEGIN ("Li__Infix_585861", 2, 0, [], ["x"; "e"], [{ blab="L93"; elab="L94"; names=[]; subs=[{ blab="L96"; elab="L97"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Li__Infix_585861", 2, 0, [], ["x"; "e"], [{ blab="L101"; elab="L102"; names=[]; subs=[{ blab="L104"; elab="L105"; names=[]; subs=[]; }]; }]) / 
 
 	.type i__Infix_585861, @function
 
@@ -1402,21 +1362,21 @@ Li__Infix_585861:
 	movl	$filler,	%esi
 	movl	$LSLi__Infix_585861_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L93") / 
+# SLABEL ("L101") / 
 
-L93:
+L101:
 
-# SLABEL ("L96") / 
+# SLABEL ("L104") / 
 
-L96:
+L104:
 
 # LINE (45) / 
 
 	.stabn 68,0,45,0
 
-	.stabn 68,0,45,.L16-Li__Infix_585861
+	.stabn 68,0,45,.L12-Li__Infix_585861
 
-.L16:
+.L12:
 
 # LD (Arg (0)) / 
 
@@ -1442,17 +1402,17 @@ L96:
 	call	Bsexp
 	addl	$16,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L97") / 
+# SLABEL ("L105") / 
 
-L97:
+L105:
 
-# LABEL ("L95") / 
+# LABEL ("L103") / 
 
-L95:
+L103:
 
-# SLABEL ("L94") / 
+# SLABEL ("L102") / 
 
-L94:
+L102:
 
 # END / 
 
@@ -1478,7 +1438,7 @@ LLi__Infix_585861_epilogue:
 
 Lwrite:
 
-# BEGIN ("Lwrite", 1, 0, [], ["e"], [{ blab="L101"; elab="L102"; names=[]; subs=[{ blab="L104"; elab="L105"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Lwrite", 1, 0, [], ["e"], [{ blab="L109"; elab="L110"; names=[]; subs=[{ blab="L112"; elab="L113"; names=[]; subs=[]; }]; }]) / 
 
 	.type write, @function
 
@@ -1501,21 +1461,21 @@ Lwrite:
 	movl	$filler,	%esi
 	movl	$LSLwrite_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L101") / 
+# SLABEL ("L109") / 
 
-L101:
+L109:
 
-# SLABEL ("L104") / 
+# SLABEL ("L112") / 
 
-L104:
+L112:
 
 # LINE (40) / 
 
 	.stabn 68,0,40,0
 
-	.stabn 68,0,40,.L17-Lwrite
+	.stabn 68,0,40,.L13-Lwrite
 
-.L17:
+.L13:
 
 # LD (Arg (0)) / 
 
@@ -1535,17 +1495,17 @@ L104:
 	call	Bsexp
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L105") / 
+# SLABEL ("L113") / 
 
-L105:
+L113:
 
-# LABEL ("L103") / 
+# LABEL ("L111") / 
 
-L103:
+L111:
 
-# SLABEL ("L102") / 
+# SLABEL ("L110") / 
 
-L102:
+L110:
 
 # END / 
 
@@ -1571,7 +1531,7 @@ LLwrite_epilogue:
 
 Lread:
 
-# BEGIN ("Lread", 1, 0, [], ["x"], [{ blab="L108"; elab="L109"; names=[]; subs=[{ blab="L111"; elab="L112"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Lread", 1, 0, [], ["x"], [{ blab="L116"; elab="L117"; names=[]; subs=[{ blab="L119"; elab="L120"; names=[]; subs=[]; }]; }]) / 
 
 	.type read, @function
 
@@ -1594,21 +1554,21 @@ Lread:
 	movl	$filler,	%esi
 	movl	$LSLread_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L108") / 
+# SLABEL ("L116") / 
 
-L108:
+L116:
 
-# SLABEL ("L111") / 
+# SLABEL ("L119") / 
 
-L111:
+L119:
 
 # LINE (35) / 
 
 	.stabn 68,0,35,0
 
-	.stabn 68,0,35,.L18-Lread
+	.stabn 68,0,35,.L14-Lread
 
-.L18:
+.L14:
 
 # LD (Arg (0)) / 
 
@@ -1622,17 +1582,17 @@ L111:
 	call	Bsexp
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L112") / 
+# SLABEL ("L120") / 
 
-L112:
+L120:
 
-# LABEL ("L110") / 
+# LABEL ("L118") / 
 
-L110:
+L118:
 
-# SLABEL ("L109") / 
+# SLABEL ("L117") / 
 
-L109:
+L117:
 
 # END / 
 
@@ -1658,7 +1618,7 @@ LLread_epilogue:
 
 Li__Infix_3333:
 
-# BEGIN ("Li__Infix_3333", 2, 0, [], ["l"; "r"], [{ blab="L114"; elab="L115"; names=[]; subs=[{ blab="L117"; elab="L118"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Li__Infix_3333", 2, 0, [], ["l"; "r"], [{ blab="L122"; elab="L123"; names=[]; subs=[{ blab="L125"; elab="L126"; names=[]; subs=[]; }]; }]) / 
 
 	.type i__Infix_3333, @function
 
@@ -1683,17 +1643,17 @@ Li__Infix_3333:
 	movl	$filler,	%esi
 	movl	$LSLi__Infix_3333_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L114") / 
+# SLABEL ("L122") / 
 
-L114:
+L122:
 
-# SLABEL ("L117") / 
+# SLABEL ("L125") / 
 
-L117:
+L125:
 
 # STRING ("!!") / 
 
-	movl	$string_7,	%ebx
+	movl	$string_5,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
@@ -1702,7 +1662,483 @@ L117:
 
 	.stabn 68,0,32,0
 
-	.stabn 68,0,32,.L19-Li__Infix_3333
+	.stabn 68,0,32,.L15-Li__Infix_3333
+
+.L15:
+
+# LD (Arg (0)) / 
+
+	movl	8(%ebp),	%ecx
+# CALL ("Lopnd", 1, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	call	Lopnd
+	addl	$4,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# LD (Arg (1)) / 
+
+	movl	12(%ebp),	%esi
+# CALL ("Lopnd", 1, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%esi
+	call	Lopnd
+	addl	$4,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# SEXP ("Binop", 3) / 
+
+	movl	$944359329,	%edi
+	pushl	%edi
+	pushl	%esi
+	pushl	%ecx
+	pushl	%ebx
+	pushl	$9
+	call	Bsexp
+	addl	$20,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L126") / 
+
+L126:
+
+# LABEL ("L124") / 
+
+L124:
+
+# SLABEL ("L123") / 
+
+L123:
+
+# END / 
+
+	movl	%ebx,	%eax
+LLi__Infix_3333_epilogue:
+
+	movl	%ebp,	%esp
+	popl	%ebp
+	.cfi_restore	5
+
+	.cfi_def_cfa	4, 4
+
+	ret
+	.cfi_endproc
+
+	.set	LLi__Infix_3333_SIZE,	0
+
+	.set	LSLi__Infix_3333_SIZE,	0
+
+	.size Li__Infix_3333, .-Li__Infix_3333
+
+# LABEL ("Li__Infix_3838") / 
+
+Li__Infix_3838:
+
+# BEGIN ("Li__Infix_3838", 2, 0, [], ["l"; "r"], [{ blab="L132"; elab="L133"; names=[]; subs=[{ blab="L135"; elab="L136"; names=[]; subs=[]; }]; }]) / 
+
+	.type i__Infix_3838, @function
+
+	.stabs "i__Infix_3838:F1",36,0,0,Li__Infix_3838
+
+	.stabs "l:p1",160,0,0,8
+
+	.stabs "r:p1",160,0,0,12
+
+	.cfi_startproc
+
+	pushl	%ebp
+	.cfi_def_cfa_offset	8
+
+	.cfi_offset 5, -8
+
+	movl	%esp,	%ebp
+	.cfi_def_cfa_register	5
+
+	subl	$LLi__Infix_3838_SIZE,	%esp
+	movl	%esp,	%edi
+	movl	$filler,	%esi
+	movl	$LSLi__Infix_3838_SIZE,	%ecx
+	rep movsl	
+# SLABEL ("L132") / 
+
+L132:
+
+# SLABEL ("L135") / 
+
+L135:
+
+# STRING ("&&") / 
+
+	movl	$string_6,	%ebx
+	pushl	%ebx
+	call	Bstring
+	addl	$4,	%esp
+	movl	%eax,	%ebx
+# LINE (31) / 
+
+	.stabn 68,0,31,0
+
+	.stabn 68,0,31,.L16-Li__Infix_3838
+
+.L16:
+
+# LD (Arg (0)) / 
+
+	movl	8(%ebp),	%ecx
+# CALL ("Lopnd", 1, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	call	Lopnd
+	addl	$4,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# LD (Arg (1)) / 
+
+	movl	12(%ebp),	%esi
+# CALL ("Lopnd", 1, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%esi
+	call	Lopnd
+	addl	$4,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# SEXP ("Binop", 3) / 
+
+	movl	$944359329,	%edi
+	pushl	%edi
+	pushl	%esi
+	pushl	%ecx
+	pushl	%ebx
+	pushl	$9
+	call	Bsexp
+	addl	$20,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L136") / 
+
+L136:
+
+# LABEL ("L134") / 
+
+L134:
+
+# SLABEL ("L133") / 
+
+L133:
+
+# END / 
+
+	movl	%ebx,	%eax
+LLi__Infix_3838_epilogue:
+
+	movl	%ebp,	%esp
+	popl	%ebp
+	.cfi_restore	5
+
+	.cfi_def_cfa	4, 4
+
+	ret
+	.cfi_endproc
+
+	.set	LLi__Infix_3838_SIZE,	0
+
+	.set	LSLi__Infix_3838_SIZE,	0
+
+	.size Li__Infix_3838, .-Li__Infix_3838
+
+# LABEL ("Li__Infix_6261") / 
+
+Li__Infix_6261:
+
+# BEGIN ("Li__Infix_6261", 2, 0, [], ["l"; "r"], [{ blab="L142"; elab="L143"; names=[]; subs=[{ blab="L145"; elab="L146"; names=[]; subs=[]; }]; }]) / 
+
+	.type i__Infix_6261, @function
+
+	.stabs "i__Infix_6261:F1",36,0,0,Li__Infix_6261
+
+	.stabs "l:p1",160,0,0,8
+
+	.stabs "r:p1",160,0,0,12
+
+	.cfi_startproc
+
+	pushl	%ebp
+	.cfi_def_cfa_offset	8
+
+	.cfi_offset 5, -8
+
+	movl	%esp,	%ebp
+	.cfi_def_cfa_register	5
+
+	subl	$LLi__Infix_6261_SIZE,	%esp
+	movl	%esp,	%edi
+	movl	$filler,	%esi
+	movl	$LSLi__Infix_6261_SIZE,	%ecx
+	rep movsl	
+# SLABEL ("L142") / 
+
+L142:
+
+# SLABEL ("L145") / 
+
+L145:
+
+# STRING (">=") / 
+
+	movl	$string_7,	%ebx
+	pushl	%ebx
+	call	Bstring
+	addl	$4,	%esp
+	movl	%eax,	%ebx
+# LINE (30) / 
+
+	.stabn 68,0,30,0
+
+	.stabn 68,0,30,.L17-Li__Infix_6261
+
+.L17:
+
+# LD (Arg (0)) / 
+
+	movl	8(%ebp),	%ecx
+# CALL ("Lopnd", 1, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	call	Lopnd
+	addl	$4,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# LD (Arg (1)) / 
+
+	movl	12(%ebp),	%esi
+# CALL ("Lopnd", 1, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%esi
+	call	Lopnd
+	addl	$4,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# SEXP ("Binop", 3) / 
+
+	movl	$944359329,	%edi
+	pushl	%edi
+	pushl	%esi
+	pushl	%ecx
+	pushl	%ebx
+	pushl	$9
+	call	Bsexp
+	addl	$20,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L146") / 
+
+L146:
+
+# LABEL ("L144") / 
+
+L144:
+
+# SLABEL ("L143") / 
+
+L143:
+
+# END / 
+
+	movl	%ebx,	%eax
+LLi__Infix_6261_epilogue:
+
+	movl	%ebp,	%esp
+	popl	%ebp
+	.cfi_restore	5
+
+	.cfi_def_cfa	4, 4
+
+	ret
+	.cfi_endproc
+
+	.set	LLi__Infix_6261_SIZE,	0
+
+	.set	LSLi__Infix_6261_SIZE,	0
+
+	.size Li__Infix_6261, .-Li__Infix_6261
+
+# LABEL ("Li__Infix_62") / 
+
+Li__Infix_62:
+
+# BEGIN ("Li__Infix_62", 2, 0, [], ["l"; "r"], [{ blab="L152"; elab="L153"; names=[]; subs=[{ blab="L155"; elab="L156"; names=[]; subs=[]; }]; }]) / 
+
+	.type i__Infix_62, @function
+
+	.stabs "i__Infix_62:F1",36,0,0,Li__Infix_62
+
+	.stabs "l:p1",160,0,0,8
+
+	.stabs "r:p1",160,0,0,12
+
+	.cfi_startproc
+
+	pushl	%ebp
+	.cfi_def_cfa_offset	8
+
+	.cfi_offset 5, -8
+
+	movl	%esp,	%ebp
+	.cfi_def_cfa_register	5
+
+	subl	$LLi__Infix_62_SIZE,	%esp
+	movl	%esp,	%edi
+	movl	$filler,	%esi
+	movl	$LSLi__Infix_62_SIZE,	%ecx
+	rep movsl	
+# SLABEL ("L152") / 
+
+L152:
+
+# SLABEL ("L155") / 
+
+L155:
+
+# STRING (">") / 
+
+	movl	$string_8,	%ebx
+	pushl	%ebx
+	call	Bstring
+	addl	$4,	%esp
+	movl	%eax,	%ebx
+# LINE (29) / 
+
+	.stabn 68,0,29,0
+
+	.stabn 68,0,29,.L18-Li__Infix_62
+
+.L18:
+
+# LD (Arg (0)) / 
+
+	movl	8(%ebp),	%ecx
+# CALL ("Lopnd", 1, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	call	Lopnd
+	addl	$4,	%esp
+	popl	%ebx
+	movl	%eax,	%ecx
+# LD (Arg (1)) / 
+
+	movl	12(%ebp),	%esi
+# CALL ("Lopnd", 1, false) / 
+
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%esi
+	call	Lopnd
+	addl	$4,	%esp
+	popl	%ecx
+	popl	%ebx
+	movl	%eax,	%esi
+# SEXP ("Binop", 3) / 
+
+	movl	$944359329,	%edi
+	pushl	%edi
+	pushl	%esi
+	pushl	%ecx
+	pushl	%ebx
+	pushl	$9
+	call	Bsexp
+	addl	$20,	%esp
+	movl	%eax,	%ebx
+# SLABEL ("L156") / 
+
+L156:
+
+# LABEL ("L154") / 
+
+L154:
+
+# SLABEL ("L153") / 
+
+L153:
+
+# END / 
+
+	movl	%ebx,	%eax
+LLi__Infix_62_epilogue:
+
+	movl	%ebp,	%esp
+	popl	%ebp
+	.cfi_restore	5
+
+	.cfi_def_cfa	4, 4
+
+	ret
+	.cfi_endproc
+
+	.set	LLi__Infix_62_SIZE,	0
+
+	.set	LSLi__Infix_62_SIZE,	0
+
+	.size Li__Infix_62, .-Li__Infix_62
+
+# LABEL ("Li__Infix_6061") / 
+
+Li__Infix_6061:
+
+# BEGIN ("Li__Infix_6061", 2, 0, [], ["l"; "r"], [{ blab="L162"; elab="L163"; names=[]; subs=[{ blab="L165"; elab="L166"; names=[]; subs=[]; }]; }]) / 
+
+	.type i__Infix_6061, @function
+
+	.stabs "i__Infix_6061:F1",36,0,0,Li__Infix_6061
+
+	.stabs "l:p1",160,0,0,8
+
+	.stabs "r:p1",160,0,0,12
+
+	.cfi_startproc
+
+	pushl	%ebp
+	.cfi_def_cfa_offset	8
+
+	.cfi_offset 5, -8
+
+	movl	%esp,	%ebp
+	.cfi_def_cfa_register	5
+
+	subl	$LLi__Infix_6061_SIZE,	%esp
+	movl	%esp,	%edi
+	movl	$filler,	%esi
+	movl	$LSLi__Infix_6061_SIZE,	%ecx
+	rep movsl	
+# SLABEL ("L162") / 
+
+L162:
+
+# SLABEL ("L165") / 
+
+L165:
+
+# STRING ("<=") / 
+
+	movl	$string_9,	%ebx
+	pushl	%ebx
+	call	Bstring
+	addl	$4,	%esp
+	movl	%eax,	%ebx
+# LINE (28) / 
+
+	.stabn 68,0,28,0
+
+	.stabn 68,0,28,.L19-Li__Infix_6061
 
 .L19:
 
@@ -1741,22 +2177,22 @@ L117:
 	call	Bsexp
 	addl	$20,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L118") / 
+# SLABEL ("L166") / 
 
-L118:
+L166:
 
-# LABEL ("L116") / 
+# LABEL ("L164") / 
 
-L116:
+L164:
 
-# SLABEL ("L115") / 
+# SLABEL ("L163") / 
 
-L115:
+L163:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLi__Infix_3333_epilogue:
+LLi__Infix_6061_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -1767,21 +2203,21 @@ LLi__Infix_3333_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLi__Infix_3333_SIZE,	0
+	.set	LLi__Infix_6061_SIZE,	0
 
-	.set	LSLi__Infix_3333_SIZE,	0
+	.set	LSLi__Infix_6061_SIZE,	0
 
-	.size Li__Infix_3333, .-Li__Infix_3333
+	.size Li__Infix_6061, .-Li__Infix_6061
 
-# LABEL ("Li__Infix_3838") / 
+# LABEL ("Li__Infix_60") / 
 
-Li__Infix_3838:
+Li__Infix_60:
 
-# BEGIN ("Li__Infix_3838", 2, 0, [], ["l"; "r"], [{ blab="L124"; elab="L125"; names=[]; subs=[{ blab="L127"; elab="L128"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Li__Infix_60", 2, 0, [], ["l"; "r"], [{ blab="L172"; elab="L173"; names=[]; subs=[{ blab="L175"; elab="L176"; names=[]; subs=[]; }]; }]) / 
 
-	.type i__Infix_3838, @function
+	.type i__Infix_60, @function
 
-	.stabs "i__Infix_3838:F1",36,0,0,Li__Infix_3838
+	.stabs "i__Infix_60:F1",36,0,0,Li__Infix_60
 
 	.stabs "l:p1",160,0,0,8
 
@@ -1797,31 +2233,31 @@ Li__Infix_3838:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLi__Infix_3838_SIZE,	%esp
+	subl	$LLi__Infix_60_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLi__Infix_3838_SIZE,	%ecx
+	movl	$LSLi__Infix_60_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L124") / 
+# SLABEL ("L172") / 
 
-L124:
+L172:
 
-# SLABEL ("L127") / 
+# SLABEL ("L175") / 
 
-L127:
+L175:
 
-# STRING ("&&") / 
+# STRING ("<") / 
 
-	movl	$string_8,	%ebx
+	movl	$string_10,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# LINE (31) / 
+# LINE (27) / 
 
-	.stabn 68,0,31,0
+	.stabn 68,0,27,0
 
-	.stabn 68,0,31,.L20-Li__Infix_3838
+	.stabn 68,0,27,.L20-Li__Infix_60
 
 .L20:
 
@@ -1860,22 +2296,22 @@ L127:
 	call	Bsexp
 	addl	$20,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L128") / 
+# SLABEL ("L176") / 
 
-L128:
+L176:
 
-# LABEL ("L126") / 
+# LABEL ("L174") / 
 
-L126:
+L174:
 
-# SLABEL ("L125") / 
+# SLABEL ("L173") / 
 
-L125:
+L173:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLi__Infix_3838_epilogue:
+LLi__Infix_60_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -1886,21 +2322,21 @@ LLi__Infix_3838_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLi__Infix_3838_SIZE,	0
+	.set	LLi__Infix_60_SIZE,	0
 
-	.set	LSLi__Infix_3838_SIZE,	0
+	.set	LSLi__Infix_60_SIZE,	0
 
-	.size Li__Infix_3838, .-Li__Infix_3838
+	.size Li__Infix_60, .-Li__Infix_60
 
-# LABEL ("Li__Infix_6261") / 
+# LABEL ("Li__Infix_3361") / 
 
-Li__Infix_6261:
+Li__Infix_3361:
 
-# BEGIN ("Li__Infix_6261", 2, 0, [], ["l"; "r"], [{ blab="L134"; elab="L135"; names=[]; subs=[{ blab="L137"; elab="L138"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Li__Infix_3361", 2, 0, [], ["l"; "r"], [{ blab="L182"; elab="L183"; names=[]; subs=[{ blab="L185"; elab="L186"; names=[]; subs=[]; }]; }]) / 
 
-	.type i__Infix_6261, @function
+	.type i__Infix_3361, @function
 
-	.stabs "i__Infix_6261:F1",36,0,0,Li__Infix_6261
+	.stabs "i__Infix_3361:F1",36,0,0,Li__Infix_3361
 
 	.stabs "l:p1",160,0,0,8
 
@@ -1916,31 +2352,31 @@ Li__Infix_6261:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLi__Infix_6261_SIZE,	%esp
+	subl	$LLi__Infix_3361_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLi__Infix_6261_SIZE,	%ecx
+	movl	$LSLi__Infix_3361_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L134") / 
+# SLABEL ("L182") / 
 
-L134:
+L182:
 
-# SLABEL ("L137") / 
+# SLABEL ("L185") / 
 
-L137:
+L185:
 
-# STRING (">=") / 
+# STRING ("!=") / 
 
-	movl	$string_9,	%ebx
+	movl	$string_11,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# LINE (30) / 
+# LINE (26) / 
 
-	.stabn 68,0,30,0
+	.stabn 68,0,26,0
 
-	.stabn 68,0,30,.L21-Li__Infix_6261
+	.stabn 68,0,26,.L21-Li__Infix_3361
 
 .L21:
 
@@ -1979,22 +2415,22 @@ L137:
 	call	Bsexp
 	addl	$20,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L138") / 
+# SLABEL ("L186") / 
 
-L138:
+L186:
 
-# LABEL ("L136") / 
+# LABEL ("L184") / 
 
-L136:
+L184:
 
-# SLABEL ("L135") / 
+# SLABEL ("L183") / 
 
-L135:
+L183:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLi__Infix_6261_epilogue:
+LLi__Infix_3361_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -2005,21 +2441,21 @@ LLi__Infix_6261_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLi__Infix_6261_SIZE,	0
+	.set	LLi__Infix_3361_SIZE,	0
 
-	.set	LSLi__Infix_6261_SIZE,	0
+	.set	LSLi__Infix_3361_SIZE,	0
 
-	.size Li__Infix_6261, .-Li__Infix_6261
+	.size Li__Infix_3361, .-Li__Infix_3361
 
-# LABEL ("Li__Infix_62") / 
+# LABEL ("Li__Infix_6161") / 
 
-Li__Infix_62:
+Li__Infix_6161:
 
-# BEGIN ("Li__Infix_62", 2, 0, [], ["l"; "r"], [{ blab="L144"; elab="L145"; names=[]; subs=[{ blab="L147"; elab="L148"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Li__Infix_6161", 2, 0, [], ["l"; "r"], [{ blab="L192"; elab="L193"; names=[]; subs=[{ blab="L195"; elab="L196"; names=[]; subs=[]; }]; }]) / 
 
-	.type i__Infix_62, @function
+	.type i__Infix_6161, @function
 
-	.stabs "i__Infix_62:F1",36,0,0,Li__Infix_62
+	.stabs "i__Infix_6161:F1",36,0,0,Li__Infix_6161
 
 	.stabs "l:p1",160,0,0,8
 
@@ -2035,31 +2471,31 @@ Li__Infix_62:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLi__Infix_62_SIZE,	%esp
+	subl	$LLi__Infix_6161_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLi__Infix_62_SIZE,	%ecx
+	movl	$LSLi__Infix_6161_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L144") / 
+# SLABEL ("L192") / 
 
-L144:
+L192:
 
-# SLABEL ("L147") / 
+# SLABEL ("L195") / 
 
-L147:
+L195:
 
-# STRING (">") / 
+# STRING ("==") / 
 
-	movl	$string_10,	%ebx
+	movl	$string_12,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# LINE (29) / 
+# LINE (25) / 
 
-	.stabn 68,0,29,0
+	.stabn 68,0,25,0
 
-	.stabn 68,0,29,.L22-Li__Infix_62
+	.stabn 68,0,25,.L22-Li__Infix_6161
 
 .L22:
 
@@ -2098,22 +2534,22 @@ L147:
 	call	Bsexp
 	addl	$20,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L148") / 
+# SLABEL ("L196") / 
 
-L148:
+L196:
 
-# LABEL ("L146") / 
+# LABEL ("L194") / 
 
-L146:
+L194:
 
-# SLABEL ("L145") / 
+# SLABEL ("L193") / 
 
-L145:
+L193:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLi__Infix_62_epilogue:
+LLi__Infix_6161_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -2124,21 +2560,21 @@ LLi__Infix_62_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLi__Infix_62_SIZE,	0
+	.set	LLi__Infix_6161_SIZE,	0
 
-	.set	LSLi__Infix_62_SIZE,	0
+	.set	LSLi__Infix_6161_SIZE,	0
 
-	.size Li__Infix_62, .-Li__Infix_62
+	.size Li__Infix_6161, .-Li__Infix_6161
 
-# LABEL ("Li__Infix_6061") / 
+# LABEL ("Li__Infix_37") / 
 
-Li__Infix_6061:
+Li__Infix_37:
 
-# BEGIN ("Li__Infix_6061", 2, 0, [], ["l"; "r"], [{ blab="L154"; elab="L155"; names=[]; subs=[{ blab="L157"; elab="L158"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Li__Infix_37", 2, 0, [], ["l"; "r"], [{ blab="L202"; elab="L203"; names=[]; subs=[{ blab="L205"; elab="L206"; names=[]; subs=[]; }]; }]) / 
 
-	.type i__Infix_6061, @function
+	.type i__Infix_37, @function
 
-	.stabs "i__Infix_6061:F1",36,0,0,Li__Infix_6061
+	.stabs "i__Infix_37:F1",36,0,0,Li__Infix_37
 
 	.stabs "l:p1",160,0,0,8
 
@@ -2154,31 +2590,31 @@ Li__Infix_6061:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLi__Infix_6061_SIZE,	%esp
+	subl	$LLi__Infix_37_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLi__Infix_6061_SIZE,	%ecx
+	movl	$LSLi__Infix_37_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L154") / 
+# SLABEL ("L202") / 
 
-L154:
+L202:
 
-# SLABEL ("L157") / 
+# SLABEL ("L205") / 
 
-L157:
+L205:
 
-# STRING ("<=") / 
+# STRING ("%") / 
 
-	movl	$string_11,	%ebx
+	movl	$string_13,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# LINE (28) / 
+# LINE (24) / 
 
-	.stabn 68,0,28,0
+	.stabn 68,0,24,0
 
-	.stabn 68,0,28,.L23-Li__Infix_6061
+	.stabn 68,0,24,.L23-Li__Infix_37
 
 .L23:
 
@@ -2217,22 +2653,22 @@ L157:
 	call	Bsexp
 	addl	$20,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L158") / 
+# SLABEL ("L206") / 
 
-L158:
+L206:
 
-# LABEL ("L156") / 
+# LABEL ("L204") / 
 
-L156:
+L204:
 
-# SLABEL ("L155") / 
+# SLABEL ("L203") / 
 
-L155:
+L203:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLi__Infix_6061_epilogue:
+LLi__Infix_37_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -2243,21 +2679,21 @@ LLi__Infix_6061_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLi__Infix_6061_SIZE,	0
+	.set	LLi__Infix_37_SIZE,	0
 
-	.set	LSLi__Infix_6061_SIZE,	0
+	.set	LSLi__Infix_37_SIZE,	0
 
-	.size Li__Infix_6061, .-Li__Infix_6061
+	.size Li__Infix_37, .-Li__Infix_37
 
-# LABEL ("Li__Infix_60") / 
+# LABEL ("Li__Infix_47") / 
 
-Li__Infix_60:
+Li__Infix_47:
 
-# BEGIN ("Li__Infix_60", 2, 0, [], ["l"; "r"], [{ blab="L164"; elab="L165"; names=[]; subs=[{ blab="L167"; elab="L168"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Li__Infix_47", 2, 0, [], ["l"; "r"], [{ blab="L212"; elab="L213"; names=[]; subs=[{ blab="L215"; elab="L216"; names=[]; subs=[]; }]; }]) / 
 
-	.type i__Infix_60, @function
+	.type i__Infix_47, @function
 
-	.stabs "i__Infix_60:F1",36,0,0,Li__Infix_60
+	.stabs "i__Infix_47:F1",36,0,0,Li__Infix_47
 
 	.stabs "l:p1",160,0,0,8
 
@@ -2273,31 +2709,31 @@ Li__Infix_60:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLi__Infix_60_SIZE,	%esp
+	subl	$LLi__Infix_47_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLi__Infix_60_SIZE,	%ecx
+	movl	$LSLi__Infix_47_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L164") / 
+# SLABEL ("L212") / 
 
-L164:
+L212:
 
-# SLABEL ("L167") / 
+# SLABEL ("L215") / 
 
-L167:
+L215:
 
-# STRING ("<") / 
+# STRING ("/") / 
 
-	movl	$string_12,	%ebx
+	movl	$string_14,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# LINE (27) / 
+# LINE (23) / 
 
-	.stabn 68,0,27,0
+	.stabn 68,0,23,0
 
-	.stabn 68,0,27,.L24-Li__Infix_60
+	.stabn 68,0,23,.L24-Li__Infix_47
 
 .L24:
 
@@ -2336,22 +2772,22 @@ L167:
 	call	Bsexp
 	addl	$20,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L168") / 
+# SLABEL ("L216") / 
 
-L168:
+L216:
 
-# LABEL ("L166") / 
+# LABEL ("L214") / 
 
-L166:
+L214:
 
-# SLABEL ("L165") / 
+# SLABEL ("L213") / 
 
-L165:
+L213:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLi__Infix_60_epilogue:
+LLi__Infix_47_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -2362,21 +2798,21 @@ LLi__Infix_60_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLi__Infix_60_SIZE,	0
+	.set	LLi__Infix_47_SIZE,	0
 
-	.set	LSLi__Infix_60_SIZE,	0
+	.set	LSLi__Infix_47_SIZE,	0
 
-	.size Li__Infix_60, .-Li__Infix_60
+	.size Li__Infix_47, .-Li__Infix_47
 
-# LABEL ("Li__Infix_3361") / 
+# LABEL ("Li__Infix_42") / 
 
-Li__Infix_3361:
+Li__Infix_42:
 
-# BEGIN ("Li__Infix_3361", 2, 0, [], ["l"; "r"], [{ blab="L174"; elab="L175"; names=[]; subs=[{ blab="L177"; elab="L178"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Li__Infix_42", 2, 0, [], ["l"; "r"], [{ blab="L222"; elab="L223"; names=[]; subs=[{ blab="L225"; elab="L226"; names=[]; subs=[]; }]; }]) / 
 
-	.type i__Infix_3361, @function
+	.type i__Infix_42, @function
 
-	.stabs "i__Infix_3361:F1",36,0,0,Li__Infix_3361
+	.stabs "i__Infix_42:F1",36,0,0,Li__Infix_42
 
 	.stabs "l:p1",160,0,0,8
 
@@ -2392,31 +2828,31 @@ Li__Infix_3361:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLi__Infix_3361_SIZE,	%esp
+	subl	$LLi__Infix_42_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLi__Infix_3361_SIZE,	%ecx
+	movl	$LSLi__Infix_42_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L174") / 
+# SLABEL ("L222") / 
 
-L174:
+L222:
 
-# SLABEL ("L177") / 
+# SLABEL ("L225") / 
 
-L177:
+L225:
 
-# STRING ("!=") / 
+# STRING ("*") / 
 
-	movl	$string_13,	%ebx
+	movl	$string_15,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# LINE (26) / 
+# LINE (22) / 
 
-	.stabn 68,0,26,0
+	.stabn 68,0,22,0
 
-	.stabn 68,0,26,.L25-Li__Infix_3361
+	.stabn 68,0,22,.L25-Li__Infix_42
 
 .L25:
 
@@ -2455,22 +2891,22 @@ L177:
 	call	Bsexp
 	addl	$20,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L178") / 
+# SLABEL ("L226") / 
 
-L178:
+L226:
 
-# LABEL ("L176") / 
+# LABEL ("L224") / 
 
-L176:
+L224:
 
-# SLABEL ("L175") / 
+# SLABEL ("L223") / 
 
-L175:
+L223:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLi__Infix_3361_epilogue:
+LLi__Infix_42_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -2481,21 +2917,21 @@ LLi__Infix_3361_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLi__Infix_3361_SIZE,	0
+	.set	LLi__Infix_42_SIZE,	0
 
-	.set	LSLi__Infix_3361_SIZE,	0
+	.set	LSLi__Infix_42_SIZE,	0
 
-	.size Li__Infix_3361, .-Li__Infix_3361
+	.size Li__Infix_42, .-Li__Infix_42
 
-# LABEL ("Li__Infix_6161") / 
+# LABEL ("Li__Infix_45") / 
 
-Li__Infix_6161:
+Li__Infix_45:
 
-# BEGIN ("Li__Infix_6161", 2, 0, [], ["l"; "r"], [{ blab="L184"; elab="L185"; names=[]; subs=[{ blab="L187"; elab="L188"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Li__Infix_45", 2, 0, [], ["l"; "r"], [{ blab="L232"; elab="L233"; names=[]; subs=[{ blab="L235"; elab="L236"; names=[]; subs=[]; }]; }]) / 
 
-	.type i__Infix_6161, @function
+	.type i__Infix_45, @function
 
-	.stabs "i__Infix_6161:F1",36,0,0,Li__Infix_6161
+	.stabs "i__Infix_45:F1",36,0,0,Li__Infix_45
 
 	.stabs "l:p1",160,0,0,8
 
@@ -2511,31 +2947,31 @@ Li__Infix_6161:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLi__Infix_6161_SIZE,	%esp
+	subl	$LLi__Infix_45_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLi__Infix_6161_SIZE,	%ecx
+	movl	$LSLi__Infix_45_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L184") / 
+# SLABEL ("L232") / 
 
-L184:
+L232:
 
-# SLABEL ("L187") / 
+# SLABEL ("L235") / 
 
-L187:
+L235:
 
-# STRING ("==") / 
+# STRING ("-") / 
 
-	movl	$string_14,	%ebx
+	movl	$string_16,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# LINE (25) / 
+# LINE (21) / 
 
-	.stabn 68,0,25,0
+	.stabn 68,0,21,0
 
-	.stabn 68,0,25,.L26-Li__Infix_6161
+	.stabn 68,0,21,.L26-Li__Infix_45
 
 .L26:
 
@@ -2574,22 +3010,22 @@ L187:
 	call	Bsexp
 	addl	$20,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L188") / 
+# SLABEL ("L236") / 
 
-L188:
+L236:
 
-# LABEL ("L186") / 
+# LABEL ("L234") / 
 
-L186:
+L234:
 
-# SLABEL ("L185") / 
+# SLABEL ("L233") / 
 
-L185:
+L233:
 
 # END / 
 
 	movl	%ebx,	%eax
-LLi__Infix_6161_epilogue:
+LLi__Infix_45_epilogue:
 
 	movl	%ebp,	%esp
 	popl	%ebp
@@ -2600,21 +3036,21 @@ LLi__Infix_6161_epilogue:
 	ret
 	.cfi_endproc
 
-	.set	LLi__Infix_6161_SIZE,	0
+	.set	LLi__Infix_45_SIZE,	0
 
-	.set	LSLi__Infix_6161_SIZE,	0
+	.set	LSLi__Infix_45_SIZE,	0
 
-	.size Li__Infix_6161, .-Li__Infix_6161
+	.size Li__Infix_45, .-Li__Infix_45
 
-# LABEL ("Li__Infix_37") / 
+# LABEL ("Li__Infix_43") / 
 
-Li__Infix_37:
+Li__Infix_43:
 
-# BEGIN ("Li__Infix_37", 2, 0, [], ["l"; "r"], [{ blab="L194"; elab="L195"; names=[]; subs=[{ blab="L197"; elab="L198"; names=[]; subs=[]; }]; }]) / 
+# BEGIN ("Li__Infix_43", 2, 0, [], ["l"; "r"], [{ blab="L242"; elab="L243"; names=[]; subs=[{ blab="L245"; elab="L246"; names=[]; subs=[]; }]; }]) / 
 
-	.type i__Infix_37, @function
+	.type i__Infix_43, @function
 
-	.stabs "i__Infix_37:F1",36,0,0,Li__Infix_37
+	.stabs "i__Infix_43:F1",36,0,0,Li__Infix_43
 
 	.stabs "l:p1",160,0,0,8
 
@@ -2630,31 +3066,31 @@ Li__Infix_37:
 	movl	%esp,	%ebp
 	.cfi_def_cfa_register	5
 
-	subl	$LLi__Infix_37_SIZE,	%esp
+	subl	$LLi__Infix_43_SIZE,	%esp
 	movl	%esp,	%edi
 	movl	$filler,	%esi
-	movl	$LSLi__Infix_37_SIZE,	%ecx
+	movl	$LSLi__Infix_43_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L194") / 
+# SLABEL ("L242") / 
 
-L194:
+L242:
 
-# SLABEL ("L197") / 
+# SLABEL ("L245") / 
 
-L197:
+L245:
 
-# STRING ("%") / 
+# STRING ("+") / 
 
-	movl	$string_15,	%ebx
+	movl	$string_17,	%ebx
 	pushl	%ebx
 	call	Bstring
 	addl	$4,	%esp
 	movl	%eax,	%ebx
-# LINE (24) / 
+# LINE (20) / 
 
-	.stabn 68,0,24,0
+	.stabn 68,0,20,0
 
-	.stabn 68,0,24,.L27-Li__Infix_37
+	.stabn 68,0,20,.L27-Li__Infix_43
 
 .L27:
 
@@ -2693,493 +3129,17 @@ L197:
 	call	Bsexp
 	addl	$20,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L198") / 
+# SLABEL ("L246") / 
 
-L198:
+L246:
 
-# LABEL ("L196") / 
+# LABEL ("L244") / 
 
-L196:
+L244:
 
-# SLABEL ("L195") / 
+# SLABEL ("L243") / 
 
-L195:
-
-# END / 
-
-	movl	%ebx,	%eax
-LLi__Infix_37_epilogue:
-
-	movl	%ebp,	%esp
-	popl	%ebp
-	.cfi_restore	5
-
-	.cfi_def_cfa	4, 4
-
-	ret
-	.cfi_endproc
-
-	.set	LLi__Infix_37_SIZE,	0
-
-	.set	LSLi__Infix_37_SIZE,	0
-
-	.size Li__Infix_37, .-Li__Infix_37
-
-# LABEL ("Li__Infix_47") / 
-
-Li__Infix_47:
-
-# BEGIN ("Li__Infix_47", 2, 0, [], ["l"; "r"], [{ blab="L204"; elab="L205"; names=[]; subs=[{ blab="L207"; elab="L208"; names=[]; subs=[]; }]; }]) / 
-
-	.type i__Infix_47, @function
-
-	.stabs "i__Infix_47:F1",36,0,0,Li__Infix_47
-
-	.stabs "l:p1",160,0,0,8
-
-	.stabs "r:p1",160,0,0,12
-
-	.cfi_startproc
-
-	pushl	%ebp
-	.cfi_def_cfa_offset	8
-
-	.cfi_offset 5, -8
-
-	movl	%esp,	%ebp
-	.cfi_def_cfa_register	5
-
-	subl	$LLi__Infix_47_SIZE,	%esp
-	movl	%esp,	%edi
-	movl	$filler,	%esi
-	movl	$LSLi__Infix_47_SIZE,	%ecx
-	rep movsl	
-# SLABEL ("L204") / 
-
-L204:
-
-# SLABEL ("L207") / 
-
-L207:
-
-# STRING ("/") / 
-
-	movl	$string_16,	%ebx
-	pushl	%ebx
-	call	Bstring
-	addl	$4,	%esp
-	movl	%eax,	%ebx
-# LINE (23) / 
-
-	.stabn 68,0,23,0
-
-	.stabn 68,0,23,.L28-Li__Infix_47
-
-.L28:
-
-# LD (Arg (0)) / 
-
-	movl	8(%ebp),	%ecx
-# CALL ("Lopnd", 1, false) / 
-
-	pushl	%ebx
-	pushl	%ecx
-	call	Lopnd
-	addl	$4,	%esp
-	popl	%ebx
-	movl	%eax,	%ecx
-# LD (Arg (1)) / 
-
-	movl	12(%ebp),	%esi
-# CALL ("Lopnd", 1, false) / 
-
-	pushl	%ebx
-	pushl	%ecx
-	pushl	%esi
-	call	Lopnd
-	addl	$4,	%esp
-	popl	%ecx
-	popl	%ebx
-	movl	%eax,	%esi
-# SEXP ("Binop", 3) / 
-
-	movl	$944359329,	%edi
-	pushl	%edi
-	pushl	%esi
-	pushl	%ecx
-	pushl	%ebx
-	pushl	$9
-	call	Bsexp
-	addl	$20,	%esp
-	movl	%eax,	%ebx
-# SLABEL ("L208") / 
-
-L208:
-
-# LABEL ("L206") / 
-
-L206:
-
-# SLABEL ("L205") / 
-
-L205:
-
-# END / 
-
-	movl	%ebx,	%eax
-LLi__Infix_47_epilogue:
-
-	movl	%ebp,	%esp
-	popl	%ebp
-	.cfi_restore	5
-
-	.cfi_def_cfa	4, 4
-
-	ret
-	.cfi_endproc
-
-	.set	LLi__Infix_47_SIZE,	0
-
-	.set	LSLi__Infix_47_SIZE,	0
-
-	.size Li__Infix_47, .-Li__Infix_47
-
-# LABEL ("Li__Infix_42") / 
-
-Li__Infix_42:
-
-# BEGIN ("Li__Infix_42", 2, 0, [], ["l"; "r"], [{ blab="L214"; elab="L215"; names=[]; subs=[{ blab="L217"; elab="L218"; names=[]; subs=[]; }]; }]) / 
-
-	.type i__Infix_42, @function
-
-	.stabs "i__Infix_42:F1",36,0,0,Li__Infix_42
-
-	.stabs "l:p1",160,0,0,8
-
-	.stabs "r:p1",160,0,0,12
-
-	.cfi_startproc
-
-	pushl	%ebp
-	.cfi_def_cfa_offset	8
-
-	.cfi_offset 5, -8
-
-	movl	%esp,	%ebp
-	.cfi_def_cfa_register	5
-
-	subl	$LLi__Infix_42_SIZE,	%esp
-	movl	%esp,	%edi
-	movl	$filler,	%esi
-	movl	$LSLi__Infix_42_SIZE,	%ecx
-	rep movsl	
-# SLABEL ("L214") / 
-
-L214:
-
-# SLABEL ("L217") / 
-
-L217:
-
-# STRING ("*") / 
-
-	movl	$string_17,	%ebx
-	pushl	%ebx
-	call	Bstring
-	addl	$4,	%esp
-	movl	%eax,	%ebx
-# LINE (22) / 
-
-	.stabn 68,0,22,0
-
-	.stabn 68,0,22,.L29-Li__Infix_42
-
-.L29:
-
-# LD (Arg (0)) / 
-
-	movl	8(%ebp),	%ecx
-# CALL ("Lopnd", 1, false) / 
-
-	pushl	%ebx
-	pushl	%ecx
-	call	Lopnd
-	addl	$4,	%esp
-	popl	%ebx
-	movl	%eax,	%ecx
-# LD (Arg (1)) / 
-
-	movl	12(%ebp),	%esi
-# CALL ("Lopnd", 1, false) / 
-
-	pushl	%ebx
-	pushl	%ecx
-	pushl	%esi
-	call	Lopnd
-	addl	$4,	%esp
-	popl	%ecx
-	popl	%ebx
-	movl	%eax,	%esi
-# SEXP ("Binop", 3) / 
-
-	movl	$944359329,	%edi
-	pushl	%edi
-	pushl	%esi
-	pushl	%ecx
-	pushl	%ebx
-	pushl	$9
-	call	Bsexp
-	addl	$20,	%esp
-	movl	%eax,	%ebx
-# SLABEL ("L218") / 
-
-L218:
-
-# LABEL ("L216") / 
-
-L216:
-
-# SLABEL ("L215") / 
-
-L215:
-
-# END / 
-
-	movl	%ebx,	%eax
-LLi__Infix_42_epilogue:
-
-	movl	%ebp,	%esp
-	popl	%ebp
-	.cfi_restore	5
-
-	.cfi_def_cfa	4, 4
-
-	ret
-	.cfi_endproc
-
-	.set	LLi__Infix_42_SIZE,	0
-
-	.set	LSLi__Infix_42_SIZE,	0
-
-	.size Li__Infix_42, .-Li__Infix_42
-
-# LABEL ("Li__Infix_45") / 
-
-Li__Infix_45:
-
-# BEGIN ("Li__Infix_45", 2, 0, [], ["l"; "r"], [{ blab="L224"; elab="L225"; names=[]; subs=[{ blab="L227"; elab="L228"; names=[]; subs=[]; }]; }]) / 
-
-	.type i__Infix_45, @function
-
-	.stabs "i__Infix_45:F1",36,0,0,Li__Infix_45
-
-	.stabs "l:p1",160,0,0,8
-
-	.stabs "r:p1",160,0,0,12
-
-	.cfi_startproc
-
-	pushl	%ebp
-	.cfi_def_cfa_offset	8
-
-	.cfi_offset 5, -8
-
-	movl	%esp,	%ebp
-	.cfi_def_cfa_register	5
-
-	subl	$LLi__Infix_45_SIZE,	%esp
-	movl	%esp,	%edi
-	movl	$filler,	%esi
-	movl	$LSLi__Infix_45_SIZE,	%ecx
-	rep movsl	
-# SLABEL ("L224") / 
-
-L224:
-
-# SLABEL ("L227") / 
-
-L227:
-
-# STRING ("-") / 
-
-	movl	$string_18,	%ebx
-	pushl	%ebx
-	call	Bstring
-	addl	$4,	%esp
-	movl	%eax,	%ebx
-# LINE (21) / 
-
-	.stabn 68,0,21,0
-
-	.stabn 68,0,21,.L30-Li__Infix_45
-
-.L30:
-
-# LD (Arg (0)) / 
-
-	movl	8(%ebp),	%ecx
-# CALL ("Lopnd", 1, false) / 
-
-	pushl	%ebx
-	pushl	%ecx
-	call	Lopnd
-	addl	$4,	%esp
-	popl	%ebx
-	movl	%eax,	%ecx
-# LD (Arg (1)) / 
-
-	movl	12(%ebp),	%esi
-# CALL ("Lopnd", 1, false) / 
-
-	pushl	%ebx
-	pushl	%ecx
-	pushl	%esi
-	call	Lopnd
-	addl	$4,	%esp
-	popl	%ecx
-	popl	%ebx
-	movl	%eax,	%esi
-# SEXP ("Binop", 3) / 
-
-	movl	$944359329,	%edi
-	pushl	%edi
-	pushl	%esi
-	pushl	%ecx
-	pushl	%ebx
-	pushl	$9
-	call	Bsexp
-	addl	$20,	%esp
-	movl	%eax,	%ebx
-# SLABEL ("L228") / 
-
-L228:
-
-# LABEL ("L226") / 
-
-L226:
-
-# SLABEL ("L225") / 
-
-L225:
-
-# END / 
-
-	movl	%ebx,	%eax
-LLi__Infix_45_epilogue:
-
-	movl	%ebp,	%esp
-	popl	%ebp
-	.cfi_restore	5
-
-	.cfi_def_cfa	4, 4
-
-	ret
-	.cfi_endproc
-
-	.set	LLi__Infix_45_SIZE,	0
-
-	.set	LSLi__Infix_45_SIZE,	0
-
-	.size Li__Infix_45, .-Li__Infix_45
-
-# LABEL ("Li__Infix_43") / 
-
-Li__Infix_43:
-
-# BEGIN ("Li__Infix_43", 2, 0, [], ["l"; "r"], [{ blab="L234"; elab="L235"; names=[]; subs=[{ blab="L237"; elab="L238"; names=[]; subs=[]; }]; }]) / 
-
-	.type i__Infix_43, @function
-
-	.stabs "i__Infix_43:F1",36,0,0,Li__Infix_43
-
-	.stabs "l:p1",160,0,0,8
-
-	.stabs "r:p1",160,0,0,12
-
-	.cfi_startproc
-
-	pushl	%ebp
-	.cfi_def_cfa_offset	8
-
-	.cfi_offset 5, -8
-
-	movl	%esp,	%ebp
-	.cfi_def_cfa_register	5
-
-	subl	$LLi__Infix_43_SIZE,	%esp
-	movl	%esp,	%edi
-	movl	$filler,	%esi
-	movl	$LSLi__Infix_43_SIZE,	%ecx
-	rep movsl	
-# SLABEL ("L234") / 
-
-L234:
-
-# SLABEL ("L237") / 
-
-L237:
-
-# STRING ("+") / 
-
-	movl	$string_19,	%ebx
-	pushl	%ebx
-	call	Bstring
-	addl	$4,	%esp
-	movl	%eax,	%ebx
-# LINE (20) / 
-
-	.stabn 68,0,20,0
-
-	.stabn 68,0,20,.L31-Li__Infix_43
-
-.L31:
-
-# LD (Arg (0)) / 
-
-	movl	8(%ebp),	%ecx
-# CALL ("Lopnd", 1, false) / 
-
-	pushl	%ebx
-	pushl	%ecx
-	call	Lopnd
-	addl	$4,	%esp
-	popl	%ebx
-	movl	%eax,	%ecx
-# LD (Arg (1)) / 
-
-	movl	12(%ebp),	%esi
-# CALL ("Lopnd", 1, false) / 
-
-	pushl	%ebx
-	pushl	%ecx
-	pushl	%esi
-	call	Lopnd
-	addl	$4,	%esp
-	popl	%ecx
-	popl	%ebx
-	movl	%eax,	%esi
-# SEXP ("Binop", 3) / 
-
-	movl	$944359329,	%edi
-	pushl	%edi
-	pushl	%esi
-	pushl	%ecx
-	pushl	%ebx
-	pushl	$9
-	call	Bsexp
-	addl	$20,	%esp
-	movl	%eax,	%ebx
-# SLABEL ("L238") / 
-
-L238:
-
-# LABEL ("L236") / 
-
-L236:
-
-# SLABEL ("L235") / 
-
-L235:
+L243:
 
 # END / 
 
@@ -3205,7 +3165,7 @@ LLi__Infix_43_epilogue:
 
 Lopnd:
 
-# BEGIN ("Lopnd", 1, 0, [], ["x"], [{ blab="L244"; elab="L245"; names=[]; subs=[{ blab="L247"; elab="L248"; names=[]; subs=[{ blab="L263"; elab="L264"; names=[]; subs=[{ blab="L265"; elab="L266"; names=[]; subs=[]; }]; }; { blab="L258"; elab="L259"; names=[]; subs=[{ blab="L260"; elab="L261"; names=[]; subs=[]; }]; }; { blab="L252"; elab="L253"; names=[]; subs=[{ blab="L254"; elab="L255"; names=[]; subs=[]; }]; }]; }]; }]) / 
+# BEGIN ("Lopnd", 1, 0, [], ["x"], [{ blab="L252"; elab="L253"; names=[]; subs=[{ blab="L255"; elab="L256"; names=[]; subs=[{ blab="L271"; elab="L272"; names=[]; subs=[{ blab="L273"; elab="L274"; names=[]; subs=[]; }]; }; { blab="L266"; elab="L267"; names=[]; subs=[{ blab="L268"; elab="L269"; names=[]; subs=[]; }]; }; { blab="L260"; elab="L261"; names=[]; subs=[{ blab="L262"; elab="L263"; names=[]; subs=[]; }]; }]; }]; }]) / 
 
 	.type opnd, @function
 
@@ -3228,21 +3188,21 @@ Lopnd:
 	movl	$filler,	%esi
 	movl	$LSLopnd_SIZE,	%ecx
 	rep movsl	
-# SLABEL ("L244") / 
+# SLABEL ("L252") / 
 
-L244:
+L252:
 
-# SLABEL ("L247") / 
+# SLABEL ("L255") / 
 
-L247:
+L255:
 
 # LINE (13) / 
 
 	.stabn 68,0,13,0
 
-	.stabn 68,0,13,.L32-Lopnd
+	.stabn 68,0,13,.L28-Lopnd
 
-.L32:
+.L28:
 
 # LD (Arg (0)) / 
 
@@ -3250,9 +3210,9 @@ L247:
 # DUP / 
 
 	movl	%ebx,	%ecx
-# SLABEL ("L252") / 
+# SLABEL ("L260") / 
 
-L252:
+L260:
 
 # PATT (String) / 
 
@@ -3262,22 +3222,22 @@ L252:
 	addl	$4,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CJMP ("z", "L251") / 
+# CJMP ("z", "L259") / 
 
 	sarl	%ecx
 	cmpl	$0,	%ecx
-	jz	L251
+	jz	L259
 # DROP / 
 
-# SLABEL ("L254") / 
+# SLABEL ("L262") / 
 
-L254:
+L262:
 
 # LINE (14) / 
 
-	.stabn 68,0,14,.L33-Lopnd
+	.stabn 68,0,14,.L29-Lopnd
 
-.L33:
+.L29:
 
 # LD (Arg (0)) / 
 
@@ -3291,24 +3251,24 @@ L254:
 	call	Bsexp
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L255") / 
+# SLABEL ("L263") / 
 
-L255:
+L263:
 
-# JMP ("L246") / 
+# JMP ("L254") / 
 
-	jmp	L246
-# SLABEL ("L253") / 
+	jmp	L254
+# SLABEL ("L261") / 
 
-L253:
+L261:
 
-# SLABEL ("L258") / 
+# SLABEL ("L266") / 
 
-L258:
+L266:
 
-# LABEL ("L251") / 
+# LABEL ("L259") / 
 
-L251:
+L259:
 
 # DUP / 
 
@@ -3321,22 +3281,22 @@ L251:
 	addl	$4,	%esp
 	popl	%ebx
 	movl	%eax,	%ecx
-# CJMP ("z", "L257") / 
+# CJMP ("z", "L265") / 
 
 	sarl	%ecx
 	cmpl	$0,	%ecx
-	jz	L257
+	jz	L265
 # DROP / 
 
-# SLABEL ("L260") / 
+# SLABEL ("L268") / 
 
-L260:
+L268:
 
 # LINE (15) / 
 
-	.stabn 68,0,15,.L34-Lopnd
+	.stabn 68,0,15,.L30-Lopnd
 
-.L34:
+.L30:
 
 # LD (Arg (0)) / 
 
@@ -3350,24 +3310,24 @@ L260:
 	call	Bsexp
 	addl	$12,	%esp
 	movl	%eax,	%ebx
-# SLABEL ("L261") / 
+# SLABEL ("L269") / 
 
-L261:
+L269:
 
-# JMP ("L246") / 
+# JMP ("L254") / 
 
-	jmp	L246
-# SLABEL ("L259") / 
+	jmp	L254
+# SLABEL ("L267") / 
 
-L259:
+L267:
 
-# SLABEL ("L263") / 
+# SLABEL ("L271") / 
 
-L263:
+L271:
 
-# LABEL ("L257") / 
+# LABEL ("L265") / 
 
-L257:
+L265:
 
 # DUP / 
 
@@ -3376,41 +3336,41 @@ L257:
 
 # DROP / 
 
-# SLABEL ("L265") / 
+# SLABEL ("L273") / 
 
-L265:
+L273:
 
 # LINE (16) / 
 
-	.stabn 68,0,16,.L35-Lopnd
+	.stabn 68,0,16,.L31-Lopnd
 
-.L35:
+.L31:
 
 # LD (Arg (0)) / 
 
 	movl	8(%ebp),	%ebx
-# SLABEL ("L266") / 
+# SLABEL ("L274") / 
 
-L266:
+L274:
 
-# SLABEL ("L264") / 
+# SLABEL ("L272") / 
 
-L264:
+L272:
 
-# JMP ("L246") / 
+# JMP ("L254") / 
 
-	jmp	L246
-# SLABEL ("L248") / 
+	jmp	L254
+# SLABEL ("L256") / 
 
-L248:
+L256:
 
-# LABEL ("L246") / 
+# LABEL ("L254") / 
 
-L246:
+L254:
 
-# SLABEL ("L245") / 
+# SLABEL ("L253") / 
 
-L245:
+L253:
 
 # END / 
 
