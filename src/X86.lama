@@ -347,6 +347,35 @@ fun suffix (op) {
   esac
 }
 
+fun guardedCmp(lhv, rhv, code) {
+  case lhv of
+    R (_) -> code <+ Binop("cmp", lhv, rhv)
+  | _     ->
+      case rhv of
+        R (_) -> code <+ Binop("cmp", lhv, rhv)
+      | _     -> code <+ Mov(rhv, edx) <+ Binop("cmp", lhv, edx)
+      esac
+  esac
+}
+
+fun guardedBinop(op, lhv, rhv, code) {
+  case rhv of
+    R (_) -> code <+ Binop(op, lhv, rhv)
+  | _     -> code <+ Mov(rhv, eax) <+ Binop(op, lhv, eax) <+ Mov(eax, rhv)
+  esac
+}
+
+fun guardedMov(lhv, rhv, code) {
+  case lhv of 
+    R (_) -> code <+ Mov (lhv, rhv)
+  | _     ->
+    case rhv of 
+      R (_) -> code <+ Mov (lhv, rhv)
+    | _     -> code <+ Mov(lhv, eax) <+ Mov(eax, rhv)
+    esac
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -356,14 +385,48 @@ fun compile (env, code) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
         case i of
           READ ->
-            case env.allocate of
+            case allocate(env) of
               [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
             esac             
         | WRITE ->
-            case env.pop of
+            case pop(env) of
               [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
             esac
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+        | LD(x) ->
+          case allocate(env) of
+            [s, env] -> [addGlobal(env, x), guardedMov(loc(env, x), s, code)]
+          esac 
+        | LDA(x) ->
+          case allocate(env) of
+            [s, env] -> [addGlobal(env, x), code <+ Lea(loc(env, x), s)]
+          esac
+        | ST(x) ->
+            case pop(env) of
+              [s, env] -> [addGlobal(env, x), guardedMov(s, loc(env, x), code)]
+            esac
+        | STI ->
+            case pop2(env) of
+              [v, refX, env] -> [push(env, v), guardedMov(v, refX, code <+ Mov(v, eax) <+ Mov(eax, I(0, refX)))]
+            esac
+        | CONST(n) ->
+            case allocate(env) of
+              [s, env] -> [env, code <+ Mov (L(n), s)]
+            esac 
+        | BINOP(s) ->
+            case pop2(env) of [rhv, lhv, env] -> case s of 
+              "/"  -> [env.push(lhv), code <+ Mov(lhv, eax) <+ Cltd <+ IDiv(rhv) <+ Mov(eax, lhv)]
+            | "%"  -> [env.push(lhv), code <+ Mov(lhv, eax) <+ Cltd <+ IDiv(rhv) <+ Mov(edx, lhv)]
+            | "&&" -> [env.push(lhv), code <+ Mov(L(0), eax) <+ Mov(L(0), edx) <+ Binop ("cmp", L(0), lhv) <+ Set ("!=".suffix, "%al") <+ Binop ("cmp", L(0), rhv) <+ Set ("!=".suffix, "%dl") <+ Binop("&&", eax, edx) <+ Mov(edx, lhv)]
+            | "!!" -> [env.push(lhv), code <+ Mov(L(0), eax) <+ Mov(L(0), edx) <+ Binop ("cmp", L(0), lhv) <+ Set ("!=".suffix, "%al") <+ Binop ("cmp", L(0), rhv) <+ Set ("!=".suffix, "%dl") <+ Binop("!!", eax, edx) <+ Mov(edx, lhv)]
+            | _    -> case find(fun (x) { compare(x, s) == 0 },  {"+", "-", "*"}) of
+                None -> [env.push(lhv), guardedCmp (rhv, lhv, code <+ Mov(L(0), eax)) <+ Set (s.suffix, "%al") <+ Mov(eax, lhv)]
+              | _    -> [env.push(lhv), guardedBinop (s, rhv, lhv, code)]
+              esac
+            esac esac
+        | LABEL(lab)   -> [if isBarrier(env) then retrieveStack(env, lab) else env fi, code <+ Label(lab)]
+        | JMP(lab)     -> [setBarrier(setStack(env, lab)), code <+ Jmp(lab)]
+        | CJMP(c, lab) -> case pop(env) of [n, env] -> [setStack(env, lab), code <+ Binop ("cmp", L(0), n) <+ CJmp(c, lab)] esac
+        | DROP         -> case pop(env) of [_, env] -> [env, code] esac
         esac
       }, [env, emptyBuffer ()], code)
   }
