@@ -1,4 +1,4 @@
-PHONY: all 
+.PHONY: all 
 
 all:
 	make -C src
@@ -9,4 +9,3 @@ clean:
 	make clean -C src
 	make clean -C runtime
 	make clean -C regression
-
