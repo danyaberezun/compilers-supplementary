@@ -12,7 +12,7 @@ $(TESTS): %: %.lama
 	@echo $@
 	cat $@.input | $(LAMAC) $@.lama -i > $@.log && diff $@.log orig/$@.log
 	cat $@.input | $(LAMAC) $@.lama -s > $@.log && diff $@.log orig/$@.log
-#	$(LAMAC) $@.lama && cat $@.input | ./$@ > $@.log && diff $@.log orig/$@.log
+	$(LAMAC) $@.lama && cat $@.input | ./$@ > $@.log && diff $@.log orig/$@.log
 
 expr_tests:
 	make -C expressions
