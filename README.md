@@ -1,5 +1,6 @@
 # Assignment 4: Structural Control Flow
 
+
 **Repo structure**:
 * [`regression`](regression/) --- tests
 * [`lectures`](lectures/) contains lecture notes
@@ -36,6 +37,7 @@ Lecture notes:
   + Extend compilation to SM
   + Extend SM with new instructions
   + Extend compilation to X86_32
+
 
 **Compile and run tests (from the root folder)**:
 ```bash
