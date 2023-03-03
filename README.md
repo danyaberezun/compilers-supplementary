@@ -4,10 +4,10 @@
 * [`regression`](regression/) --- tests
 * [`lectures`](lectures/) contains lecture notes
 * [`src`](src/) contains sources of your compiler
-* [`runtime`](runtime/) contains your compiler runtime; for now, it contains just two builtin functions [`Lread`](runtime/runtime.c#L7) and [`Lwrite`](runtime/runtime.c#L3)
+* [`runtime`](runtime/) contains your compiler runtime; for now, it contains just two builtin functions [`Lread`](runtime/runtime.c#L7) and [`Lwrite`](runtime/runtime.c#L3) 
 
 Now our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
-* [old] (`-i` option) direct interpretation of `.lama` files
+* [old] (`-i` option) direct interpretation of `.lama` files 
 * [old] (`-s` option) compilation to SM and SM program interpretation
 * [new] (`-o` option) compilation to X86 (via SM)
 
@@ -18,8 +18,8 @@ Lecture notes:
 
 Important changes:
 * A lot of tests are added (see [deep-expression](regression/deep-expressions/) and [expressions](regression/expressions/))
-  + Common mistake: deep expressions fail due to an absence of addressing mode checks for generated X86_32 instructions
-* Please, note that function [compileX86](src/X86.lama#L298) now ***has an extra argument***; fix its usage!!!
+    + Common mistake: deep expressions fail due to an absence of addressing mode checks for generated X86_32 instructions
+* Please, note that function [compileX86](src/X86.lama#L298) now ***has an extra argument***; fix its usage!!! 
 
 **How to submit the task**:
 * For the first task: fork the repo (or switch to the corresponding branch and stretch your changes)
