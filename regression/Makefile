@@ -17,4 +17,4 @@ $(TESTS): %: %.lama
 #	cat $@.input | ./$@ -s > $@.log && diff $@.log orig/$@.log
 
 clean:
-	$(RM) *.s *.i *~ $(LOGS) $(TESTS)
+	$(RM) *.s *.i *.sm *~ $(LOGS) $(TESTS)
