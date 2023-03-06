@@ -11,7 +11,7 @@ A supplementary repository for the course on compilers.
 * fork the repo
 * implement the task
 * open pull-request to this repo to the branch with the corresponding task
-* NB: your pr has to contain changes to files [`Expr.lama`](src/Expr.lama) and [`State.lama`](src/State.lama) only
+* NB: your pr has to contain changes to files [`Expr.lama`](src/Expr.lama), [`Stmt.lama`](src/Stmt.lama), and [`SM.lama`](src/SM.lama) only
 * NB: be sure that all checks have passed
 
 **Standard deadline**: next lecture
@@ -19,7 +19,10 @@ A supplementary repository for the course on compilers.
 **Task**:
 
 * Implement function `evalExpr` from [`src/Expr.lama`](src/Expr.lama)
-* Implement function `eval` from [`src/State.lama`](src/State.lama)
+* Implement function `eval` from [`src/Stmt.lama`](src/Stmt.lama)
+* Implement function `eval` from [`src/SM.lama`](src/SM.lama)
+* Implement function `compileExpr` from [`src/SM.lama`](src/SM.lama)
+* Implement function `compileStmt` from [`src/SM.lama`](src/SM.lama)
 
 **Compile and run tests (from the root folder)**:
 ```bash
