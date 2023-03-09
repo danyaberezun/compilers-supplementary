@@ -57,14 +57,60 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+fun makeBool(x) {
+  case x of
+    "z" ->  0
+  | "ne" -> 1
+  | 0   ->  0
+  | _   ->  1
+  esac
+}
+
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, c@[stack, state, world], insns) {
+  case insns of
+    {} -> c
+  | i:tail ->
+      case i of
+        JMP (l)     -> eval(env, c, env.fromLabel(l))
+      | CJMP (cond, l) -> case stack of x:rem ->
+                            if makeBool(x) == makeBool(cond)
+                              then eval(env, [rem, state, world], env.fromLabel(l))
+                              else eval(env, [rem, state, world], tail)
+                            fi
+                          esac
+      | _           -> eval(env,
+                            case i of
+                              READ       ->
+                                case readWorld(world) of
+                                  [value, world] -> [value:stack, state, world]
+                                esac
+                            | WRITE      -> [stack.tl, state, writeWorld(stack.hd, world)]
+                            | BINOP (op) ->
+                                case stack of
+                                  x:y:rem -> [evalOp(op, y, x):rem, state, world]
+                                esac
+                            | LD    (x)  -> [state(x):stack, state, world]
+                            | ST    (x)  -> [stack.tl, state <- [x, stack.hd], world]
+                            | CONST (n)  -> [n:stack, state, world]
+                            | LABEL (s)  -> c
+                            | STI        -> 
+                                case stack of
+                                  (refr:value:rem) -> [value:rem, state <- [refr, value], world]
+                                esac
+                            | DROP       -> [stack.tl, state, world]
+                            | DUP        -> [stack.hd:stack, state, world]
+                            | LDA   (s)  -> [s:stack, state, world]
+                            esac,
+                            tail)
+      esac
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM (input, insns) {
+  -- printf("\n\n%s\n\n", insns.string);
   eval (initEvalEnv (insns), [{}, emptyState, createWorld (input)], insns)[2].getOutput
 }
 
@@ -108,6 +154,26 @@ public fun compileSM (stmt) {
     else emptyBuffer ()
     fi
   }
+
+  fun compileWithLabel (env, e) {
+    case env.genLabel of
+      [eLabel, env] -> 
+        case compile (eLabel, env, e) of
+          [eLabelUsed, env, code] -> [env, code <+> label (eLabel, eLabelUsed)]
+        esac
+    esac
+  }
+
+  fun compileExprs (env, exprList) {
+    foldr (
+      fun ([env, compiledList], expr) {
+        case compileWithLabel (env, expr) of
+          [env, exprCode] -> [env, exprCode:compiledList]
+        esac
+      },
+      [env, {}], exprList
+    )
+  }
   
   fun compile (lab, env, stmt) {
     case stmt of
@@ -115,6 +181,78 @@ public fun compileSM (stmt) {
     | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
     | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
+    | Read   (Ref(v))   -> [false, env, READ.singletonBuffer <+ ST (v)] -- in optimization purposes
+    | Read   (e)        ->
+        case compileWithLabel (env, e) of
+          [env, eCode] -> [false, env, READ.singletonBuffer <+> eCode <+ STI <+ DROP]
+        esac
+    | Write  (e)        ->
+        case compileWithLabel (env, e) of
+          [env, eCode] -> [false, env, eCode <+ WRITE]
+        esac
+    | Binop (op, lE, rE) ->
+        case compileExprs (env, {lE, rE}) of
+          [env, {lCode, rCode}] -> [false, env, lCode <+> rCode <+ BINOP (op)]
+        esac
+    | Assn (refE, valE) ->
+        case compileExprs (env, {refE, valE}) of
+          [env, {refCode, valCode}]-> [false, env, valCode <+> refCode <+ STI]
+        esac
+    | Seq (e1, e2) ->
+        case compileWithLabel (env, e1) of 
+          [env, e1Code] ->
+            case compile (lab, env, e2) of
+              [labUsed, env, e2Code] -> [labUsed, env, e1Code <+> e2Code]
+            esac
+        esac
+    | If (e, thenE, elseE) ->
+        case env.genLabel of
+          [elseBranch, env] ->
+            case compileExprs (env, {e, thenE}) of
+              [env, {eCode, thenCode}] ->
+                case compile (lab, env, elseE) of
+                  [_, env, elseCode] ->
+                    [
+                      true, env,
+                      eCode <+ CJMP ("z", elseBranch) <+>
+                      thenCode <+ JMP (lab) <+
+                      LABEL (elseBranch) <+> elseCode
+                    ]
+                esac 
+            esac
+        esac
+      | DoWhile (e, repeatE) ->
+          case env.genLabel of
+            [whileLabel, env] ->
+              case compileExprs (env, {e, repeatE}) of
+                [env, {eCode, repeatECode}] -> 
+                  [
+                    false, env,
+                    LABEL (whileLabel).singletonBuffer <+>
+                    repeatECode <+> eCode <+ CJMP ("ne", whileLabel)
+                  ]
+              esac
+          esac
+      | While (e, repeatE) ->
+          case env.genLabels (2) of
+            [whileLabel, repeatELabel, env] ->
+              case compileWithLabel (env, e) of
+                [env, eCode] ->
+                  case compile (repeatELabel, env, repeatE) of
+                    [_, env, repeatECode] ->
+                      [ 
+                        false, env,
+                        JMP (repeatELabel).singletonBuffer <+ LABEL (whileLabel) <+> 
+                        repeatECode <+ LABEL (repeatELabel) <+> eCode <+
+                        CJMP ("ne", whileLabel)
+                      ]
+                  esac
+              esac
+          esac
+        | Ignore (e) ->
+            case compile (lab, env, e) of
+              [labUsed, env, eCode] -> [labUsed, env, eCode <+ DROP]
+            esac
     | _                 ->  failure ("compileSM not implemented\n")
     esac
   }
