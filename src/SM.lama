@@ -18,15 +18,15 @@ public fun showSMInsn(i) {
     | WRITE        -> "WRITE"
     | BINOP (s)    -> sprintf("BINOP %s", s)
     | LD    (x)    -> sprintf("LD %s", x)
-  | LDA   (x)    -> sprintf ("LDA %s", x)
+    | LDA   (x)    -> sprintf("LDA %s", x)
     | ST    (x)    -> sprintf("ST %s", x)
     | STI          -> "STI"
-  | CONST (n)    -> sprintf ("CONST %d", n)
-  | LABEL (s)    -> sprintf ("LABEL %s", s)
-  | JMP   (l)    -> sprintf ("JMP %s", l)
-  | CJMP  (c, l) -> sprintf ("CJMP %s, %s", c, l)
-  | DUP          -> "DUP"
-  | DROP         -> "DROP"
+    | CONST (n)    -> sprintf("CONST %d", n)
+    | LABEL (s)    -> sprintf("LABEL %s", s)
+    | JMP   (l)    -> sprintf("JMP %s", l)
+    | CJMP  (c, l) -> sprintf("CJMP %s, %s", c, l)
+    | DUP          -> "DUP"
+    | DROP         -> "DROP"
   esac
 }
 
@@ -63,16 +63,16 @@ fun fromLabel(env, lab) {
 fun eval(env, cfg@[stk, stt, wld], instructions) {
   case instructions of
       { }     -> cfg
-    | he : ta -> case he  of
+    | he : ta -> case he of
         CONST (n)   -> eval(env, [n:stk, stt, wld], ta)
       | READ        -> case readWorld(wld) of
         [value, world_final] -> eval(env, [value:stk, stt, world_final], ta)
       esac
-      | ST (x)      -> eval(env, [tl(stk), stt <- [x, hd(stk)], wld], ta)
+      | ST (x)      -> eval(env, [stk, stt <- [x, hd(stk)], wld], ta)
       | LD (x)      -> eval(env, [stt(x):stk, stt, wld], ta)
       | WRITE       -> eval(env, [tl(stk), stt, writeWorld(hd(stk), wld)], ta)
       | BINOP (op)  -> case stk of
-        y : t -> eval(env, [(parseOp(op)(hd(t), y)):tl(t), stt, wld], ta)
+        y : t -> eval(env, [evalOp(op, hd(t), y):tl(t), stt, wld], ta)
       esac
       | JMP (l)     -> eval(env, cfg, env.fromLabel(l))
       | CJMP (c, l) -> case c of
@@ -80,6 +80,12 @@ fun eval(env, cfg@[stk, stt, wld], instructions) {
         | "nz" -> eval(env, [tl(stk), stt, wld], if hd(stk) != 0 then env.fromLabel(l) else ta fi)
       esac
       | LABEL(_)    -> eval(env, cfg, ta)
+      | DROP        -> eval(env, [tl(stk), stt, wld], ta)
+      | STI         -> case stk of
+        v : r : t -> eval(env, [v:t, stt <- [r, v], wld], ta)
+      esac
+      | LDA (x)     -> eval(env, [x:stk, stt, wld], ta)
+      | DUP         -> eval(env, [hd(stk):stk, stt, wld], ta)
     esac
   esac
 }
@@ -119,45 +125,91 @@ fun genLabels(env, n) {
   listArray(inner(env, n))
 }
 
--- Compiles an expression into a stack machine code.
+
 -- Takes an expression, returns a list of stack machine
 -- instructions.
-public fun compileSM (stmt) {
-  fun label (lab, labUsed) {
+public fun compileSM(stmt) {
+  fun label(lab, labUsed) {
     if labUsed
       then singletonBuffer(LABEL(lab))
       else emptyBuffer()
     fi
   }
 
-  fun compile (lab, env, stmt) {
+  fun compile(lab, env, stmt) {
     case stmt of
-      Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD(x))]
-      | Ref    (x)        -> [false, env, singletonBuffer (LDA(x))]
-      | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-      | If (ex, s1, s2) ->
-        case env.genLabel of
-          [genLab1, env] ->
-            case compile(lab, env, s1) of
-              [s1LabUsed, env, s1Code] -> case compile(lab, env, s2) of
-                [s2LabUsed, env, s2Code] -> [true, env, compileExpr(ex) <+ CJMP("z", genLab1) <+> s1Code <+ JMP(lab) <+> label(genLab1, true) <+> s2Code]
-              esac
+        Skip                           -> [false, env, emptyBuffer()]
+      | Var    (x)                     -> [false, env, singletonBuffer(LD(x))]
+      | Ref    (x)                     -> [false, env, singletonBuffer(LDA(x))]
+      | Const  (n)                     -> [false, env, singletonBuffer(CONST(n))]
+      | Read  (x)                      -> [false, env, singletonBuffer(READ) <+ ST(x) <+ DROP]
+      | Write (e)                      -> case env.genLabel of
+        [genLab, env] -> case compile(genLab, env, e) of
+          [sLabUsed, env, sCode] -> [false, env, sCode <+> label(genLab, sLabUsed) <+ WRITE]
+        esac
+      esac
+      | Assn  (leftExpr, rightExpr)    -> case env.genLabels(2) of
+        [genLabLeft, genLabRight, env] -> case compile(genLabLeft, env, leftExpr) of
+          [sLeftExprLabUsed, env, sLeftCode] ->
+            case compile(genLabRight, env, rightExpr) of
+              [sRightExprLabUsed, env, sRightCode] -> [false, env, sLeftCode <+> label(genLabLeft, sLeftExprLabUsed) <+> sRightCode <+> label(genLabRight, sRightExprLabUsed) <+ STI]
             esac
         esac
-      | While(ex, st)   ->
+      esac
+      | Seq   (exLeft, exRight)        ->
         case env.genLabel of
-          [genLab1, env] ->
-            case compile(genLab1, env, st) of
-              [s1LabUsed, env, s1Code] -> [s1LabUsed, env, label(genLab1, true) <+> compileExpr(ex) <+ CJMP("z", lab) <+> s1Code <+ JMP(genLab1) <+> label(lab, true)]
+          [genLabInner, env] ->
+            case compile(genLabInner, env, exLeft) of
+              [s2LabUsed, env, sLeftCode] ->
+                case compile(lab, env, exRight) of
+                  [labUsed, env, sRightCode] -> [labUsed, env, sLeftCode <+> label(genLabInner, s2LabUsed) <+> sRightCode]
+                esac
             esac
         esac
-      | DoWhile(st, ex) ->
+      | If (cond, exTrue, exFalse)     ->
+        case env.genLabels(2) of
+          [genLabCond, genLabExpr, env] ->
+            case compile(genLabCond, env, cond) of
+              [sCondLabUsed, env, sCondCode] ->
+                case compile(lab, env, exTrue) of
+                  [s1LabUsed, env, exTrueCode] -> case compile(lab, env, exFalse) of
+                    [s2LabUsed, env, exFalseCode] -> [true, env, sCondCode <+> label(genLabCond, sCondLabUsed) <+ CJMP("z", genLabExpr) <+> exTrueCode <+ JMP(lab) <+> label(genLabExpr, true) <+> exFalseCode]
+                  esac
+                esac
+            esac
+        esac
+      | While(cond, ex)                ->
+        case env.genLabels(2) of
+          [genLabCond, genLabExpr, env] ->
+            case compile(genLabCond, env, cond) of
+              [sCondLabUsed, env, sCondCode] ->
+                case compile(genLabExpr, env, ex) of
+                  [sExprLabUsed, env, s1Code] -> [sExprLabUsed, env, label(genLabExpr, true) <+> sCondCode <+> label(genLabCond, sCondLabUsed) <+ CJMP("z", lab) <+> s1Code <+ JMP(genLabExpr) <+> label(lab, true)]
+                esac
+            esac
+        esac
+      | DoWhile(ex, cond)              ->
+        case env.genLabels(2) of
+          [genLabCond, genLabExpr, env] ->
+            case compile(lab, env, ex) of
+              [sExprLabUsed, env, sExprCode] ->
+                case compile(genLabCond, env, cond) of
+                  [sCondLabUsed, env, sCondCode] -> [sExprLabUsed, env, label(genLabExpr, true) <+> sExprCode <+> sCondCode <+> label(genLabCond, sCondLabUsed) <+ CJMP("nz", genLabExpr)]
+                esac
+            esac
+        esac
+      | Ignore (ex)                    ->
         case env.genLabel of
           [genLab1, env] ->
-            case compile(lab, env, st) of
-              [s1LabUsed, env, s1Code] -> [s1LabUsed, env, label(genLab1, true) <+> s1Code <+> compileExpr(ex) <+ CJMP("nz", genLab1)]
+            case compile(lab, env, ex) of
+              [s1LabUsed, env, s1Code] -> [false, env, s1Code <+> label(genLab1, s1LabUsed) <+ DROP]
             esac
+        esac
+      | Binop(op, leftExpr, rightExpr) ->
+        case env.genLabel
+        of [genLabAfter, env] -> case compile(genLabAfter, env, Seq(leftExpr, rightExpr)) of
+          [sLabAfterUsed, env, opCode] -> [false, env, opCode <+> label(genLabAfter, sLabAfterUsed) <+ BINOP(op)]
+        esac
         esac
     esac
   }
