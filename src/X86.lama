@@ -279,24 +279,10 @@ fun suffix (op) {
   esac
 }
 
-
-fun compileBinop(op, exp1, exp2, s) {
-  case op of
-      "/"  -> move(exp2, eax) <+ Cltd <+ IDiv(exp1) <+> move(eax, s)
-    | "%"  -> move(exp2, eax) <+ Cltd <+ IDiv(exp1) <+> move(edx, s)
-    | "+"  -> move(exp2, eax) <+ Binop(op, exp1, eax) <+> move(eax, s)
-    | "-"  -> move(exp2, eax) <+ Binop(op, exp1, eax) <+> move(eax, s)
-    | "*"  -> move(exp2, eax) <+ Binop(op, exp1, eax) <+> move(eax, s)
-    | "!!" -> compileBinop("!=", L(0), exp1, edx) <+> compileBinop("!=", L(0), exp2, eax) <+ Binop(op, edx, eax) <+> move(eax, s)
-    | "&&" -> compileBinop("!=", L(0), exp1, edx) <+> compileBinop("!=", L(0), exp2, eax) <+ Binop(op, edx, eax) <+> move(eax, s)
-    |  _   -> move(exp2, eax) <+ Binop("cmp", exp1, eax) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, s)
-    esac
+fun genCompare(x, y, op, s) {
+  listBuffer ({Mov(x, eax), Mov(L(0), edx), Binop("-", y, eax), Set(suffix(op), "%dl"), Mov(edx, s)})
 }
 
-
-
--- символический стек - физический стек + регистры
--- 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -304,46 +290,66 @@ fun compile (env, code) {
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of
-         READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-          esac
-      | CONST(value) -> 
-          case env.allocate of 
-            [s, env] -> [env, code <+> move(L(value), s)]
-          esac
-      | LD(name) -> 
-          case env.addGlobal(name).allocate of
-            [s, env] -> [env, code <+> move(env.loc(name), s)]
-          esac
-      | ST(name) -> 
-          case env.addGlobal(name).pop of 
-            [s, env] -> [env, code <+> move(s, env.loc(name))]
-          esac
-        | BINOP(op) -> 
-          case env.pop2 of
-            [exp1, exp2, env] ->
-              case env.allocate of
-                [s, env] -> [env, code <+> compileBinop(op, exp1, exp2, s)]
-                esac
+          READ ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+            esac             
+        | WRITE ->
+            case env.pop of
+              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
             esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
+        | CONST (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Mov(L(x), s)]
+            esac
+        | LD (x) -> fun([s, env]) {
+              [env, code <+> move(env.loc(x), s)]
+          } (env.allocate)
+        | ST (x) -> fun([s, env]) {
+              [env, code <+> move(s, env.loc(x))]
+          } (env.addGlobal(x).pop)
+        | BINOP (op) -> fun ([y,x,env]) { fun ([s, env]) {
+            case op of
+              "+" -> [env, code <+ Mov(x, eax) <+ Binop(op, y, eax) <+ Mov(eax, s)] |
+              "-" -> [env, code <+ Mov(x, eax) <+ Binop(op, y, eax) <+ Mov(eax, s)] |
+              "*" -> [env, code <+ Mov(x, eax) <+ Binop(op, y, eax) <+ Mov(eax, s)] |
+              "/" -> [env, code <+ Mov(x, eax) <+ Cltd <+ IDiv(y) <+ Mov(eax, s)] |
+              "%" -> [env, code <+ Mov(x, eax) <+ Cltd <+ IDiv(y) <+ Mov(edx, s)] |
+              "<" -> [env, code <+> genCompare(x, y, op, s)] |
+              "<=" -> [env, code <+> genCompare(x, y, op, s)] |
+              "==" -> [env, code <+> genCompare(x, y, op, s)] |
+              "!=" -> [env, code <+> genCompare(x, y, op, s)] |
+              ">=" -> [env, code <+> genCompare(x, y, op, s)] |
+              ">" -> [env, code <+> genCompare(x, y, op, s)] |
+              "!!" -> [env, code <+ Mov(L(0), edx) <+
+                Mov(x, eax) <+ Binop("-", L(0), eax) <+ Mov(L(0), eax) <+ Set("nz", "%al") <+
+                Mov(y, edx) <+ Binop("-", L(0), edx) <+ Mov(L(0), edx) <+ Set("nz", "%dl") <+
+                Binop("!!", eax, edx) <+ Mov(edx, s)] |
+              "&&" -> [env, code <+ Mov(L(0), edx) <+
+                Mov(x, eax) <+ Binop("-", L(0), eax) <+ Mov(L(0), eax) <+ Set("nz", "%al") <+
+                Mov(y, edx) <+ Binop("-", L(0), edx) <+ Mov(L(0), edx) <+ Set("nz", "%dl") <+
+                Binop("&&", eax, edx) <+ Mov(edx, s)]
+            esac
+        } (env.allocate) } (env.pop2)
+        | LABEL (l) -> [env, code <+ Label(l)]
+        | JMP (l) -> [env, code <+ Jmp(l)]
+        | CJMP (c, l) -> 
+            case env.pop of
+              [s, env] -> [env, code <+ Mov(s, eax) <+ Binop("-", L(0), eax) <+ CJmp(c, l)]
+            esac
+        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      esac
     }, [env, emptyBuffer ()], code)}
 
-	-- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
+-- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
 public fun compileX86 (args, code) {
   case compile (initEnv (), code) of
     [env, code] ->
        var asmFile = args.getBaseName ++ ".s",
            runtime = case getEnv ("LAMA_RUNTIME") of
-                       #val  -> "../runtime/"
-                     | path  -> path
+                       #val -> "../runtime/"
+                     | path     -> path
                      esac ++ "/runtime.o";
        
        fwrite (asmFile,
@@ -356,8 +362,8 @@ public fun compileX86 (args, code) {
                         prologue (getStackSize (env)) <+>
                         code <+>
                         epilogue ()
-                      )
-                    ).stringcat);
+                    )
+                   ).stringcat);
                     
        system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
