@@ -41,10 +41,7 @@ var wordSize = 4;
 --   Cltd                       -- see instruction set reference           
 --   Set   (string, string)     -- sets a value from flags; the first operand is the   
 --                                 suffix, which determines the value being set, the
---                                 the second --- (sub)register name
---   Jmp   (string)             -- unconditional jump to a label
---   CJmp  (string, string)     -- conditional jump to a label
---   Label (string)             -- a label
+--                                 the second --- (sub)register name 
 --   Push  (opnd)               -- pushes the operand on the hardware stack
 --   Pop   (opnd)               -- pops from the hardware stack to the operand
 --   Call  (string)             -- calls a function by its name 
@@ -85,10 +82,10 @@ fun insnString (insn) {
   | Pop   (s)          -> sprintf ("\tpopl\t%s\n", opndString (s))
   | Ret                -> "\tret\n"
   | Call  (p)          -> sprintf ("\tcall\t%s\n", p)
-  | Label (l)          -> sprintf ("%s:\n", l)
-  | Jmp   (l)          -> sprintf ("\tjmp\t%s\n", l)
-  | CJmp  (c, l)       -> sprintf ("\tj%s\t%s\n", c, l)
   | Meta  (m)          -> m
+  | Label (l)          -> sprintf ("%s:\n", l)
+  | CJmp  (c, l)       -> sprintf ("\tj%s\t%s\n", c, l)
+  | Jmp (l)            -> sprintf ("\tjmp\t%s\n", l)
   esac
 }
 
@@ -206,7 +203,7 @@ fun getStackSize (env) {
 
 -- Creates an initial environment
 fun initEnv () {
-  makeEnv (0, emptySet (compare), emptySet (compare))
+  makeEnv (0, 0, emptySet (compare))
 }
 
 -- Codegeneration helper functions
@@ -279,6 +276,49 @@ fun suffix (op) {
   esac
 }
 
+
+fun opType (op) {
+ case op of
+    "<"   -> CmpType
+  | "<="  -> CmpType
+  | "=="  -> CmpType
+  | "!="  -> CmpType
+  | ">="  -> CmpType
+  | ">"   -> CmpType
+  | "%"   -> DivType
+  | "/"   -> DivType
+  | "!!"  -> BoolType
+  | "&&"  -> BoolType
+  | _     -> SopType
+  esac
+}
+
+fun compileCmpType(code, x, y, res, s){
+  code <+ Mov(x, eax) <+ Binop("cmp", eax, y) <+>  move(L(0), eax) <+ Set(suffix(s), "%al") <+ Mov(eax, res)
+}
+
+fun compileDivType(code, x, y, res, s){
+  case s of
+          "%" -> code <+ Mov (y, eax) <+ Cltd <+ IDiv(x) <+ Mov (edx, res)
+        | "/" -> code <+ Mov (y, eax) <+ Cltd <+ IDiv(x) <+ Mov (eax, res)
+  esac
+}
+
+fun compileSopType(code, x, y, res, s){
+  code <+> move(y, eax) <+ Binop(s, x, eax) <+> move(eax, res)
+}
+
+fun compileBoolType(code, x, y, res, s){
+  fun boolCmdOpCode(cmds){
+    case cmds of
+      "!!" -> "or"
+    | "&&" -> "and"
+    | _    -> failure("x86 compilerBoolError")
+    esac
+  }
+  code <+> move(x, eax) <+ Binop(s, y, eax) <+> move(L(0), eax) <+ Set(suffix("!="), "%al") <+> move(eax, res)
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -294,9 +334,43 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
+      | CONST (n) ->
+                  case env.allocate of 
+                  [s, env] -> [env, code <+> move(L(n), s)] 
+                  esac 
+      | LD (x)  -> 
+                case env.allocate of
+                [s, env] -> [env, code <+> move(env.loc(x), s)]
+                esac 
+      | ST (x)  ->
+                case env.pop of 
+                [s, env] -> [env.addGlobal(x), code <+> move(s, env.loc(x))]
+                esac
+      | BINOP (s) ->
+                  case env.pop2 of
+                  [x,y, env] -> 
+                    case env.allocate of
+                      [res, env] -> case opType(s) of
+                                      CmpType -> [env,compileCmpType(code, x,y,res,s)]
+    
+                                    | DivType -> [env, compileDivType(code, x, y, res, s)]
+                                    | SopType -> [env, compileSopType(code, x, y, res, s)]
+                                    | BoolType -> [env, compileBoolType(code, x, y, res, s)]
+                                    esac
+                    esac
+                  esac
+      | LABEL (l) -> [env, code <+ Label(l)]
+      | JMP (l) -> [env, code <+ Jmp(l)]
+      | CJMP (0,l) -> case env.pop of 
+                      [x, env] -> [env, code <+> move(L(0), eax) <+ Binop("cmp",x, eax) <+ CJmp("z", l)]
+                      esac
+      | CJMP (1,l) -> case env.pop of 
+                      [x, env] -> [env, code <+> move(L(0), eax) <+ Binop("cmp", x, eax) <+ CJmp("nz", l)]
+                      esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-    }, [env, emptyBuffer ()], code)}
+      esac
+    }, [env, emptyBuffer ()], code)
+}
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
@@ -305,8 +379,8 @@ public fun compileX86 (args, code) {
     [env, code] ->
        var asmFile = args.getBaseName ++ ".s",
            runtime = case getEnv ("LAMA_RUNTIME") of
-                       #val -> "../runtime/"
-                     | path     -> path
+                       #val  -> "../runtime/"
+                     | path  -> path
                      esac ++ "/runtime.o";
        
        fwrite (asmFile,
@@ -319,8 +393,8 @@ public fun compileX86 (args, code) {
                         prologue (getStackSize (env)) <+>
                         code <+>
                         epilogue ()
-                    )
-                   ).stringcat);
+                      )
+                    ).stringcat);
                     
        system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
