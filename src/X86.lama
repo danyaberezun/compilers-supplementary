@@ -353,7 +353,7 @@ fun dataDef (name) {
 fun prologue (fLabel) {
   singletonBuffer (Push  (ebp)) <+
   Mov   (esp, ebp) <+
-  Binop ("-", M (sprintf ("$%s_SIZE", fLabel)), esp)  
+  Binop ("-", M (sprintf ("$%s_SIZE", fLabel)), esp)
 }
 
 -- Generates function epilogue
@@ -381,6 +381,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -409,6 +410,24 @@ fun suffix (op) {
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
+fun detectOp (op) {
+  case op of
+    "<"  -> Cmp
+  | "<=" -> Cmp
+  | "==" -> Cmp
+  | "!=" -> Cmp
+  | ">=" -> Cmp
+  | ">"  -> Cmp
+  | "%"  -> Div
+  | "/"  -> Div
+  | "!!" -> Bool
+  | "&&" -> Bool
+  | _ -> Op
+  esac
+}
+
+-- Compiles stack machine code into a list of x86 instructions. Takes an environment
+-- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
   fun compile (env, code) {
     foldl (
@@ -418,13 +437,36 @@ fun compile (env, code) {
           READ ->
             case env.allocate of
 	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
-            esac             
+            esac
         | WRITE ->
             case env.pop of
 	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
+
+      | LD (x) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move(env.loc(x), s)]
+          esac
+      | ST (x) ->
+          case env.addGlobal(x).pop of
+            [s, env] -> [env, code <+> move(s, env.loc(x))]
+          esac
+      | CONST (n) ->
+          case env.allocate of
+            [s, env] -> [env, code <+ Mov (L(n), s)]
+          esac
+      | BINOP (op) ->
+        case env.pop2 of
+          [r, l, env] ->
+            case detectOp(op) of
+                Div  -> [env.push(r), code <+ Mov (l, eax) <+ Cltd <+ IDiv (r) <+ Mov (case op of "/" -> eax | "%" -> edx esac, r)]
+              | Cmp  -> [env.push(r), code <+ Mov (l, eax) <+ Binop("cmp", r, eax) <+ Mov (L(0), eax) <+ Set(suffix(op), "%al") <+ Mov(eax, r)]
+              | Op   -> [env.push(r), code <+ Mov (l, eax) <+ Binop(op, r, eax) <+ Mov(eax, r)]
+              | Bool -> [env.push(r), code <+ Binop("cmp", L(0), l) <+ Mov(L(0), eax) <+ Set(suffix("!="), "%al")
+                                           <+ Binop("cmp", L(0), r) <+ Mov(L(0), edx) <+ Set(suffix("!="), "%dl")
+                                           <+ Binop(op, edx, eax)   <+ Mov(eax, r)]
             esac
         (* Assignment *)
-        
+
          -- Some guidelines for generating function calls:
          --
          -- 1. generate instructions to save live registers on the X86 stack (use
@@ -440,15 +482,28 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-               
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        (* End *)
+      | LABEL (l)   -> [if env.isBarrier then env.retrieveStack(l) else env fi, code <+ Label (l)]
+      | JMP (l)     -> [setBarrier(env.setStack(l)), code <+ Jmp (l)]
+      | CJMP (c, l) ->
+        case env.pop of
+          [s, env] -> [env.setStack(l), code <+ Binop("cmp", L(0), s) <+ CJmp("e", l)]
         esac
-      }, [env, emptyBuffer ()], code)
-  }
-
+      | DROP       -> case pop(env) of [_, env] -> [env, code] esac
+      | LDA (x)    ->
+        case allocate(env) of
+          [s, env] -> [addGlobal(env, x), code <+ Lea(loc(env, x), s)]
+        esac
+      | STI        ->
+        case pop2(env) of
+          [v, r, env] -> [push(env, v), code <+> move(v, I(0, r))]
+        esac
+      esac
+    }, [env, emptyBuffer ()], code)
+}
+  -- failure("%s\n", code.string);
   compile (env, code) 
 }
+
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
@@ -469,6 +524,6 @@ public fun compileX86 (args, code) {
                       codeSection (code)
                    ).stringcat);
                     
-       system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
+       system ({"gcc -g -m32 -no-pie -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
 }
