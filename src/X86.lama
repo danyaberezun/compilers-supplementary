@@ -153,7 +153,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
 
   -- Peeks the top of the symbolic stack
   fun peek () {
-    stack.fst
+    stack.hd
   }
   
   -- Adds a global variable; returns an updated environment
@@ -347,28 +347,91 @@ fun suffix (op) {
   esac
 }
 
+fun castToBool(x) {
+  Mov(L(0), eax).singletonBuffer <+ Binop("cmp", x, eax) <+ Mov(L(0), eax) <+ Set ("ne", "%al") <+ Mov(eax, x)
+}
+
+fun compileBinop(op, l, r, res) {
+  fun cmpop() {Mov (l, eax).singletonBuffer <+ Binop ("cmp", r, eax) <+ Mov(L(0), eax) <+ Set (suffix(op), "%al") <+ Mov(eax, res)}
+  fun simple_apply() {Mov (l, eax).singletonBuffer <+ Binop(op, r, eax) <+ Mov (eax, res)}
+  case op of
+    "<"   -> cmpop ()
+  | "<="  -> cmpop ()
+  | "=="  -> cmpop ()
+  | "!="  -> cmpop ()
+  | ">="  -> cmpop ()
+  | ">"   -> cmpop ()
+  | "%"   -> Mov (l, eax).singletonBuffer <+ Cltd <+ IDiv (r) <+ Mov (edx, res)
+  | "/"   -> Mov (l, eax).singletonBuffer <+ Cltd <+ IDiv (r) <+ Mov (eax, res)
+  | "!!"  -> castToBool(l) <+> castToBool(r) <+> simple_apply ()
+  | "&&"  -> castToBool(l) <+> castToBool(r) <+> simple_apply ()
+  | _     -> simple_apply ()
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  fun compile (env, code) {
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-            esac
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-      }, [env, emptyBuffer ()], code)
-  }
-
-  compile (env, code) 
+  foldl (
+    fun ([env, scode], i) {
+      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      case i of
+        READ ->
+          case env.allocate of
+            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+          esac
+      | WRITE ->
+          case env.pop of
+            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+          esac
+      | BINOP (op) ->
+          case env.pop2 of
+            [r, l, env] ->
+              case env.allocate of
+                [res, env] -> [env, code <+> compileBinop(op, l, r, res)]
+              esac
+          esac
+      | LD (v) ->
+          case env.allocate of
+            [a, env] -> [env, code <+> move (env.loc(v), a)]
+          esac
+      | ST (v) ->
+          case env.addGlobal(v).pop of
+            [a, env] -> [env, code <+> move (a, env.loc(v))]
+          esac
+      | CONST (n) ->
+          case env.allocate of
+            [a, env] -> [env, code <+ Mov (L(n), a)]
+          esac
+      | LABEL   (m) ->
+        [
+          if env.isBarrier
+            then env.retrieveStack(m)
+            else env
+          fi,
+          code <+ Label (m)
+        ]
+      | JMP     (m) -> [env.setStack (m).setBarrier, code <+ Jmp (m)]
+      | CJMP (c, m) ->
+          case env.pop of
+            [s, env] ->
+              [env.setStack(m), code <+ Binop ("cmp", L(0), s) <+ CJmp (c, m)]
+          esac
+      | LDA  (name) ->
+          case env.addGlobal(name).allocate of 
+            [s, env] -> [env, code <+ Lea (env.loc(name), s)]
+          esac
+      | STI ->
+          case env.pop2 of
+            [to, value, env] ->
+              case env.allocate of
+                [s, env] -> [env, code <+> move(value, I(0, to)) <+> move(value, s)]
+              esac
+          esac
+      | DROP -> [env.pop.snd, code]
+      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      esac
+    }, [env, emptyBuffer ()], code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
