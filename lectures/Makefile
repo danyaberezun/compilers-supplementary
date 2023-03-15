@@ -12,4 +12,8 @@ $(SOURCE): %: %.tex
 	$(TEX) $(FLAGS) $@.tex && $(TEX) $(FLAGS) $@.tex
 
 clean:
+<<<<<<< HEAD
 	$(RM) *.out *.aux *.log *.fdb_* *.fls *~
+=======
+	$(RM) *.out *.aux *.log
+>>>>>>> A04-control-flow
