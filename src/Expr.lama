@@ -50,7 +50,8 @@ public fun evalOp (op, l, r) {
 --        Const   (int)                |
 --        Binop   (string, expr, expr) |
 --        Call    (string, expr list)  |
---        Ignore  (expr)
+--        Ignore  (expr)               |
+--        Scope   (defs, expr)
 
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
@@ -72,12 +73,12 @@ fun checkFun (state, name) {
 
 -- Helper function: adds a bunch of regular variables current scope
 fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Var (0))}, state, names)
+  foldl (fun (s, name) {addName (s, name, Var (0))}, state, names)
 }
 
 -- Helper function: adds a function in current scope
 fun addFunction (state, name, args, body) {
-  state.addName (name, Fun (args, body))
+  addName (state, name, Fun (args, body))
 }
                                         
 -- Evaluates a list of expressions, properly threading a configurations.
@@ -94,11 +95,133 @@ fun evalList (c, exprs) {
   esac
 }
 
-(* Assignment *)
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun assignNames (state, names, values) {
+  foldl (
+    fun (state, [name, value]) {
+      state <- [name, Var (value)]
+    },
+    state, zip (names, values)
+  )
 }
-(* End *)
+
+fun printExpr (expr) {
+  case expr of
+    Scope (_, _) -> printf ("Scope\n")
+  | Call (_, _) -> printf ("Call\n")
+  | Skip -> printf ("Skip\n")
+  | Assn (_, _) -> printf ("Assn\n")
+  | Seq (_, _) -> printf ("Seq\n")
+  | Read (_) -> printf ("Read\n")
+  | Write (_) -> printf ("Write\n")
+  | If (_, _, _) -> printf ("If\n")
+  | While (_, _) -> printf ("While\n")
+  | DoWhile (_, _) -> printf ("DoWhile\n")
+  | Var (_) -> printf ("Var\n")
+  | Ref (_) -> printf ("Ref\n")
+  | Const (_) -> printf ("Const\n")
+  | Binop (_, _, _) -> printf ("Binop\n")
+  | Ignor (_) -> printf ("Ignor\n")
+  esac 
+}
+
+fun addToScope(scope, expr) {
+  case scope of
+    Scope (ds, e) -> Scope (ds, Seq(e, expr))
+  | _ -> Seq (scope, expr)
+  esac 
+}
+
+fun eval (c@[state, world], expr) {
+  case expr of
+    Ignore (e) -> eval(c, e)
+  | Scope (ds, e) ->
+      case
+        eval (
+          [foldl (
+            fun (state, def) {
+              case def of
+                Var (names) -> state.addNames (names)
+              | Fun (name, args, body) -> state.addFunction (name, args, body)
+              esac
+            }
+            , state.enterScope, ds
+          ), world], e) of
+          [[state, world], value] -> [[state.leaveScope, world], value]
+      esac
+
+  | Call (name, args) ->
+      case state.lookup (name) of
+        Fun (argNames, body) ->
+          case evalList(c, args) of
+            [[state, world], values] ->
+              case
+                eval (
+                  [state
+                  .enterFunction
+                  .addNames (argNames)
+                  .assignNames (argNames, values), world],
+                  body) of
+                [[innerState, world], value] ->
+                  [[state.leaveFunction (innerState.getGlobal), world], value]
+              esac
+          esac
+      esac
+  | Skip -> [c, None]
+  | Assn (refE, valE) ->
+      case eval(c, refE) of
+        [c, refVar] ->
+          case eval(c, valE) of
+            [[state, world], value] -> [[state <- [refVar, Var (value)], world], value]
+          esac
+      esac
+  | Seq (e1, e2) -> eval(eval(c, e1).fst, e2)
+  | Read (refE) ->
+      case eval(c, refE) of
+        [[state, world], refVar] ->
+          case readWorld(world) of
+            [value, world] -> [[state <- [refVar, Var (value)], world], None]
+          esac
+      esac
+  | Write (e) ->
+      case eval(c, e) of
+        [[state, world], value] -> [[state, writeWorld(value, world)], None]
+      esac
+  | If (e, thenE, elseE) ->
+      case eval(c, e) of
+        [c, value] ->
+          if value 
+            then eval(c, thenE)
+            else eval(c, elseE)
+          fi
+      esac
+  | While (e, repeatE) ->
+      case eval(c, e) of
+        [c, value] ->
+          if value 
+            then eval(c, Seq(repeatE, While (e, repeatE)))
+            else [c, None]
+          fi
+      esac
+  | DoWhile (e, repeatE) ->
+      case eval(c, repeatE.addToScope (e)) of
+        [c, value] ->
+          if value 
+            then eval(c, DoWhile (e, repeatE))
+            else [c, None]
+          fi
+      esac
+  | Var (v) -> [c, case state.lookup (v) of Var (x) -> x esac]
+  | Ref (v) -> [c, v]
+  | Const (d) -> [c, d]
+  | Binop (op, l, r) ->
+      case eval(c, l) of
+        [c, lValue] ->
+          case eval(c, r) of
+            [c, rValue] -> [c, evalOp(op, lValue, rValue)]
+          esac
+      esac
+  esac
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
