@@ -17,7 +17,7 @@ Now our compiler has to work in three modes:
 * fork the repo (or switch to the corresponding branch and stretch your changes)
 * implement the task
 * open pull-request to this repo to the branch with the corresponding task
-* NB: your pr has to contain changes to files [`Expr.lama`](src/Expr.lama), [`Stmt.lama`](src/Stmt.lama), and [`SM.lama`](src/SM.lama) only
+* NB: your pr has to contain changes to files [`Expr.lama`](src/Expr.lama) and [`State.lama`](src/State.lama) only
 * NB: be sure that all checks have passed
 
 **Standard deadline**: next lecture
