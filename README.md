@@ -26,8 +26,13 @@ Important changes:
 * For the next tasks: merge your changes with updated files
 * implement the task
 * open pull-request to this repo to the branch with the corresponding task
+<<<<<<< HEAD
 * NB: your pr has to contain changes to files `src/*.lama` only
 * NB: be sure that all checks have passed and opened pr is free of extra changes
+=======
+* NB: your pr has to contain changes to files [`Expr.lama`](src/Expr.lama) and [`State.lama`](src/State.lama) only
+* NB: be sure that all checks have passed
+>>>>>>> 6c820ae (Add compile fun)
 
 **Standard deadline**: next lecture
 
