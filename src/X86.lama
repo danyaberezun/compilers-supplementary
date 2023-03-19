@@ -65,6 +65,7 @@ fun insnString (insn) {
     | "!!"  -> "orl" 
     | "^"   -> "xorl"
     | "cmp" -> "cmpl"
+    | _     -> ""
     esac
   }
 
@@ -132,11 +133,6 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
       | _         -> [S (nLocals), nLocals + 1]
       esac
     of [x, n] -> [x, makeEnv (x : stack, if n > stackSlots then n else stackSlots fi, globals, barrier, stackMap, fLabel, nLocals)]esac
-  }
-
-  -- Pushes an item on the symbolic state; returns an updated envirtonment
-  fun push (y) {
-    makeEnv (y : stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals)
   }
 
   -- Pops one item from the symbolic stack; returns a pair: a popped
@@ -235,6 +231,35 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
     nLocals + stackSlots
   }
 
+  fun activeRegsCount () {
+    case stack of
+      {}        -> 0
+    | R (n) : _ -> n
+    | _         -> 4
+    esac
+  }
+
+  fun saveRegs() {
+    var size = activeRegsCount();
+    var code = emptyBuffer();
+    var i = 0;
+    while i < size do
+      code := code <+ Push (R (i));
+      i := i + 1
+    od;
+    code
+  }
+
+  fun loadRegs() {
+    var i = activeRegsCount() - 1;
+    var code = emptyBuffer();
+    while i >= 0 do
+      code := code <+ Pop (R (i));
+      i := i - 1
+    od;
+    code
+  }
+
   [envString,
    allocate,
    push,
@@ -252,7 +277,9 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
    enterFunction,
    currentFunction,
    liveRegisters,
-   staticSize]
+   staticSize,
+   saveRegs,
+   loadRegs]
 }
 
 -- Exported accessors
@@ -326,6 +353,14 @@ fun liveRegisters (env, depth) {
 
 fun staticSize (env) {
   env [17] ()
+}
+
+fun saveRegs(env) {
+  env [18] ()
+}
+
+fun loadRegs(env) {
+  env [19] ()
 }
 
 -- Creates an initial environment
@@ -404,6 +439,7 @@ fun suffix (op) {
   | "!=" -> "ne"
   | ">=" -> "ge"
   | ">"  -> "g"
+  | _    -> ""
   esac
 }
 
@@ -441,6 +477,62 @@ fun compile (env, code) {
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
                
+        --   READ ->
+        --       [s, env] -> [env, code <+> saveRegs(env) <+ Call ("Lread") <+> loadRegs(env) <+ Mov (eax, s)]
+        --     esac
+        -- | WRITE ->
+        --     case env.pop of
+        --       [s, env] -> [env, code <+ Push (s) <+> saveRegs(env) <+ Call ("Lwrite") <+> loadRegs(env) <+ Pop (eax)]
+        --     esac
+        | CONST (n) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (L (n), s) ]
+            esac
+        | LD (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (env.loc(x), s) ]
+            esac
+        | LDA (x)   ->
+            case env.addGlobal(x).allocate of
+              [s, env] -> [env, code <+ Lea (env.loc(x), s) ]
+            esac
+        | ST (x) ->
+            case env.addGlobal(x).peek of
+              [s, env] -> [env, code <+> move (s, env.loc(x)) ]
+            esac
+        | STI    ->
+            case env.pop2 of
+              [s, x, env] -> 
+                case env.allocate of 
+                  [r, env] -> [env, code <+> move (s, I(0, x)) <+> move (s, r) ]
+                esac
+            esac
+        | DROP   -> 
+            case env.pop of
+              [_, env] -> [env, code]
+            esac
+        | BINOP (op) ->
+            case env.pop2 of [y, x, env] ->
+              case env.allocate of [s, env] ->
+                var movedCode = code <+> move (x, eax);
+                var dividedCode = movedCode <+ Cltd <+ IDiv (y);
+                var suffixOp = suffix(op);
+                if compare(suffixOp, "") != 0 then
+                  [env, movedCode <+ Binop ("^", edx, edx) <+ Binop ("cmp", y, eax) <+ Set (suffixOp, "%dl") <+> move (edx, s)]
+                else
+                  case op of
+                    "/" -> [env, dividedCode <+> move (eax, s)]
+                  | "%" -> [env, dividedCode <+> move (edx, s)]
+                  |  _  -> [env, movedCode <+ Binop(op, y, eax) <+> move (eax, s)]
+                  esac
+                fi
+              esac
+            esac
+        | LABEL (l) ->  [retrieveStack(env, l), code <+ Label(l)]
+        | JMP (l)   ->  [setStack(env, l), code <+ Jmp(l)]
+        | CJMP (l)  ->  case env.pop of 
+                          [x, env] -> [setStack(env, l), code <+> move(x, eax) <+ Binop("cmp", L(0), eax) <+ CJmp("ne", l) ]
+                        esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         (* End *)
         esac
