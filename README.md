@@ -12,7 +12,7 @@ Our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
 * (`-s` option) compilation to SM and SM program interpretation
 * (`-o` option) compilation to X86 (via SM)
 
-Lecture notes:
+Lecture notes (use `make lectures` to generate pdfs; LaTex is required):
 1. [Expressions Semantics](lectures/01.pdf)
 2. [Statements and AST2SM Semantics](lectures/02.pdf)
 3. [Structural Control Flow Operators Semantics and Syntax Extensions](lectures/03.pdf)
