@@ -43,6 +43,7 @@ Lecture notes (use `make lectures` to generate pdfs; LaTex is required):
    * New expressions:
      + `String (string)` --- a string 
      + `Array (expr list)` --- an array
+     + `Sexp (string, expr list)` -- s-expression
      + `Elem (expr1, expr2)` --- value of `expr1[expr2]`
      + `ElemRef (expr, expr)` --- reference (address) to an array element (l-value)
      + `Builtin (string, expr list)` --- builtin function call
@@ -56,6 +57,7 @@ Lecture notes (use `make lectures` to generate pdfs; LaTex is required):
       + `STA`
       + `ELEM`
       + `BUILTIN (f, n)`
+      + `SEXP (s, n)`
    * Global scope now has depth `2`, functions [`isGlobal`](src/SM.lama#L247) and check in [`genFunLabel`](src/SM.lama#L240) are updated
    * Builtin functions are added to the initial scope ([see here](src/SM.lama#L417))
 5. [X86.lama](src/X86.lama)
