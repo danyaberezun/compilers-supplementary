@@ -12,4 +12,4 @@ $(SOURCE): %: %.tex
 	$(TEX) $(FLAGS) $@.tex && $(TEX) $(FLAGS) $@.tex
 
 clean:
-	$(RM) *.out *.aux *.log *.fdb_* *.fls *~
+	$(RM) *.out *.aux *.log *.fdb_* *.fls *~ auto *.pdf
