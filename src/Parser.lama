@@ -9,7 +9,7 @@ import Ref;
 import Collection;
 
 -- Signals an error; takes an error message and location info
-fun error (msg,  lc) {
+public fun error (msg,  lc) {
   failure ("%s at %d:%d\n", msg,  lc.fst,  lc.snd)
 }
 
@@ -105,13 +105,37 @@ fun distributeScope (expr, exprConstructor) {
   esac
 }
 
+var singleDef = memo $ eta syntax (
+    x=lident {[x, None]}
+  | x=lident s["="] y=basic {[x, Some(y(Val))]}
+), rawDef = memo $ eta syntax (
+    kVar rs=list[singleDef] s[";"] {Var(rs)} |
+    rs=funcDef {rs}
+), allDef = memo $ eta syntax (
+    rs=rep0[rawDef] {rs}
+), funcDef = memo $ eta syntax(
+    kFun nm=lident s["("] ag=list0[lident] s[")"] s["{"] bd=scopeExpr s["}"]
+      {
+        Fun(nm, ag, bd(Weak))
+      }
+);
 
-var ifExpr = memo $ eta syntax (
-      eCon=exp kThen e1=exp kElse e2=exp {fun(a){If(eCon(Val), e1(a), e2(a))}} |
-      lc=pos eCon=exp kThen e=exp {fun(a){assertVoid(a, If(eCon(Val), e(a), Skip), lc)}} |
-      eCon=exp kThen e1=exp kElif e2=ifExpr {fun(a){If(eCon(Val), e1(a), e2(a))}}
-),
-    primary  = memo $ eta syntax (
+var scopeExpr = memo $ eta syntax (
+    d=allDef e=exp {fun(a) {
+                      expandScope(d, e(a))
+                    }}
+),  ifExpr = memo $ eta syntax (
+      eCon=exp kThen e1=scopeExpr kElse e2=scopeExpr {fun(a){If(eCon(Val), e1(a), e2(a))}} |
+      eCon=exp kThen e=scopeExpr 
+        {fun(a){
+          case a of
+            Void -> If(eCon(Val), e(a), Skip)
+          | Weak -> If(eCon(Val), e(a), Const(0))
+          | _ -> failure("one branch if fail ")
+          esac
+        }} |
+      eCon=exp kThen e1=scopeExpr kElif e2=ifExpr {fun(a){If(eCon(Val), e1(a), e2(a))}}
+),  primary  = memo $ eta syntax (
                                   -- decimal constant
       lc=pos x=decimal   {fun (a) {assertValue (a, Const (stringInt (x)),  lc)}}     |
 
@@ -131,37 +155,59 @@ var ifExpr = memo $ eta syntax (
                                                     }} |
       lc=pos kWrite e=inbr[s("("), exp, s(")")] {fun(a){
                                                     assertVoid(a, Write(e(Val)),  lc)
-                                                  }} |
+                                                }} |
       lc=pos kSkip {fun(a){
                       assertVoid(a, Skip,  lc)
                     }} |
-      e=inbr[s("("), exp, s(")")] {fun(a){
-                                    e(a)
-                                  }} |
-      lc=pos kDo eSt=exp kWhile eCon=exp kOd {fun(a) {
-                                                assertVoid(a, DoWhile(eCon(Val), eSt(Void)),  lc)
-                                              }} |
-      lc=pos kWhile eCon=exp kDo eSt=exp kOd {fun(a){
-                                                assertVoid(a, While(eCon(Val), eSt(Void)),  lc)
-                                              }} |
-      lc=pos kFor e1=exp s[","] e2=exp s[","] e3=exp kDo e=exp kOd {fun(a){
-                                                                      assertVoid(
-                                                                        a,
-                                                                        Seq(
-                                                                          e1(Void), 
-                                                                          While(
-                                                                            e2(Val),
-                                                                            Seq(
-                                                                              e(Void),
-                                                                              e3(Void)
-                                                                            )
-                                                                          )
-                                                                        ),
-                                                                        lc
-                                                                      )
-                                                                    }}
-),
-    basic    = memo $ eta (expr ({[Right, {[s (":="),
+      e=inbr[s("("), scopeExpr, s(")")] {fun(a){
+                                          e(a)
+                                        }} |
+      lc=pos nm=lident agsExp=inbr[s("("), list0(exp), s(")")] { fun(a) {
+        assertValue(a, Call(nm, map(fun(agExp) {agExp(Val)}, agsExp)), lc)
+      }} |
+      lc=pos kDo eSt=scopeExpr kWhile eCon=exp kOd 
+        {fun(a) {
+          assertVoid(
+            a,
+            case eSt(Void) of
+              Scope(ds, eCycle) -> Scope(ds, DoWhile(eCon(Val), eCycle))
+            esac,
+            lc
+          )
+        }} |
+      lc=pos kWhile eCon=scopeExpr kDo eSt=scopeExpr kOd 
+        {fun(a){
+          assertVoid(
+            a,
+            case eCon(Val) of
+              Scope(ds, eInit) -> Scope(ds, While(eInit, eSt(Void)))
+            esac,
+            lc
+          )
+        }} |
+      lc=pos kFor e1=scopeExpr s[","] e2=exp s[","] e3=exp kDo e=scopeExpr kOd 
+        {fun(a){
+          assertVoid(
+            a,
+            case e1(Void) of Scope(ds, eInit) ->
+              Scope(
+                ds,
+                Seq(
+                  eInit, 
+                  While(
+                    e2(Val),
+                    Seq(
+                      e(Void),
+                      e3(Void)
+                    )
+                  )
+                )
+              )
+            esac,
+            lc
+          )
+        }}
+),  basic    = memo $ eta (expr ({[Right, {[s (":="),
                                             fun (l,  lc, r) {
                                               fun (a) {assertValue (a, Assn (l (Ref), r (Val)),  lc)}
                                             }]}],
@@ -175,4 +221,4 @@ var ifExpr = memo $ eta syntax (
     exp      = memo $ eta syntax (basic | s1=basic s[";"] s2=exp {fun (a) {Seq (s1 (Void), s2 (a))}});
 
 -- Public top-level parser
-public parse = syntax (s=scopeExpr {s (Void)});
+public parse = memo $ eta syntax (sc=scopeExpr {sc(Void)});
