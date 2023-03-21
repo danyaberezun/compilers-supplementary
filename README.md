@@ -39,6 +39,7 @@ Lecture notes (use `make lectures` to generate pdfs; LaTex is required):
    * useful link: [Variadic functions in C](https://en.cppreference.com/w/c/variadic)
    * useful link: [Arrays of Length Zero](https://gcc.gnu.org/onlinedocs/gcc/Zero-Length.html)
 2. New file: [Builtins.lama](src/Builtins.lama) contains function `evalBuiltin` that evaluates builtin functions
+   * Please look at [subsection 2.4.6 of the lama spec](https://github.com/PLTools/Lama/blob/1.10/lama-spec.pdf#subsection.2.4.6)
 3. [Expr.lama](src/Expr.lama):
    * New expressions:
      + `String (string)` --- a string 
