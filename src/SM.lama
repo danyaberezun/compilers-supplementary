@@ -63,7 +63,10 @@ fun initEvalEnv(insns) {
     }) $ [emptyMap(compare), insns];
 
   [fun (l) {
-    case findMap(map, l) of Some (insns) -> insns esac
+    case findMap(map, l) of
+      Some (insns) -> insns
+      | None -> error(string(l))
+    esac
   }]
 }
 
@@ -121,14 +124,14 @@ fun eval(env, w, insns) {
   fun eval(cfg@[stk, cstk, stt, wld], instructions) {
     fun createLocal(stk, nargs, nlocs) {
       case take(stk, nargs) of
-        [values, stk] -> case foldl(
+        [stk, values] -> case foldl(
           fun ([state, number], value) {
             state.assign(Arg(number), value);
             state.assign(Loc(number), 0);
             [state, number + 1]
           }, [makeState(nargs, nlocs), 0], values
         ) of
-          [state, _] -> [state, stk]
+          [state, _] -> [stk, state]
         esac
       esac
     }
@@ -160,13 +163,13 @@ fun eval(env, w, insns) {
         | LDA (x)                    -> eval([x:stk, cstk, stt, wld], ta)
         | DUP                        -> eval([hd(stk):stk, cstk, stt, wld], ta)
         | END                        -> case cstk of
-            { }                     -> eval(cfg, { })
-          | [oldStt, insntl] : cstk -> [[stk, cstk, oldStt, wld], insntl]
+            { }                     -> cfg
+          | [oldStt, insntl] : cstk -> eval([stk, cstk, oldStt, wld], insntl)
         esac
         | BEGIN(fname, nargs, nlocs) -> case createLocal(stk, nargs, nlocs) of
-          [stt, stk] -> eval([stk, cstk, stt, wld], ta)
+          [stk, state] -> eval([stk, cstk, stt, wld], ta)
         esac
-        | CALL(fname, _)             -> eval([stk, [stt, tl(insns)]:cstk, stt, wld], env.fromLabel(fname))
+        | CALL(fname, _)             -> eval([stk, [stt, ta]:cstk, stt, wld], fromLabel(env, fname))
         | GLOBAL(x)                  -> stt.assign(Glb(x), 0); eval(cfg, ta)
       esac
     esac
@@ -178,7 +181,7 @@ fun eval(env, w, insns) {
 
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM(input, insns) {
-  eval(initEvalEnv(insns), createWorld(input), insns)
+ eval(initEvalEnv(insns), createWorld(input), insns)
 }
 
 -- Compilation environment: generates labels
@@ -415,23 +418,30 @@ public fun compileSM(stmt) {
     fun tryAddGlobalNames(env, globals, names) {
       if isGlobal(env) then
         foldl(fun (buffer, name) {
-          buffer <+ GLOBAL(name)
+          buffer <+ GLOBAL (name)
         }, globals, names)
         else
           globals
       fi
     }
 
-    foldl(fun ([env, globals], def) {
+    var result = foldl(fun ([env, globals, functions], def) {
       case def of
           Var(x)                -> case addVars(env, x) of
-            env -> [env, tryAddGlobalNames(env, globals, x)]
+            env -> [env, tryAddGlobalNames(env, globals, x), functions]
           esac
         | Fun(name, args, body) -> case genFunLabel(env, name) of
-          [label, env] -> [rememberFun(addFun(env, name, label, size(args)), name, args, body), globals]
+          [label, env] -> [addFun(env, name, label, size(args)), globals, [label, args, body]:functions]
         esac
       esac
-    }, [env, emptyBuffer()], defs)
+    }, [env, emptyBuffer(), {}], defs);
+    case result of
+      [env, globals, functions] ->
+        [foldl(fun (env, [label, args, body]) {
+          rememberFun(env, label, args, body)
+        }, env, functions), globals]
+      | _ -> error("hueta")
+    esac
   }
 
   fun label(lab, labUsed) {
@@ -517,12 +527,14 @@ public fun compileSM(stmt) {
           [sLabAfterUsed, env, opCode] -> [false, env, opCode <+> label(genLabAfter, sLabAfterUsed) <+ BINOP(op)]
         esac
         esac
-      | Scope(defs, expr)              ->
-        case addDefs(beginScope(env), defs) of
-          [env, globals] -> case compile(lab, env, expr) of
-            [sLabUsed, env, opCode] -> [sLabUsed, endScope(env), globals <+> opCode]
+      | Scope(defs, expr)              -> case beginScope(env) of
+        env ->
+          case addDefs(env, defs) of
+            [env, globals] -> case compile(lab, env, expr) of
+              [sLabUsed, env, opCode] -> [sLabUsed, endScope(env), globals <+> opCode]
+            esac
           esac
-        esac
+      esac
       | Call(name, args)               -> case lookupFun(env, name) of
         Fun(fLab, nargs) -> case genLabel(env) of
           [argsLab, env] -> case compileArgs(argsLab, env, args) of
@@ -544,13 +556,12 @@ public fun compileSM(stmt) {
       foldl(fun ([env, code], f@Fun(fLabel, args, body, state)) {
         case genLabel(addArgs(beginFun(env, state), args)) of
           [endFunLab, env] -> case compile(endFunLab, env, body) of
-            [endFunLabUsed, env, funCode] -> [env, code <+ BEGIN(fLabel, size(args), getLocals(env)) <+> funCode <+> label(endFunLab, endFunLabUsed) <+ END]
+            [endFunLabUsed, env, bodyCode] -> [env, code <+ LABEL (fLabel) <+ BEGIN(fLabel, size(args), getLocals(env)) <+> bodyCode <+> label(endFunLab, endFunLabUsed) <+ END]
           esac
         esac
       }, [env, mainFunctionCode], functions)[1]
     esac
   }
-
   case initCompEnv().genLabel of
     [endLab, env] ->
       case compile(endLab, env, stmt) of
@@ -558,4 +569,3 @@ public fun compileSM(stmt) {
       esac
   esac
 }
-
