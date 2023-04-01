@@ -54,19 +54,25 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-
-fun eval (c@[st, s, w], insns) {
+fun eval (env, c@[st, s, w], insns) {
   case insns of 
     {} -> c 
-    | i : insns_ -> 
-      eval(case i of
-        READ -> case readWorld (w) of [x, w] -> [x : st, s, w] esac
-        | WRITE -> case st of (x : st_) -> [st_, s, writeWorld(x, w)] esac
-        | BINOP (op) -> case st of (y : x : st_) -> [evalOp (op, x, y) : st_, s, w] esac
-        | CONST (x) -> [x : st, s, w] 
-        | LD (x) -> [s(x) : st, s, w]
-        | ST (x) -> case st of (st_val : st_) -> [st_, (s <- [x, st_val]), w] esac
-      esac, insns_)
+    | i : insns_ -> case i of 
+      READ -> eval(env, case readWorld (w) of [x, w] -> [x : st, s, w] esac, insns_)
+      | WRITE -> eval(env, case st of (x : st_) -> [st_, s, writeWorld(x, w)] esac, insns_)
+      | BINOP (op) -> eval(env, case st of (y : x : st_) -> [evalOp (op, x, y) : st_, s, w] esac, insns_)
+      | LD (x) -> eval(env, [s(x) : st, s, w], insns_)
+      | ST (x) -> eval(env, case st of (st_val : st_) -> [st_, (s <- [x, st_val]), w] esac, insns_)
+      | CONST (n) -> eval(env, [n:st, s, w], insns_)
+      | LABEL (_) -> eval(env, c, insns_) 
+      | JMP (label) -> eval(env, c, fromLabel(env, label))
+      | CJMP (cond, label) -> case st of 
+          cv : st_ -> case cond of 
+            "z" -> eval(env, [st_, s, w], if cv == 0 then fromLabel(env, label) else insns_ fi)
+            | _ -> eval(env, [st_, s, w], if cv == 0 then insns_ else fromLabel(env, label) fi)
+          esac 
+        esac
+      esac
   esac
 }
 
@@ -109,12 +115,12 @@ fun genLabels (env, n) {
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
   case expr of 
-    Var (x) -> {LD (x)}
-  | Const (num) -> {CONST (num)}
+    Var (x) -> singletonBuffer(LD (x))
+  | Const (num) -> singletonBuffer(CONST (num))
   | Binop(op, exp_left, exp_right) -> 
     var eval_left = compileExpr(exp_left);
     var eval_right = compileExpr(exp_right);
-    eval_left +++ eval_right +++ {BINOP (op)}
+    eval_left <+> eval_right <+ BINOP (op)
   esac
 }
 
@@ -156,7 +162,29 @@ public fun compileSM (stmt) {
                   esac
              esac
         esac
-    | _              -> failure ("compileSM not implemented\n")
+    | DoWhile (body, cond) -> 
+      case env.genLabels(2) of 
+        [condLabel, bodyLabel, env] -> 
+          case compile(condLabel, env, body) of 
+            [_, env, bodyCode] -> [false, env, singletonBuffer (LABEL(bodyLabel)) <+> bodyCode <+ LABEL(condLabel) <+> compileExpr(cond) <+ CJMP("nz", bodyLabel)]
+          esac 
+      esac
+    | While (cond, body) -> 
+      case env.genLabels(2) of 
+        [condLabel, bodyLabel, env] -> 
+          case compile(condLabel, env, body) of 
+            [_, env, bodyCode] -> [false, env, singletonBuffer (JMP(condLabel)) <+ LABEL(bodyLabel) <+> bodyCode <+ LABEL(condLabel) <+> compileExpr(cond) <+ CJMP("nz", bodyLabel)]
+          esac 
+      esac
+    | If (cond, thenStmt, elseStmt) -> case env.genLabels(2) of 
+        [thenEndLabel, elseLabel, env] -> 
+          case compile(thenEndLabel, env, thenStmt) of 
+            [thenLabelUsed, env, thenCode] -> 
+              case compile(lab, env, elseStmt) of 
+                [_, env, elseCode] -> [true, env, compileExpr(cond) <+ CJMP("z", elseLabel) <+> thenCode <+> label(thenEndLabel, thenLabelUsed) <+ JMP(lab) <+ LABEL(elseLabel) <+> elseCode]
+              esac
+          esac
+      esac
     esac
   }  
 
@@ -165,12 +193,5 @@ public fun compileSM (stmt) {
        case compile (endLab, env, stmt) of
          [endLabUsed, _, code] -> getBuffer $  code <+> label (endLab, endLabUsed)
        esac
-
-  case stmt of 
-    Skip -> {}
-    | Assn (x, expr) -> compileExpr(expr) +++ {ST (x)}
-    | Read (x) -> {READ, ST (x)}
-    | Write (expr) -> compileExpr(expr) +++ {WRITE}
-    | Seq (left_stmt, right_stmt) -> compileSM(left_stmt) +++ compileSM(right_stmt)
   esac
 }
