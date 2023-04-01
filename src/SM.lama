@@ -59,8 +59,52 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, c@[stack, state, world], insns) {
+  case insns of 
+    {} -> c
+  | BINOP (op) : tail -> case stack of
+      y:x:rest -> eval (env, [evalOp (op, x, y) : rest, state, world], tail)
+    esac
+  | CONST (n) : tail -> eval (env, [n : stack, state, world], tail)
+  | READ : tail -> (
+    var worldAfter = readWorld (world);
+    var z = worldAfter.fst;
+    eval (env, [z : stack, state, worldAfter.snd], tail)
+  )
+  | WRITE : tail -> case stack of
+      z:rest -> eval (env, [rest, state, writeWorld (z, world)], tail)
+    esac
+  | LD (x) : tail -> eval (env, [state (x) : stack, state, world], tail)
+  | LDA (x) : tail -> eval (env, [x : stack, state, world], tail)
+  | ST (x) : tail -> case stack of
+      z:rest -> eval (env, [rest, state <- [x, z], world], tail)
+    esac
+  | STI : tail -> case stack of
+      v : r : rest -> eval (env, [v : rest, state <- [r, v], world], tail)
+    esac
+  | LABEL (s) : tail -> eval (env, c, tail)
+  | JMP (l) : tail -> eval (env, c, fromLabel (env, l))
+  | CJMP (c, l) : tail -> case c of
+      "z" -> case stack of
+          z : rest -> case z of
+              0 -> eval (env, [rest, state, world], fromLabel (env, l))
+            | _ -> eval (env, [rest, state, world], tail)
+            esac
+        esac
+    | "nz" -> case stack of
+          z : rest -> case z of
+              0 -> eval (env, [rest, state, world], tail)
+            | _ -> eval (env, [rest, state, world], fromLabel (env, l))
+            esac
+        esac
+    esac
+  | DUP : tail -> case stack of
+      x : _ -> eval (env, [x : stack, state, world], tail)
+    esac
+  | DROP : tail -> case stack of
+      _ : rest -> eval (env, [rest, state, world], tail)
+    esac
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -111,11 +155,86 @@ public fun compileSM (stmt) {
   
   fun compile (lab, env, stmt) {
     case stmt of
-      Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 ->  failure ("compileSM not implemented\n")
+      Skip                -> [false, env, emptyBuffer ()]
+    | Var    (x)          -> [false, env, singletonBuffer (LD (x))]
+    | Ref    (x)          -> [false, env, singletonBuffer (LDA (x))]
+    | Const  (n)          -> [false, env, singletonBuffer (CONST (n))]
+    | Binop  (op, e1, e2) -> 
+        case env.genLabel of
+          [e2Lab, env] ->
+             case env.genLabel of
+                [e1Lab, env] -> case compile (e1Lab, env, e1) of
+                   [e1LabUsed, env, e1Code] -> case compile (e2Lab, env, e2) of
+                      [e2LabUsed, env, e2Code] -> [false, env, e1Code <+> label (e1Lab, e1LabUsed) <+> e2Code <+> label (e2Lab, e2LabUsed) <+ BINOP (op)]
+                   esac
+                esac
+             esac
+        esac
+    | Read   (x)          -> [false, env, singletonBuffer (READ) <+ ST (x)]
+    | Write  (e)          -> 
+        case env.genLabel of
+           [lab, env] ->
+              case compile (lab, env, e) of
+                 [labUsed, env, eCode] -> [false, env, eCode <+> label (lab, labUsed) <+ WRITE]
+              esac
+        esac
+    | Assn   (x, e)       -> 
+        case env.genLabel of
+          [eLab, env] ->
+             case env.genLabel of
+                [xLab, env] -> case compile (xLab, env, x) of
+                   [xLabUsed, env, xCode] -> case compile (eLab, env, e) of
+                      [eLabUsed, env, eCode] -> [false, env, xCode <+> label (xLab, xLabUsed) <+> eCode <+> label (eLab, eLabUsed) <+ STI]
+                   esac
+                esac
+             esac
+        esac
+    | Seq (s1, s2) ->
+        case env.genLabel of
+          [s2Lab, env] ->
+             case compile (s2Lab, env, s1) of
+               [s2LabUsed, env, s1Code] ->
+                  case compile (lab, env, s2) of
+                    [labUsed, env, s2Code] -> [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
+                  esac
+             esac
+        esac
+    | If (e, s1, s2) -> 
+        case env.genLabels (3) of
+           [s1Lab, s2Lab, eLab, env] -> 
+              case compile(s2Lab, env, s2) of
+                 [s2LabUsed, env, s2Code] ->
+                    case compile(lab, env, s1) of
+                       [_, env, s1Code] -> 
+                          case compile(eLab, env, e) of
+                             [eLabUsed, env, eCode] -> [true, env, eCode <+> label (eLab, eLabUsed) <+ CJMP ("nz", s1Lab) <+> s2Code <+> label (s2Lab, s2LabUsed) <+ JMP (lab) <+ LABEL (s1Lab) <+> s1Code]
+                          esac
+                    esac
+              esac
+        esac
+    | While (e, s) -> 
+         case env.genLabels (2) of
+            [eLab, sLab, env] -> 
+               case compile (sLab, env, e) of
+                  [sLabUsed, env, eCode] -> 
+                     case compile (eLab, env, s) of
+                        [_, env, sCode] -> [true, env, label (eLab, true) <+> eCode <+> label (sLab, sLabUsed) <+ CJMP ("z", lab) <+> sCode <+ JMP (eLab)]
+                     esac
+               esac 
+         esac
+    | DoWhile (s, e) ->
+        case env.genLabels (3) of
+            [eLab, sLab, afterLab, env] -> 
+               case compile (afterLab, env, e) of
+                  [afterLabUsed, env, eCode] -> 
+                     case compile (eLab, env, s) of
+                        [eLabUsed, env, sCode] -> [true, env, label (sLab, true) <+> sCode <+> label (eLab, eLabUsed) <+> eCode <+> label (afterLab, afterLabUsed) <+ CJMP ("z", lab) <+ JMP (sLab)]
+                     esac
+               esac 
+         esac
+    | Ignore (e) -> case compile (Lab, env, e) of
+          [eLabUsed, env, eCode] -> [eLabUsed, env, eCode <+ DROP]
+      esac
     esac
   }
 
