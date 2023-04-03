@@ -52,29 +52,36 @@ fun parseBinop(op) {
 -- Evaluate single SM instruction.
 -- Takes SM-configuration and an instruction.
 -- Returns a final configuration.
-fun evalInsn(c@[stack, state, world], insn) {
+fun evalInsn(env, c@[stack, state, world], insn) {
   case insn of
-    READ       ->
+      READ       ->
       case readWorld(world) of
-        [x, newWorld] -> [x:stack, state, newWorld]
-      esac |
-    WRITE      ->
+        [x, newWorld] -> [env, [x:stack, state, newWorld]]
+      esac
+    | WRITE      ->
       case stack of
-        x : stackRest -> [stackRest, state, writeWorld(x, world)] |
-        _             -> failure("Unexpected instruction WRITE: stack is empty\n")
-      esac |
-    BINOP (op) ->
+          x : stackRest -> [env, [stackRest, state, writeWorld(x, world)]]
+        | _             -> failure("Unexpected instruction WRITE: stack is empty\n")
+      esac
+    | BINOP (op) ->
       case stack of
-        y : x : stackRest -> [(parseBinop(op)(x, y)):stackRest, state, world] |
-        _                 -> failure("Unexpected BINOP: stack must contains at least two values\n")
-      esac |
-    LD (x)     -> [state(x):stack, state, world] |
-    ST (x)     ->
+          y : x : stackRest -> [env, [(parseBinop(op)(x, y)):stackRest, state, world]]
+        | _                 -> failure("Unexpected BINOP: stack must contains at least two values\n")
+      esac
+    | LD (x)     -> [env, [state(x):stack, state, world]]
+    | ST (x)     ->
       case stack of
-        value : stackRest -> [stackRest, state <- [x, value], world] |
-        _                 -> failure("Unexpected ST: stack must contains at least one value\n")
-      esac |
-    CONST (v)  -> [v:stack, state, world]
+          value : stackRest -> [env, [stackRest, state <- [x, value], world]]
+        | _                 -> failure("Unexpected ST: stack must contains at least one value\n")
+      esac
+    | CONST (v)  -> [env, [v:stack, state, world]]
+    | LABEL (l) -> [env, c]
+    | JMP (l) -> [env, c]
+    | CJMP(c, l) ->
+        case stack of
+            _ : stackRest -> [env, [stackRest, state, world]]
+          | _ -> failure("Stack must be not empty for CJMP operation invoke")
+        esac
   esac
 }
 
@@ -103,10 +110,28 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval(env, c, insns) {
+fun eval(env, c@[stack, state, world], insns) {
   case insns of
     { }           -> c |
-    p : insnsRest -> eval(evalInsn(c, p), insnsRest)
+    p : insnsRest ->
+    case evalInsn(env, c, p) of
+      [env, c] ->
+        case p of
+            JMP (l) -> eval(env, c, fromLabel(env, l))
+          | CJMP (flag, l) ->
+            case stack of
+              x : stackRest ->
+                case [flag, x] of
+                    ["z", 0] -> eval(env, c, fromLabel(env, l))
+                  | ["z", x] -> eval(env, c, insnsRest)
+                  | ["nz", 0] -> eval(env, c, insnsRest)
+                  | ["nz", x] -> eval(env, c, fromLabel(env, l))
+                  | _ -> failure("Unexpected CJMP arguments")
+                esac
+            esac
+          | _ -> eval(env, c, insnsRest)
+        esac
+    esac
   esac
 }
 
@@ -150,9 +175,9 @@ fun genLabels (env, n) {
 -- of stack machine instructions
 fun compileExpr(expr) {
   case expr of
-    Var (x)                  -> { LD(x) } |
-    Const (v)                -> { CONST(v) } |
-    Binop (op, expr1, expr2) -> compileExpr(expr1) +++ compileExpr(expr2) +++ { BINOP(op) } |
+    Var (x)                  -> singletonBuffer(LD(x)) |
+    Const (v)                -> singletonBuffer(CONST(v)) |
+    Binop (op, expr1, expr2) -> compileExpr(expr1) <+> compileExpr(expr2) <+ BINOP(op) |
     _                        -> failure("Unexcepted expression %s\n", expr.string)
   esac
 }
@@ -195,7 +220,34 @@ public fun compileSM (stmt) {
                   esac
              esac
         esac
-    | _              -> failure ("compileSM not implemented\n")
+    | If (e, s1, s2) ->
+      case genLabels(env, 2) of
+        [s1BeginLabel, s2EndLabel, env] ->
+          case compile(lab, env, s1) of
+            [s1BeginLabelUsed, env, s1Code] ->
+              case compile(s2EndLabel, env, s2) of
+                [s2EndLabelUsed, env, s2Code] ->
+                  [true, env, compileExpr (e) <+ CJMP ("nz", s1BeginLabel) <+>  s2Code <+ JMP (lab) <+  LABEL(s1BeginLabel) <+> s1Code <+ LABEL(lab)]
+              esac
+          esac
+      esac
+    | While (e, s) ->
+      case genLabels(env, 2) of
+        [sBeginLabel, sEndLabel, env] ->
+          case compile(sEndLabel, env, s) of
+            [sEndLabelUsed, env, sCode] ->
+              [false, env, singletonBuffer(JMP (sEndLabel)) <+ LABEL(sBeginLabel) <+> sCode <+ LABEL(sEndLabel) <+> compileExpr(e) <+ CJMP ("nz", sBeginLabel)]
+          esac
+      esac
+    | DoWhile (s, e) ->
+      case genLabels(env, 2) of
+        [sBeginLabel, sEndLabel, env] ->
+          case compile(sEndLabel, env, s) of
+            [sEndLabelUsed, env, sCode] ->
+              [false, env, singletonBuffer(LABEL(sBeginLabel)) <+> sCode <+> compileExpr(e) <+ CJMP ("nz", sBeginLabel)]
+          esac
+      esac
+    | _              -> failure ("Unexcepted statement %s\n", stmt.string)
     esac
   }
 
