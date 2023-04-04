@@ -1,7 +1,7 @@
 .PHONY: all lectures
 
 all:
-	make -C src 
+	make -C src
 	make -C runtime
 	make -C regression
 
