@@ -24,7 +24,6 @@ Now our compiler has to work in three modes:
 
 **Task**:
 
-
 * Complete `compile` function definition, see [`src/X86.lama`](src/X86.lama#L290)
 
 **Compile and run tests (from the root folder)**:
