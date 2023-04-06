@@ -3,7 +3,6 @@ A supplementary repository for the course on compilers.
 
 **Repo structure**:
 * [`regression`](regression/) --- tests
-* [`lectures`](lectures/) contains lecture notes
 * [`src`](src/) contains sources of your compiler
 * ['Embedding.meta'](regression/Embedding.meta) contains embedding of the language (since we have no parser yet)
 
