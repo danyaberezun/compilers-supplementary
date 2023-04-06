@@ -11,16 +11,7 @@ Our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
 * (`-s` option) compilation to SM and SM program interpretation
 * (`-o` option) compilation to X86 (via SM)
 
-Lecture notes ([link](https://github.com/danyaberezun/compilers-supplementary/tree/main/lectures); use `make lectures` to generate pdfs; LaTex is required):
-1. [Expressions Semantics](https://github.com/danyaberezun/compilers-supplementary/tree/main/lectures/01.pdf)
-2. [Statements and AST2SM Semantics](https://github.com/danyaberezun/compilers-supplementary/tree/main/lectures/02.pdf)
-3. [Structural Control Flow Operators Semantics and Syntax Extensions](https://github.com/danyaberezun/compilers-supplementary/tree/main/lectures/03.pdf)
-4. [Extended Stack Machine (for structural control flow)](https://github.com/danyaberezun/compilers-supplementary/tree/main/lectures/04.pdf)
-5. [Control Flow Expressions (combining `Expressions` and `Statements` into one syntactic category)](https://github.com/danyaberezun/compilers-supplementary/tree/main/lectures/05.pdf)
-6. [Functions and Local Scopes](https://github.com/danyaberezun/compilers-supplementary/tree/main/lectures/06.pdf)
-7. [Functions in SM](https://github.com/danyaberezun/compilers-supplementary/tree/main/lectures/07.pdf)
-8. [Arrays](https://github.com/danyaberezun/compilers-supplementary/tree/main/lectures/08.pdf)
-9. [Pattern-matching](https://github.com/danyaberezun/compilers-supplementary/tree/main/lectures/09.pdf)
+Corresponding lecture notes: [Pattern-matching](https://github.com/danyaberezun/compilers-supplementary/tree/main/lectures/09.pdf)
 
 **What is new, some important changes, and additional remarks**:
 1. New syntax category: Patterns $\mathcal{P}$ (see lecture notes)
