@@ -12,26 +12,18 @@ Our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
 * (`-s` option) compilation to SM and SM program interpretation
 * (`-o` option) compilation to X86 (via SM)
 
-Lecture notes (use `make lectures` to generate pdfs; LaTex is required):
-1. [Expressions Semantics](lectures/01.pdf)
-2. [Statements and AST2SM Semantics](lectures/02.pdf)
-3. [Structural Control Flow Operators Semantics and Syntax Extensions](lectures/03.pdf)
-4. [Extended Stack Machine (for structural control flow)](lectures/04.pdf)
-5. [Control Flow Expressions (combining `Expressions` and `Statements` into one syntactic category)](lectures/05.pdf)
-6. [Functions and Local Scopes](lectures/06.pdf)
-7. [Functions in SM](lectures/07.pdf)
-8. [Arrays](lectures/08.pdf)
- 
+[Corresponding lecture notes](https://github.com/danyaberezun/compilers-supplementary/tree/main/lectures/08.pdf)
+
 **What is new, some important changes, and additional remarks**:
 1. [`runtime`](runtime/) is updated and extended
    * Builtins: `Lread`, `Lwrite`, `Llength`
    * Structure `data` represents arrays and strings
       + Last 3 bits of `tag` field contains data structure tag (`STRING_TAG | ARRAY_TAG | SEXP_TAG`)
       + All other bits of `tag` field contains data structure length
-   * Structure `sexp` represents s-expression 
+   * Structure `sexp` represents s-expression
       + `tag` field contains a hash of s-expression tag
       + `data` field as in previous case
-   * Auxiliary builtins: 
+   * Auxiliary builtins:
      + `Barray` creates and initializes an array
      + `Bsexp` creates and initializes s-expression
      + `Bstring` creates and initializes a string
@@ -42,7 +34,7 @@ Lecture notes (use `make lectures` to generate pdfs; LaTex is required):
    * Please look at [subsection 2.4.6 of the lama spec](https://github.com/PLTools/Lama/blob/1.10/lama-spec.pdf#subsection.2.4.6)
 3. [Expr.lama](src/Expr.lama):
    * New expressions:
-     + `String (string)` --- a string 
+     + `String (string)` --- a string
      + `Array (expr list)` --- an array
      + `Sexp (string, expr list)` -- s-expression
      + `Elem (expr1, expr2)` --- value of `expr1[expr2]`
