@@ -7,6 +7,9 @@ A supplementary repository for the course on compilers.
 * [`src`](src/) contains sources of your compiler
 * ['Embedding.meta'](regression/Embedding.meta) contains embedding of the language (since we have no parser yet)
 
+Corresponding lecture notes: [Expressions Semantics](https://github.com/danyaberezun/compilers-supplementary/tree/main/lectures/01.pdf),
+[Statements and AST2SM Semantics](https://github.com/danyaberezun/compilers-supplementary/tree/main/lectures/02.pdf)
+
 **How to submit the task**:
 * fork the repo
 * implement the task
