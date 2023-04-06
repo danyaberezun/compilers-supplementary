@@ -2,7 +2,6 @@
 
 **Repo structure**:
 * [`regression`](regression/) --- tests
-* [`lectures`](lectures/) contains lecture notes
 * [`src`](src/) contains sources of your compiler
   + [`X86.lama`](src/X86.lama) --- compiler to X86_32 GAS AT&T syntax (see [instruction reference](https://www.felixcloutier.com/x86/) and [wikibook: Ассемблер в Linux для программистов C](https://ru.wikibooks.org/wiki/%D0%90%D1%81%D1%81%D0%B5%D0%BC%D0%B1%D0%BB%D0%B5%D1%80_%D0%B2_Linux_%D0%B4%D0%BB%D1%8F_%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B8%D1%81%D1%82%D0%BE%D0%B2_C))
 * [`runtime`](runtime/) contains your compiler runtime; for now, it contains just two builtin functions [`Lread`](runtime/runtime.c#L7) and [`Lwrite`](runtime/runtime.c#L3)
@@ -12,17 +11,11 @@ Our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
 * (`-s` option) compilation to SM and SM program interpretation
 * (`-o` option) compilation to X86 (via SM)
 
-Lecture notes:
-1. [Expressions Semantics](lectures/01.pdf)
-2. [Statements and AST2SM Semantics](lectures/02.pdf)
-3. [Structural Control Flow Operators Semantics and Syntax Extensions](lectures/03.pdf)
-4. [Extended Stack Machine (for structural control flow)](lectures/04.pdf)
-5. [Control Flow Expressions (combining `Expressions` and `Statements` into one syntactic category)](lectures/05.pdf)
-6. [Functions and Local Scopes](lectures/06.pdf)
+Corresponding lecture notes:  [Functions and Local Scopes](https://github.com/danyaberezun/compilers-supplementary/tree/main/lectures/06.pdf)
 
 **What is new, some important changes, and additional remarks**:
 1. New lecture notes ([Functions and Local Scopes](lectures/06.pdf)
-2. Note, we support syntactically nested functions in a *extremely* simple way:
+2. Note, we support syntactically nested functions in an *extremely* simple way:
    + we do **not** support access to enclosing functions local variables
 3. Note, `;` used at the end of declarations does not match the sequence operator `;`
 
