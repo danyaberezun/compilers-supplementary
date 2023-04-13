@@ -1,4 +1,4 @@
-# Assignment 7: S(syntactic)-expressions and pattern-matching (all modes)
+# Assignment 9: S(syntactic)-expressions and pattern-matching (all modes)
 
 **Repo structure**:
 * [`regression`](regression/) --- tests
