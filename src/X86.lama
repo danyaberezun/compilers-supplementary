@@ -407,10 +407,51 @@ fun suffix (op) {
   esac
 }
 
+fun opType (op) {
+ case op of
+    "<"   -> CmpType
+  | "<="  -> CmpType
+  | "=="  -> CmpType
+  | "!="  -> CmpType
+  | ">="  -> CmpType
+  | ">"   -> CmpType
+  | "%"   -> DivType
+  | "/"   -> DivType
+  | "!!"  -> BoolType
+  | "&&"  -> BoolType
+  | _     -> SopType
+  esac
+}
+
+
+fun compileCmpType(code, x, y, res, s){
+  code <+ Mov(x, eax) <+ Binop("cmp", eax, y) <+>  move(L(0), eax) <+ Set(suffix(s), "%al") <+ Mov(eax, res)
+}
+
+fun compileDivType(code, x, y, res, s){
+  case s of
+          "%" -> code <+ Mov (y, eax) <+ Cltd <+ IDiv(x) <+ Mov (edx, res)
+        | "/" -> code <+ Mov (y, eax) <+ Cltd <+ IDiv(x) <+ Mov (eax, res)
+  esac
+}
+
+fun compileSopType(code, x, y, res, s){
+  code <+> move(y, eax) <+ Binop(s, x, eax) <+> move(eax, res)
+}
+
+fun compileBoolType(code, x, y, res, s){
+  fun castToBool(addr) {
+    Binop("cmp", L(0), addr).singletonBuffer <+> move (L(0), eax) <+ Set(suffix("!="), "%al") <+ Mov(eax, addr)
+  }
+  code <+> castToBool(x) <+> castToBool(y) <+> move(x, eax) <+ Binop(s, y, eax) <+> move(L(0), eax) <+ Set(suffix("!="), "%al") <+> move(eax, res)
+}
+
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
   fun compile (env, code) {
+    --failure(code.string);
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
@@ -440,7 +481,86 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-               
+        
+        | ST (x)  ->
+            case env.pop of 
+            [s, env] -> [env.push(x), code <+> move(s, env.loc(x))]
+            esac
+        | LDA(x) -> case env.allocate of
+                    [s, env]-> [env, code <+ Lea(env.loc(x), s)]
+                    esac 
+        | LD (x) -> case env.allocate of
+                    [s, env]-> [env, code <+> move(env.loc(x), s)]
+                    esac 
+        
+        | BINOP (s) ->
+                  case env.pop2 of
+                  [x,y, env] -> 
+                    case env.allocate of
+                      [res, env] -> case opType(s) of
+                                      CmpType -> [env,compileCmpType(code, x,y,res,s)]
+    
+                                    | DivType -> [env, compileDivType(code, x, y, res, s)]
+                                    | SopType -> [env, compileSopType(code, x, y, res, s)]
+                                    | BoolType -> [env, compileBoolType(code, x, y, res, s)]
+                                    esac
+                    esac
+                  esac
+
+        | CONST (x) ->  case env.allocate of
+                        [s, env] -> [env, code <+> move(L(x), s)]
+                        esac
+        | STI ->  case env.pop2 of
+                      [v, r, env] -> [env.push(v), code <+> move(v, I(0,r))]
+                      esac
+        | DROP -> case env.pop of [_, env] -> [env, code] esac
+        
+        | LABEL (l) -> [if isBarrier then env.retrieveStack(l) else env fi, code <+ Label(l)]
+        | CJMP (0,l) -> case env.pop of 
+                      [x, env] -> [env.setStack(l), code <+> move(L(0), eax) <+ Binop("cmp",x, eax) <+ CJmp("z", l)]
+                      esac
+        | CJMP (1,l) -> case env.pop of 
+                      [x, env] -> [env.setStack(l), code <+> move(L(0), eax) <+ Binop("cmp", x, eax) <+ CJmp("nz", l)]
+                      esac
+        | JMP (l)     -> [setBarrier(env.setStack(l)), code <+ Jmp (l)]
+        | GLOBAL (x)  -> [env.addGlobal(x), code]
+        | BEGIN (fl ,arg_n, loc_n) -> [enterFunction(env, fl, loc_n), code <+> prologue(fl)]
+        | END  -> [epilogue(env).fst, code <+> epilogue(env).snd]
+
+        | CALL (fl, arg_n) ->
+                              var savedRegsPush = foldl(
+                                fun(rc, reg){
+                                  rc <+ Push(reg)
+                                }, emptyBuffer(), liveRegisters(env, arg_n)
+                              );
+                              var savedRegsPop = foldr(
+                                fun(rc, reg){
+                                  rc <+ Pop(reg)
+                                }, emptyBuffer(), liveRegisters(env, arg_n)
+                              );
+                       
+
+                              fun pushArgs(env, p_code, reg_n){
+                                if reg_n == 0 then [env, p_code]
+                                else 
+                                    case
+                                    env.pop of  [arg, env] -> 
+                                                pushArgs(env, p_code <+ Push(arg), reg_n-1)
+                                    esac
+                                fi
+                              }
+
+                              case pushArgs(env, emptyBuffer(), arg_n) of
+                                [env, pCode] -> 
+                                case env.allocate of [fRes, env] -> [env, 
+                                          code <+> savedRegsPush <+> pCode <+ Call(fl) <+ Binop("+", L(wordSize * arg_n), esp) <+> savedRegsPop <+> move(eax, fRes)
+
+                                          ]
+
+                                esac
+
+                              esac
+
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         (* End *)
         esac
