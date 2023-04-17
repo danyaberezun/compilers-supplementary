@@ -407,6 +407,41 @@ fun suffix (op) {
   esac
 }
 
+
+fun isSuffix (op) {
+  case op of
+    "<"  -> true
+  | "<=" -> true
+  | "==" -> true
+  | "!=" -> true
+  | ">=" -> true
+  | ">"  -> true
+  | _ -> false
+  esac
+}
+
+
+fun isBoolOp (op) {
+  case op of 
+    "!!" -> true
+  | "&&" -> true
+  | _    -> false
+  esac
+}
+
+fun popn (env, n) {
+  if n == 0 then
+    [{}, env]
+  else 
+    case pop(env) of 
+      [s, env] -> 
+        case popn(env, n-1) of
+          [ss, env] -> [s : ss, env]
+        esac
+    esac
+  fi
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -439,8 +474,102 @@ fun compile (env, code) {
          --
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-               
+         -- 2. generate epilogue for END instruction.       
+        | LD (x) -> 
+            case env.allocate of
+              [s, env] -> [env, code <+> move(env.loc(x), s)]
+            esac
+        | LDA (x) -> 
+            case env.allocate of
+              [s, env] -> [env, code <+ Lea(env.loc(x), s)]
+            esac
+        | ST (x) ->
+            case env.pop of
+              [s, env] -> [env, code <+> move(s, env.loc(x))]
+            esac
+        | STI ->
+            case pop2(env) of 
+              [v, x, env] -> [push(env, v), code <+> move(v, eax) <+ Mov(eax, I(0, x)) <+> move(v, x)]
+            esac
+        | BINOP (op) -> --[env, code]
+            case pop2(env) of 
+              [y, x, env] -> 
+                case allocate(env) of
+                  [s, env] -> 
+                    case op of 
+                      "/" -> [env, code <+> move(x, eax) <+ Cltd <+ IDiv(y) <+> move(eax, s)]
+                    | "%" -> [env, code <+> move(x, eax) <+ Cltd <+ IDiv(y) <+> move(edx, s)]
+                    | _ ->
+                      if isSuffix(op) then
+                        [env, code <+ Mov(y, eax) <+ Binop("cmp", eax, x) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, s)]
+                      else
+                        if isBoolOp(op) then
+                          [env, code <+> move(L(0), eax) <+ Binop("cmp", eax, y) <+ Set("ne", "%al") <+> move(eax, y)
+                                    <+> move(L(0), eax) <+ Binop("cmp", eax, x) <+ Set("ne", "%al") <+> move(eax, x)
+                                    <+> move(y, eax) <+ Binop(op, eax, x) <+> move(x, s)]
+                        else
+                          [env, code <+> move(x, eax) <+ Binop(op, y, eax) <+> move(eax, s)]
+                        fi
+                      fi
+                    esac 
+                esac
+            esac
+        | CONST (n) -> 
+            case allocate(env) of
+              [s, env] -> [env, code <+> move(L(n), s)]
+            esac
+        | JMP (lab) -> [setStack(env, lab).setBarrier, code <+ Jmp(lab)]
+        | LABEL (lab) -> [retrieveStack(env, lab), code <+ Label(lab)]
+        | CJMP (flg, lab) -> 
+            case pop(env) of
+              [s, env] -> [setStack(env, lab), code <+> move(s, eax) <+ Binop("cmp", L(0), eax) <+ CJmp(flg, lab)]
+            esac
+        | DROP ->
+            case pop(env) of
+              [s, env] -> [env, code]
+            esac
+        | DUP -> 
+            case pop(env) of
+              [ps, env] -> 
+                case allocate(env) of
+                  [s1, env] -> 
+                    case allocate(env) of
+                      [s2, env] -> [env, code <+> move (ps, s1) <+> move (ps, s2)]
+                    esac
+                esac
+            esac
+        | GLOBAL (x) -> [addGlobal(env, x), code]
+        | CALL (fLab, nArgs) ->
+            case liveRegisters(env, nArgs) of 
+              regs -> 
+                case foldl (fun(code, reg) {code <+ Push(reg)}, emptyBuffer (), regs) of 
+                  saveRegs -> 
+                    case popn(env, nArgs) of
+                      [args, env] ->
+                        case foldl (fun(code, arg) {code <+ Push(arg)}, emptyBuffer (), args) of
+                          loadArgs ->
+                            case allocate(env) of
+                              [s, env] ->
+                                case foldl (fun(code, arg) {code <+ Pop(ebx)}, emptyBuffer (), args) of
+                                  unloadArgs ->
+                                    case foldl (fun(code, reg) {code <+ Pop(reg)}, emptyBuffer (), regs) of 
+                                      returnRegs -> 
+                                        [env, code <+> saveRegs <+> loadArgs <+ Call(fLab) <+> unloadArgs <+> move(eax, s) <+> returnRegs]
+                                    esac
+                                esac
+                            esac
+                        esac
+                    esac
+                esac
+            esac
+        | BEGIN (fLab, a, l) -> 
+            case enterFunction(env, fLab, l) of
+              env -> [env, code <+ Label(fLab) <+> prologue(fLab)]
+            esac
+        | END -> 
+            case epilogue(env) of
+              [env, retCode] -> [env, code <+> retCode]
+            esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         (* End *)
         esac
