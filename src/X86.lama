@@ -473,32 +473,6 @@ fun compile (env, code) {
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        fun compileFun(env, lab, argsAmount) {
-          var regs = liveRegisters(env, argsAmount);
-          var pushedRegs = foldl(fun (code, arg) { code <+ Push(arg) }, emptyBuffer(), regs);
-          var poppedRegs = foldr(fun (code, arg) { code <+ Pop(arg) }, emptyBuffer(), regs);
-          fun genArgs(env, acc, n) {
-            if n == 0
-              then [env, acc]
-              else case pop(env) of
-                [x, env] -> genArgs(env, acc <+ Push(x), n - 1)
-              esac
-            fi
-          }
-          case genArgs(env, emptyBuffer(), argsAmount) of
-            [env, pushedArgs] ->
-              case allocate(env) of
-                [s, env] ->
-                  [env,
-                      pushedRegs                           <+>
-                      pushedArgs                           <+
-                      Call(lab)                            <+
-                      Binop("+", L(wordSize * argsAmount), esp) <+>
-                      poppedRegs <+> move(eax, s)
-                  ]
-              esac
-          esac
-        }
 
         case i of
          -- Some guidelines for generating function calls:
@@ -568,43 +542,69 @@ fun compile (env, code) {
         | END                    -> case epilogue(env) of
           [env, ecode] -> [env, code <+> ecode]
         esac
-        | CALL (lab, argsAmount) -> case compileFun(env, lab, argsAmount) of
+        | CALL (lab, argsAmount) -> case compileCall(env, lab, argsAmount, {}) of
           [env, callCode] -> [env, code <+> callCode]
         esac
-        | BUILTIN (funName, argAmount) -> case compileFun(env, "L" ++ funName, argAmount) of
+        | BUILTIN (funName, argAmount) -> case compileCall(env, "L" ++ funName, argAmount, {}) of
           [env, callCode] -> [env, code <+> callCode]
         esac
         | STRING (s) -> case env.addString(s) of
           [env, name] -> case env.allocate of
-            [loc, env] -> case compileFun(env, "Bstring", 1) of
+            [loc, env] -> case compileCall(env, "Bstring", 1, {}) of
               [env, callCode] -> [env, code <+> move(M("$" ++ name), loc) <+> callCode]
             esac
           esac
         esac
-        | ELEM -> case compileFun(env, "Belem", 2) of
+        | ELEM -> case compileCall(env, "Belem", 2, {}) of
           [env, callCode] -> [env, code <+> callCode]
         esac
-        | STA -> case compileFun(env, "Bsta", 3) of
+        | STA -> case compileCall(env, "Bsta", 3, {}) of
           [env, callCode] -> [env, code <+> callCode]
         esac
-        | ARRAY (n) ->
-            case popAndPushN(n, env, emptyBuffer ()) of [env, code1] ->
-              case allocate (env) of [s, env] ->
-                [env, code <+> code1 <+ Push (L(n)) <+ Call ("Barray") <+ Mov (eax, s) <+ Binop ("+", L((n + 1) * 4), esp)]
-              esac
+        | ARRAY (n) -> case compileCall(env, "Barray", n, {L(n)}) of
+          [env, callCode] -> [env, code <+> callCode]
+        esac
+        | SEXP (name, n) ->
+          case allocate(env) of
+            [hash, env] -> case compileCall(env, "Bsexp", n + 1, {L(n + 1)}) of
+              [env, callCode] -> [env, code <+> move (L (tagHash(name)), hash) <+> callCode]
             esac
-        | SEXP (tag, n) ->
-            case popAndPushN(n, env, emptyBuffer ()) of [env, code1] ->
-              case allocate (env) of [s, env] ->
-                [env, code <+ Push (L (tagHash(tag))) <+> code1 <+ Push (L(n + 1)) <+ Call ("Bsexp") <+ Mov (eax, s) <+ Binop ("+", L((n + 2) * 4), esp)]
-              esac
-            esac
+          esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
   }
 
   compile (env, code) 
+}
+
+fun pushFuncArgs(env, na, extraArgs) {
+  fun range(a, b) {
+    if a >= b then {} else a : range(a+1, b) fi
+  }
+
+  foldl(
+    fun([env, code], s) {
+      [env, code <+ Push (s)]
+    },
+    foldl(fun([env, code], i){
+      case pop(env) of
+        [s, env] -> [env, code <+ Push (s)]
+      esac
+    }, [env, emptyBuffer ()], range(0, na)),
+    extraArgs
+  )
+}
+
+fun compileCall(env, lab, argsAmount, extraArgs) {
+  var regs = liveRegisters(env, argsAmount);
+  var pushedRegs = foldl(fun (code, arg) { code <+ Push(arg) }, emptyBuffer(), regs);
+  var poppedRegs = foldr(fun (code, arg) { code <+ Pop(arg) }, emptyBuffer(), regs);
+  case pushFuncArgs(env, argsAmount, extraArgs) of
+    [env, argsPlace] -> case allocate(env) of
+      [ret, env] -> [env, pushedRegs <+> argsPlace <+ Call (lab) <+ Binop ("+", L (wordSize * (argsAmount + extraArgs.size)), esp) <+> poppedRegs <+> move(eax, ret)]
+    esac
+  esac
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
