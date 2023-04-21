@@ -1,5 +1,6 @@
 -- Expression evaluator
 
+import Fun;
 import List;
 import State;
 import World;
@@ -31,34 +32,6 @@ public fun evalOp (op, l, r) {
   esac
 }
 
--- Evaluates an expression "expr" in a configuration "c".
--- A configuration is a pair of a state "s" and a world "w".
--- Returns a final configuration (if any)
---
--- A expression is represented by a data structure of the following shape:
---
--- expr = Assn    (string, expr)       |
---        Seq     (expr, expr)         |
---        Skip                         |
---        Read    (string)             |
---        Write   (expr)               |
---        If      (expr, expr, expr)   |
---        While   (expr, expr)         |
---        DoWhile (expr, expr)         |
---        Var     (string)             |
---        Ref     (string)             |
---        Const   (int)                |
---        Binop   (string, expr, expr) |
---        Scope   (def list, expr)     |
---        Call    (string, expr list)  |
---        Ignore  (expr)
---
--- A definition is either a local variable definition or a function
--- definition:
---
--- def = Var (string list)                |
---       Fun (string, string list, expr)
-
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
 fun checkVar (state, name) {
@@ -86,6 +59,11 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
+
+-- Helper function: adds function arguments in the current scope
+fun addArgs(state, argNames, argVals) {
+  foldl(fun (s, [n, v]) { addName(s, n, Var(v)) }, state, zip(argNames, argVals))
+}
                                         
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
@@ -101,11 +79,83 @@ fun evalList (c, exprs) {
   esac
 }
 
-(* Assignment *)
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+-- Evaluates an expression "expr" in a configuration "c".
+-- A configuration is a pair of a state "s" and a world "w".
+-- Returns a final configuration (if any)
+--
+-- A expression is represented by a data structure of the following shape:
+--
+-- expr = Assn    (string, expr)       |
+--        Seq     (expr, expr)         |
+--        Skip                         |
+--        Read    (string)             |
+--        Write   (expr)               |
+--        If      (expr, expr, expr)   |
+--        While   (expr, expr)         |
+--        DoWhile (expr, expr)         |
+--        Var     (string)             |
+--        Ref     (string)             |
+--        Const   (int)                |
+--        Binop   (string, expr, expr) |
+--        Scope   (def list, expr)     |
+--        Call    (string, expr list)  |
+--        Ignore  (expr)
+--
+-- A definition is either a local variable definition or a function
+-- definition:
+--
+-- def = Var (string list)                |
+--       Fun (string, string list, expr)
+fun eval(c@[s, w], expr) {
+  case expr of
+      Var(x)                -> checkVar(s, x); [c, case lookup(s, x) of Var(x) -> x esac]
+    | Const(x)              -> [c, x]
+    | Ref(x)                -> [c, Ref(x)]
+    | Binop (op, e1, e2)    -> case evalList(c, { e1, e2 }) of [c, { x, y }] -> [c, evalOp(op, x, y)] esac
+    | Skip                  -> [c, None]
+    | Assn(l, r)            -> case evalList(c, { l, r }) of [[s, w], { Ref(l), r }] -> [[s <- [l, Var(r)], w], r] esac
+    | Read(x)               -> (
+      var readRes = readWorld(w);
+      [[s <- [x, Var(readRes.fst)], readRes.snd], None]
+    )
+    | Write(e)              -> case eval(c, e) of [[s, w], e] -> [[s, writeWorld(e, w)], None] esac
+    | Seq(e1, e2)           -> case eval(c, e1) of [c, _] -> eval(c, e2) esac
+    | If(e, e1, e2)         -> case eval(c, e) of [c, e] -> if e then eval(c, e1) else eval(c, e2) fi esac
+    | loop@While(e, stmt)   -> case eval(c, e) of
+      [c, e] -> if e
+        then case eval(c, stmt) of [c, _] -> eval(c, loop) esac
+        else [c, None]
+      fi
+    esac
+    | loop@DoWhile(stmt, e) -> eval(c, Seq(stmt, While(e, stmt)))
+    | Ignore(e)             -> case eval(c, e) of [c, e] -> [c, None] esac
+    | Scope(defs, e)        ->
+      case eval([addDefs(enterScope(s), defs), w], e) of
+        [[s, w], e] -> [[leaveScope(s), w], e]
+      esac
+    | Call(name, args)      -> checkFun(s, name);
+    case lookup(s, name) of
+      Fun(argNames, body) -> (
+        case evalList([s, w], args) of
+          [[s, w], argVals] ->
+            case eval([addArgs(enterFunction(s), argNames, argVals), w], body) of
+              [[inner_s, w], e] -> [[s.leaveFunction(inner_s.getGlobal), w], e]
+            esac
+        esac
+      )
+    esac
+  esac
 }
-(* End *)
+
+-- Adds variables and functions from defs to a state s
+fun addDefs(state, defs) {
+  foldl(fun (s, def) {
+    case def of
+        Var(names)            -> addNames(s, names)
+      | Fun(name, args, body) -> addFunction(s, name, args, body)
+    esac
+  }, state, defs)
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {

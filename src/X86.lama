@@ -155,6 +155,19 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
     esac
   }
 
+  fun popn(n) {
+    fun inner (n, acc, list) {
+      if n == 0
+        then [list, acc]
+        else inner (n-1, list.hd : acc, list.tl)
+      fi
+    }
+
+    case inner (n, {}, stack) of
+      [newStack, popped] -> [popped, makeEnv(newStack, stackSlots, globals, barrier, stackMap, fLabel, nLocals)]
+    esac
+  }
+
   -- Peeks the top of the symbolic stack
   fun peek () {
     stack.fst
@@ -252,7 +265,8 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
    enterFunction,
    currentFunction,
    liveRegisters,
-   staticSize]
+   staticSize,
+   popn]
 }
 
 -- Exported accessors
@@ -326,6 +340,10 @@ fun liveRegisters (env, depth) {
 
 fun staticSize (env) {
   env [17] ()
+}
+
+fun popn (env, n) {
+  env [18] (n)
 }
 
 -- Creates an initial environment
@@ -407,6 +425,26 @@ fun suffix (op) {
   esac
 }
 
+fun in(e, l) {
+  listSet(l, compare).memSet(e)
+}
+
+fun toBool(s) {
+  singletonBuffer(Mov(L(0), eax)) <+ Binop("cmp", s, eax) <+ Set("ne", "%al") <+ Mov(eax, s)
+}
+
+fun binop(op, x, y, s) {
+  singletonBuffer(Mov(x, eax)) <+ Binop(op, y, eax) <+ Mov(eax, s)
+}
+
+fun popFromStack(l) {
+  foldl(fun (code, r) { code <+ Pop(r) }, emptyBuffer(), l)
+}
+
+fun pushOnStack(l) {
+  foldl(fun (code, r) { code <+ Push(r) }, emptyBuffer(), l.reverse)
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -417,14 +455,77 @@ fun compile (env, code) {
         case i of
           READ ->
             case env.allocate of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
-            esac             
+	            [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
+            esac
         | WRITE ->
             case env.pop of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
+	            [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
             esac
-        (* Assignment *)
-        
+        | CONST(n)  ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Mov(L(n), s)]
+            esac
+        | ST(x)     ->
+            case pop(env) of
+              [s, env] -> [env, code <+> move(s, env.loc(x))]
+            esac
+        | LD(x)     ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move(env.loc(x), s)]
+            esac
+        | BINOP(op) ->
+            case env.pop2 of
+              [y, x, env] ->
+                case env.allocate of
+                  [s, env] -> [env,
+                    if in(op, { "+", "-", "*" }) then code <+> binop(op, x, y, s)
+                      elif in(op, { "&&", "!!" }) then code <+> toBool(x) <+> toBool(y) <+> binop(op, x, y, s)
+                      elif in(op, { "==", "!=", "<", "<=", ">", ">=" }) then
+                        code <+ Mov(x, eax) <+ Binop("cmp", y, eax) <+ Mov(L(0), eax) <+ Set(op.suffix, "%al") <+ Mov(eax, s)
+                      elif in(op, { "/" }) then code <+ Mov(x, eax) <+ Cltd <+ IDiv(y) <+ Mov(eax, s)
+                      elif in(op, { "%" }) then code <+ Mov(x, eax) <+ Cltd <+ IDiv(y) <+ Mov(edx, s)
+                      else failure("codegeneration for Binop %s failed: unknown operand %s\n", i.string, op)
+                    fi
+                  ]
+                esac
+            esac
+        | LABEL(l) -> [
+          if env.isBarrier
+            then env.retrieveStack(l)
+            else env
+          fi, code <+ Label(l)
+        ]
+        | JMP(l) -> [env.setStack(l).setBarrier, code <+ Jmp(l)]
+        | CJMP(c, l) ->
+            case env.pop of
+              [s, env] -> [env.setStack(l), code <+ Mov(L(0), eax) <+ Binop("cmp", L(0), s) <+ CJmp(c, l)]
+            esac
+        | STI ->
+            case env.pop2 of
+              [v, x, env] -> [env.push(v), code <+> move(v, I(0, x))]
+            esac
+        | LDA(x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Lea(env.loc(x), s)]
+            esac
+        | DROP -> case env.pop of [_, env] -> [env, code] esac
+        | CALL(f, n) -> (
+          case liveRegisters(env, n) of
+            liveRegisters ->
+              case popn(env, n) of
+                [args, env] -> case allocate(env) of
+                  [s, env] -> [env,
+                      code <+> pushOnStack(liveRegisters) <+> pushOnStack(args) <+
+                      Call(f) <+ Mov (eax, s) <+ Binop ("+", L (4 * n), esp) <+> popFromStack(reverse(liveRegisters))
+                  ]
+                esac
+              esac
+          esac
+        )
+        | BEGIN(f, a, l) -> [enterFunction(env, f, l), code <+> prologue(f)]
+        | END -> case epilogue(env) of [env, epilogueCode] -> [env, code <+> epilogueCode] esac
+        | GLOBAL(x) -> [addGlobal(env, x), code]
+        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
          -- Some guidelines for generating function calls:
          --
          -- 1. generate instructions to save live registers on the X86 stack (use
@@ -440,9 +541,6 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-               
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        (* End *)
         esac
       }, [env, emptyBuffer ()], code)
   }
