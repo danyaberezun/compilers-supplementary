@@ -6,8 +6,6 @@ import State;
 import World;
 import Lexer;
 import Parser;
-import Fun;
-import Builtins;
 
 -- As association map which maps "\otimes" into "\oplus"
 var ops = {
@@ -82,9 +80,27 @@ fun addNames (state, names) {
   foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
 }
 
+fun addArgs (state, names, values) {
+  foldl (fun (s, [name, value]) {s.addName (name, Var (value))}, state, zip (names, values))
+}
+
+fun assignVar (state, name, value) {
+  safeGetVar (state, name); state <- [name, Var (value)]
+}
+
 -- Helper function: adds a function in current scope
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
+}
+
+fun addDefs (state, ds) {
+  foldl (fun (s, d) {
+    case d of 
+      Var (names)            -> addNames (s, names)
+    | Fun (name, args, body) -> addFunction (s, name, args, body)
+    | _                      -> failure ("Uknown definition: %s\n", d.string)
+    esac
+  }, state, ds)
 }
                                         
 -- Evaluates a list of expressions, properly threading a configurations.
@@ -101,10 +117,72 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (c@[st, w], expr) {
+  case expr of
+    Skip                         -> [c, Unit]
+  | Var     (x)                  -> [c, safeGetVar (st, x)]
+  | Ref     (x)                  -> [c, x]
+  | Const   (n)                  -> [c, n]
+  | Assn    (x, expr)            ->
+      case evalList (c, {x, expr}) of
+        [[st, w], {x, v}] -> [[assignVar (st, x, v), w], v]
+      esac
+  | Seq     (left, right)        ->
+      case evalList (c, {left, right}) of
+        [c, {_, v}] -> [c, v]
+      esac
+  | Read    (x)                  ->
+      case readWorld (w) of
+        [v, w] -> [[assignVar (st, x, v), w], Unit]
+      esac
+  | Write   (expr)               ->
+      case eval (c, expr) of
+        [[st, w], n] -> case writeWorld (n, w) of
+          w -> [[st, w], Unit]
+        esac
+      esac
+  | If      (cond, tBody, eBody) ->
+      case eval (c, cond) of
+        [c, n] -> eval (c, if n then tBody else eBody fi)
+      esac
+  | While   (cond, body)               -> eval (c, If (cond, Seq (body, expr), Skip))
+  | DoWhile (body, cond)               -> eval (c, Seq (body, While (cond, body)))
+  | Binop   (op, left, right)          ->
+      case evalList (c, {left, right}) of
+        [c, {l, r}] -> [c, evalOp (op, l, r)]
+      esac
+  | Call    (name, args)         ->
+      case safeGetFun (st, name) of
+        Fun (argNames, body) -> 
+          if size (argNames) != size (args)
+          then error (sprintf ("wrong number of arguments for ""%s"", extected %d, found %d", name, size (argNames), size (args)), getLoc (name))
+          else
+            case evalList (c, args) of
+              [[st, w], vs] -> case addArgs (enterFunction (st), argNames, vs) of
+                stFun -> case eval ([stFun, w], body) of
+                  [[stFun, w], v] -> [[leaveFunction (st, getGlobal (stFun)), w], v]
+              esac
+            esac
+          esac
+        fi
+      esac
+  | Scope   (defs, expr)         ->
+      case enterScope (st) of
+        st -> case addDefs (st, defs) of
+          st -> case eval ([st, w], expr) of
+            [[st, w], n] -> case leaveScope (st) of
+              st -> [[st, w], n]
+            esac
+          esac
+        esac
+      esac
+  | Ignore  (expr)               ->
+      case eval (c, expr) of
+        [c, _] -> [c, Unit]
+      esac
+  | _                                  -> failure ("Uknown expression: %s\n", expr.string)
+  esac
 }
-
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
