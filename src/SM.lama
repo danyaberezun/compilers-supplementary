@@ -44,7 +44,6 @@ public fun showSMInsn (i) {
   | BEGIN  (f, a, l) -> sprintf ("BEGIN %s, %d, %d", f, a, l)
   | GLOBAL (x)       -> sprintf ("GLOBAL %s", x)
   | END              -> sprintf ("END")
-  | DUP              -> "DUP"
   | DROP             -> "DROP"
   | STRING (s)       -> sprintf ("STRING ""%s""", s)
   | ARRAY  (n)       -> sprintf ("ARRAY %d", n)
@@ -177,10 +176,10 @@ fun eval (env, w, insns) {
           v : x : stack -> assign (st, x, v); eval ([v : stack, cst, st, w], tail)
         | _             -> emptyStackError ("DROP")
         esac
-      | CONST (x)        -> eval ([x : stack, cst, st, w], tail)
-      | LABEL (_)        -> eval (c, tail)
-      | JMP   (l)        -> eval (c, fromLabel (env, l))
-      | CJMP  (c, l)     ->
+      | CONST  (x)       -> eval ([x : stack, cst, st, w], tail)
+      | LABEL  (_)       -> eval (c, tail)
+      | JMP    (l)       -> eval (c, fromLabel (env, l))
+      | CJMP   (c, l)    ->
         case stack of
           v : stack -> eval ([stack, cst, st, w], if jmpCompare (c, v) then fromLabel (env, l) else tail fi)
         | _         -> emptyStackError ("CJMP")
@@ -197,11 +196,6 @@ fun eval (env, w, insns) {
         case cst of
           [st, tail] : cst -> eval ([stack, cst, st, w], tail)
         | _        -> c
-        esac
-      | DUP              ->
-        case stack of
-          v : stack -> eval ([v : v : stack, cst, st, w], tail)
-        | _           -> emptyStackError ("DUP")
         esac
       | DROP             ->
         case stack of
@@ -486,8 +480,8 @@ fun rememberFuns (env, ds) {
 --       top-level variable declarations;
 --    c. on the secord traversal add functions themselves for
 --       future code generation (use env.rememberFun).
--- 3. the overall flow for codegeneration:
---    a. generate the code for thetopmost expression (the progrman itself);
+-- 3. the overall flow for code generation:
+--    a. generate the code for the topmost expression (the program itself);
 --    b. take list of nested functions definitions via env.getFuns and
 --       generate the code for each function;
 --    c. repeat b. until no function definitions appear.
@@ -509,19 +503,28 @@ public fun compileSM (stmt) {
     fi
   }
 
-  fun compileFun(fLabel, nargs, env, expr) {
-    case 
-      case genLabel (beginScope (env)) of
-        [lab, env] -> case compile (lab, env, expr) of
-          [labUsed, env, code] ->
-            [false, endScope (env), listBuffer ({LABEL (fLabel), BEGIN (fLabel, nargs, getLocals (env))}) <+> code <+> label (lab, labUsed) <+ END]
+  fun wrapScope (expr) {
+    case expr of
+      Scope (_, _) -> expr
+    | _            -> Scope ({}, expr)
+    esac
+  }
+
+  fun compileFun (fLabel, nargs, env, expr, main) {
+    -- compare (env.currentFunction, "main") == 0
+    compileFuns (
+      case wrapScope (expr) of
+        Scope (defs, expr) -> case addDefs (beginScope (env), defs) of
+          [env, vars] -> case genLabel (rememberFuns (env, defs)) of
+            [lab, env] -> case compile (lab, env, expr) of
+              [labUsed, env, code] ->
+                [endScope (env), if main then listBuffer (map (fun (v) { GLOBAL (v) }, vars)) else emptyBuffer () fi
+                              <+ LABEL (fLabel) <+ BEGIN (fLabel, nargs, getLocals (env)) <+> code <+> label (lab, labUsed) <+ END]
+            esac
+          esac
         esac
       esac
-    of
-      [_, env, code] -> case compileFuns ([env, code]) of
-        [env, code] -> [false, env, code]
-      esac
-    esac
+    )
   }
 
   fun compileFuns ([env, code]) {
@@ -530,8 +533,8 @@ public fun compileSM (stmt) {
     | [functions, env] ->
       compileFuns (
         foldl (fun ([env, code], Fun (fLabel, args, body, state)) {
-                 case compileFun (fLabel, size (args), addArgs (beginFun (env, state), args), body) of
-                   [labUsed, env, funCode] -> [env, code <+> funCode]
+                 case compileFun (fLabel, size (args), addArgs (beginFun (env, state), args), body, false) of
+                   [env, funCode] -> [env, code <+> funCode]
                  esac
                }, [env, code], functions))
     esac
@@ -647,6 +650,9 @@ public fun compileSM (stmt) {
         esac
     | Scope   (defs, expr)         ->
         case addDefs (beginScope (env), defs) of
+          [env, _] -> case rememberFuns (env, defs) of
+            env -> case compile (lab, env, expr) of
+              [labUsed, env, code] -> [labUsed, endScope (env), code]
           [env, vars] -> case rememberFuns (env, defs) of
             env -> case
               if isGlobal (env)
