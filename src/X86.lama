@@ -404,7 +404,39 @@ fun suffix (op) {
   | "!=" -> "ne"
   | ">=" -> "ge"
   | ">"  -> "g"
+  | _    -> ""
   esac
+}
+
+fun isBoolOp (op) {
+  case op of
+      "&&" -> true
+    | "!!" -> true
+    | "^"  -> true
+    | _    -> false
+  esac
+}
+
+fun compareWithNull (x) {
+  emptyBuffer()
+    <+ Mov (L (0), eax)
+    <+ Binop ("cmp", L (0), x)
+    <+ Set ("ne", "%al")
+    <+ Mov (eax, x)
+}
+
+fun popN (env, n) {
+  fun popN (n, env, poped) {
+    if n == 0 then
+      [env, poped]
+    else
+      case pop(env) of
+        [s, env] -> popN(n - 1, env, s : poped)
+      esac
+    fi
+  }
+
+  popN(n, env, {})
 }
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
@@ -423,26 +455,117 @@ fun compile (env, code) {
             case env.pop of
 	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
             esac
-        (* Assignment *)
-        
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-               
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        (* End *)
+        | BINOP (op) ->
+            case pop2(env) of
+              [y, x, env] ->
+                case allocate(env) of
+                  [x, env] ->
+                    case op of
+                        "/" -> [env, code <+ Mov (x, eax) <+ Cltd <+ IDiv (y) <+ Mov (eax, x)]
+                      | "%" -> [env, code <+ Mov (x, eax) <+ Cltd <+ IDiv (y) <+ Mov (edx, x)]
+                      | op ->
+                        case suffix (op) of
+                            "" ->
+                              if isBoolOp (op) then
+                                code := code <+> compareWithNull(x) <+> compareWithNull(y) fi;
+
+                              code :=
+                                if (op.compare("*") == 0) then
+                                  code <+ Mov (x, eax) <+ Binop (op, y, eax) <+ Mov (eax, x) else
+                                  code <+ Mov (y, eax) <+ Binop (op, eax, x)
+                                fi;
+
+                              [env, code]
+                          | suf -> [env, code <+ Mov (L (0), eax) <+ Mov (y, edx) <+ Binop ("cmp", edx, x) <+ Set (suf, "%al") <+ Mov (eax, x)]
+                        esac
+                    esac
+                esac
+            esac
+        | CONST (n) ->
+            case allocate(env) of
+              [s, env] -> [env, code <+ Mov (L (n), s)]
+            esac
+        | LD (x) ->
+            case allocate(env) of
+              [s, env] -> [env, code <+> move (loc(env, x), s)]
+            esac
+        | LDA (x) ->
+            case allocate(env) of
+              [s, env] -> [env, code <+ Lea (loc(env, x), s)]
+            esac
+        | ST (x) ->
+            case pop(env) of
+              [s, env] -> [env, code <+> move (s, loc(env, x))]
+            esac
+        | STI ->
+            case pop2(env) of
+              [x, n, env] -> [env, code <+> move (n, I (0, x))]
+            esac
+        | LABEL (s) -> [env.retrieveStack (s), code <+ Label (s)]
+        | JMP (l) -> [env.setStack (l), code <+ Jmp (l)]
+        | CJMP (c, l) ->
+            case pop(env) of
+              [s, env] -> [env.setStack (l), code <+ Mov (L (0), eax) <+ Binop ("cmp", L (0), s) <+ CJmp (c, l)]
+            esac
+        | DUP ->
+            case env.peek of
+              x ->
+                case allocate(env) of
+                  [s, env] -> [env, code <+> move (x, s)]
+                esac
+            esac
+        | DROP -> case pop(env) of [_, env] -> [env, code] esac
+
+        | GLOBAL (name) -> [addGlobal(env, name), code]
+
+        -- Some guidelines for generating function calls:
+        --
+        -- 1. generate instructions to save live registers on the X86 stack (use
+        --    env.liveRegisters (number of arguments);
+        -- 2. generate instructions to move actual parameters from the symbolic
+        --    stack to the hardware one;
+        -- 3. generate the call itself;
+        -- 4. discard the actual parameters from the stack;
+        -- 5. restore saved live registers.
+        | CALL (fLab, na) ->
+            fun push(r) {
+              foldl(fun (code, r) { code <+ Push (r) }, emptyBuffer(), r)
+            }
+            fun pop(r) {
+              foldl(fun (code, r) { code <+ Pop (r) }, emptyBuffer(), reverse(r))
+            }
+            fun discard(n) {
+              if n == 0 then emptyBuffer() else discard(n - 1) <+ Pop(eax) fi
+            }
+            var r = liveRegisters(env, na);
+            case popN(env, na) of
+              [env, poped] ->
+                case allocate(env) of
+                  [s, env] ->
+                    [env, code
+                      <+> push(r)
+                      <+> push(reverse(poped))
+                      <+ Call (fLab)
+                      <+ Mov (eax, s)
+                      <+> discard(na)
+                      <+> pop(r)
+                    ]
+                esac
+            esac
+        -- Some guidelines for generating functions:
+        --
+        -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
+        --    env.enterFunction to create a proper environment;
+        -- 2. generate epilogue for END instruction.
+        | BEGIN (fLab, na, nl) ->
+            code := code <+> prologue(fLab);
+            env := enterFunction(env, fLab, nl);
+            [env, code]
+        | END ->
+            case epilogue(env) of
+              [env, eCode] -> [env, code <+> eCode]
+            esac
+        | _ -> failure ("Unknown instruction: %s\n", string (i))
         esac
       }, [env, emptyBuffer ()], code)
   }
