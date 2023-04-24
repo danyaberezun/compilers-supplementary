@@ -98,8 +98,9 @@ fun makeEnv (stack, stackSlots, globals) {
   }
 
   -- Returns a string representation of the environment
+  -- NOTE: changed all \n to \t to use in inline assembly comments 
   fun envString () {
-    sprintf ("Stack     : %s\nStackSlots: %d\nGlobals   : %s\n", stack.string, stackSlots, elements (globals).string)
+    sprintf ("Stack     : %s\tStackSlots: %d\tGlobals   : %s\n", stack.string, stackSlots, elements (globals).string)
   }
   
   -- Allocates a new position on the symbolic stack;
@@ -116,7 +117,7 @@ fun makeEnv (stack, stackSlots, globals) {
     of [x, n] -> [x, makeEnv (x : stack, if n > stackSlots then n else stackSlots fi, globals)]esac
   }
 
-  -- Pushes an item on the symbolic state; returns an updated envirtonment
+  -- Pushes an item on the symbolic stack; returns an updated environment
   fun push (y) {
     makeEnv (y : stack, stackSlots, globals)
   }
@@ -278,16 +279,101 @@ fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      -- printf("# Debug: %s ins, env: %s\n", string(showSMInsn(i)), env.envString);
       case i of
         READ ->
           case env.allocate of
             [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
+          esac
       | WRITE ->
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      | CONST (value) ->
+          case env.allocate of
+             [s, env] -> [env, code <+ Mov (L (value), s)]
+          esac
+      | LD (name) ->
+          case env.addGlobal(name).allocate of
+            [s, env] -> [env, code <+> move(env.loc(name), s)]
+          esac
+      | ST (name) ->
+          case env.addGlobal(name).pop of
+            [s, env] -> [env, code <+> move(s, env.loc(name))]
+          esac
+      | BINOP (operation) ->
+          case env.pop2 of
+            [x, y, env] ->
+              -- For *, +, -
+              fun arithmetic_operation () {
+                code := code <+ Binop(operation, x, y);
+                case env.allocate of
+                  [s, env] -> [env, code <+> move(y, s)]
+                esac
+              }
+
+              -- For /, %
+              fun division_operation() {
+                code := code <+> move(y, eax) <+ Binop("^", edx, edx) <+ Cltd <+ IDiv(x);
+                case env.allocate of
+                  [s, env] -> case operation of
+                    "/" -> [env, code <+> move(eax, s)]
+                  | "%" -> [env, code <+> move(edx, s)]
+                  esac
+                esac
+              }
+
+              -- Set operand to 1 or 0 based on its equality to the zero
+              fun bool(x) {
+                singletonBuffer(Binop("^", eax, eax)) <+ Binop("cmp", L(0), x) <+ Set("ne", "%al") <+> move(eax, x)
+              }
+
+              -- For !!, &&
+              fun logic_operation () {
+                code := code <+> bool(x) <+> bool(y);
+
+                -- Now logic operators are the same as andl, orl
+                code := code <+ Binop(operation, x, y) ;
+
+                case env.allocate of
+                  [s, env] -> [env, code <+> move(y, s)]
+                esac
+              }
+
+              -- For <, >, <=, >=, ==, !=
+              fun compare_operation() {
+                var command = case operation of
+                  ">" -> "g"
+                | ">=" -> "nl"
+                | "<"  -> "l"
+                | "<=" -> "ng"
+                | "==" -> "e"
+                | "!=" -> "ne"
+                esac;
+
+                case env.allocate of
+                  [s, env] -> [env, code<+Binop("cmp", x, y)<+Set(command, "%al")<+>move(eax, s)]
+                esac
+              }
+
+              case operation of
+                "+"     -> arithmetic_operation()
+              | "*"     -> arithmetic_operation()
+              | "-"     -> arithmetic_operation()
+              | "/"     -> division_operation()
+              | "%"     -> division_operation()
+              | "&&"    -> logic_operation()
+              | "!!"    -> logic_operation()
+              | ">"     -> compare_operation()
+              | ">="    -> compare_operation()
+              | "<"     -> compare_operation()
+              | "<="    -> compare_operation()
+              | "=="    -> compare_operation()
+              | "!="    -> compare_operation()
+              | _       -> failure("Operation %s is not supported!", operation)
+              esac
+          esac
+      | _ -> failure("Invalid stack machine instruction '%s' encountered", string(i))
       esac
     }, [env, emptyBuffer ()], code)
 }
@@ -297,7 +383,7 @@ fun compile (env, code) {
 public fun compileX86 (code) {
   case compile (initEnv (), code) of
     [env, code] ->
-       map (insnString, 
+       map (insnString,
             getBuffer $
               singletonBuffer (Meta ("\t.global\tmain\n")) <+>
               dataSection (listBuffer $ map (dataDef, getGlobals (env))) <+>
