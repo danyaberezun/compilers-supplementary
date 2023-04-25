@@ -1,4 +1,3 @@
--- X86 codegeneration interface
 -- We use stack machine programs as intermediate representation
 import Fun;
 import SM;
@@ -444,24 +443,75 @@ fun suffix (op) {
   esac
 }
 
+fun guardedCmp(lhv, rhv, code) {
+  case lhv of
+    R (_) -> code <+ Binop("cmp", lhv, rhv)
+  | _     ->
+      case rhv of
+        R (_) -> code <+ Binop("cmp", lhv, rhv)
+      | _     -> code <+ Mov(rhv, edx) <+ Binop("cmp", lhv, edx)
+      esac
+  esac
+}
+
+fun guardedBinop(op, lhv, rhv, code) {
+  case rhv of
+    R (_) -> code <+ Binop(op, lhv, rhv)
+  | _     -> code <+ Mov(rhv, eax) <+ Binop(op, lhv, eax) <+ Mov(eax, rhv)
+  esac
+}
+
+fun guardedMov(lhv, rhv, code) {
+  case lhv of 
+    R (_) -> code <+ Mov (lhv, rhv)
+  | _     ->
+    case rhv of 
+      R (_) -> code <+ Mov (lhv, rhv)
+    | _     -> code <+ Mov(lhv, eax) <+ Mov(eax, rhv)
+    esac
+  esac
+}
+
+
+fun popn(env, n) {
+  if n == 0 then
+    [{}, env]
+  else
+    case pop(env) of [elem, env] ->
+      case popn(env, n - 1) of [st, env] ->
+        [elem:st, env]
+      esac
+    esac
+  fi
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {  
   fun compile (env, code) {
+    fun genCall(env, fLab, a, notSMArgsPre, notSMArgsPost) {
+      case liveRegisters(env, a) of regs -> 
+        case foldr(fun(acc, reg) { acc <+ Push (reg) }, emptyBuffer(), regs) of saveRegs ->
+          case popn(env, a) of [args, env] ->
+            case foldl(fun(acc, x) { acc <+ Push (x) }, emptyBuffer(), notSMArgsPost +++ args +++ notSMArgsPre) of loadArgs ->
+              case allocate(env) of [s, env] ->
+                case foldr(fun(acc, x) { acc <+ Pop (ebx) }, emptyBuffer(), notSMArgsPost +++ args +++ notSMArgsPre) of unloadArgs ->
+                  case foldl(fun(acc, reg) { acc <+ Pop (reg) }, emptyBuffer(), regs) of restoreRegs ->
+                    [env, saveRegs <+> loadArgs <+ Call (fLab) <+> unloadArgs <+ Mov (eax, s) <+> restoreRegs]
+                  esac
+                esac
+              esac
+            esac
+          esac
+        esac
+      esac
+    }
+
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
 
         case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-            esac
-        
          -- Some guidelines for generating function calls:
          --
          -- 1. generate instructions to save live registers on the X86 stack (use
@@ -477,7 +527,79 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-               
+        LD(x) ->
+          case allocate(env) of
+            [s, env] -> [env, guardedMov(loc(env, x), s, code)]
+          esac 
+        | DUP ->
+          case allocate(env) of [n, env2] ->
+            case pop(env) of [o, env3] -> 
+              [env2, guardedMov(o, n, code)]
+            esac
+          esac
+        | LDA(x) ->
+          case allocate(env) of
+            [s, env] -> [env, code <+ Lea(loc(env, x), s)]
+          esac
+        | ST(x) ->
+            case pop(env) of
+              [s, env] -> [env, guardedMov(s, loc(env, x), code)]
+            esac
+        | STI ->
+            case pop2(env) of
+              [v, refX, env] -> [push(env, refX), guardedMov(v, refX, code <+ Mov(v, eax) <+ Mov(eax, I(0, refX)))] -- TODO: push refX here
+            esac
+        | STA -> case genCall(env, "Bsta", 3, {}, {}) of [env, staCode] -> [env, code <+> staCode] esac
+        | CONST(n) ->
+            case allocate(env) of
+              [s, env] -> [env, code <+ Mov (L(n), s)]
+            esac 
+        | BINOP(s) ->
+            case pop2(env) of [rhv, lhv, env] -> case s of 
+              "/"  -> [env.push(lhv), code <+ Mov(lhv, eax) <+ Cltd <+ IDiv(rhv) <+ Mov(eax, lhv)]
+            | "%"  -> [env.push(lhv), code <+ Mov(lhv, eax) <+ Cltd <+ IDiv(rhv) <+ Mov(edx, lhv)]
+            | "&&" -> [env.push(lhv), code <+ Mov(L(0), eax) <+ Mov(L(0), edx) <+ Binop ("cmp", L(0), lhv) <+ Set ("!=".suffix, "%al") <+ Binop ("cmp", L(0), rhv) <+ Set ("!=".suffix, "%dl") <+ Binop("&&", eax, edx) <+ Mov(edx, lhv)]
+            | "!!" -> [env.push(lhv), code <+ Mov(L(0), eax) <+ Mov(L(0), edx) <+ Binop ("cmp", L(0), lhv) <+ Set ("!=".suffix, "%al") <+ Binop ("cmp", L(0), rhv) <+ Set ("!=".suffix, "%dl") <+ Binop("!!", eax, edx) <+ Mov(edx, lhv)]
+            | _    -> case find(fun (x) { compare(x, s) == 0 },  {"+", "-", "*"}) of
+                None -> [env.push(lhv), guardedCmp (rhv, lhv, code <+ Mov(L(0), eax)) <+ Set (s.suffix, "%al") <+ Mov(eax, lhv)]
+              | _    -> [env.push(lhv), guardedBinop (s, rhv, lhv, code)]
+              esac
+            esac esac
+        | LABEL (lab)    -> [if isBarrier(env) then retrieveStack(env, lab) else env fi, code <+ Label(lab)]
+        | JMP (lab)      -> [setBarrier(setStack(env, lab)), code <+ Jmp(lab)]
+        | CJMP (c, lab)  -> case pop(env) of [n, env] -> [setStack(env, lab), code <+ Binop ("cmp", L(0), n) <+ CJmp(c, lab)] esac
+        | DROP           -> case pop(env) of [_, env] -> [env, code] esac
+        | GLOBAL (x)     -> [addGlobal(env, x), code]
+        | CALL (fLab, a) -> case genCall(env, fLab, a, {}, {}) of [env, callCode] -> [env, code <+> callCode] esac
+        | BUILTIN (f, a) -> case genCall(env, sprintf("L%s", f), a, {}, {}) of [env, callCode] -> [env, code <+> callCode] esac
+        | STRING (s)     -> 
+          case addString(env, s) of [env, name] -> 
+            case genCall(env, "Bstring", 0, {M(sprintf("$%s", name))}, {}) of [env, stringCode] ->
+              [env, code <+> stringCode]
+            esac
+          esac
+        | SEXP (s, n)    ->
+          case addString(env, s) of [env, name] ->
+            case genCall(env, "Bsexp", n, {L(n + 1)}, {I(0, M(sprintf("%s", name)))}) of [env, sexpCode] ->
+              [env, code <+> sexpCode]
+            esac
+          esac
+        | ARRAY (n)    ->
+          case genCall(env, "Barray", n, {L(n)}, {}) of [env, arrCode] ->
+            [env, code <+> arrCode]
+          esac
+        | ELEM -> 
+            case genCall(env, "Belem", 2, {}, {}) of [env, elemCode] ->
+              [env, code <+> elemCode]
+            esac
+        | BEGIN (fLab, a, l) ->
+          case enterFunction(env, fLab, l) of env ->
+            [env, code <+ Label(fLab) <+> prologue(fLab)]
+          esac
+        | END -> 
+          case epilogue(env) of [env, retCode] -> 
+            [env, code <+> retCode]
+          esac 
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
