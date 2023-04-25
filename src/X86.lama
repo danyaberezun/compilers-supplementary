@@ -143,8 +143,8 @@ fun makeEnv (stack, stackSlots, globals, strings, stringIndex, barrier, stackMap
   -- item and an updated environment
   fun pop () {
     case stack of
-      x : stack -> [x, makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals)]
-      |  { }       -> [L(0), makeEnv(stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals)]
+      x : stack -> [x, makeEnv (stack, stackSlots, globals, strings, stringIndex, barrier, stackMap, fLabel, nLocals)]
+      |  { }       -> [L(0), makeEnv(stack, stackSlots, globals, strings, stringIndex, barrier, stackMap, fLabel, nLocals)]
     esac
   }
 
@@ -515,22 +515,56 @@ fun evalOp (op, x, y, res) {
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
-fun compile (env, code) {  
+fun compile (env, code) {
   fun compile (env, code) {
+    fun callFunc(name, nargs, env, code, preCallBuffer) {
+      fun pushRegs(regs) {
+            foldl(
+              fun (code, reg) {
+                code <+ Push(reg)
+              },
+              emptyBuffer(),
+              regs
+            )
+          } 
+          
+          fun popRegs(regs) {
+            foldl(
+              fun (code, reg) {
+                code <+ Pop(reg)
+              },
+              emptyBuffer(),
+              regs
+            )
+          }
+
+          fun pushArgs([env, code], nargs) {
+            case nargs of
+              0 -> [env, code]
+              | _ -> 
+                case pop(env) of
+                  [arg, env] -> pushArgs([env, code <+ Push(arg)], nargs-1) 
+                esac
+            esac
+          }
+
+          var liveRegs = liveRegisters(env, nargs);
+          var pushedRegs = pushRegs(liveRegs);
+          var poppedRegs = popRegs(reverse(liveRegs));
+          case pushArgs([env, emptyBuffer()], nargs) of 
+            [env, pushedArgs] ->
+              case allocate(env) of 
+                [s, env] -> var extraSize = size(getBuffer(preCallBuffer));[env, code <+> pushedRegs <+> pushedArgs <+> preCallBuffer <+ Call (name) <+ Binop("+", L (wordSize * (nargs + extraSize)), esp) <+> poppedRegs <+ Mov(eax, s)]
+              esac 
+          esac 
+    }
+
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
 
         case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-            esac
-        | BINOP (op) -> 
+        BINOP (op) -> 
           case env.pop2 of 
             [y, x, env] -> 
               case env.allocate of 
@@ -583,46 +617,23 @@ fun compile (env, code) {
             case epilogue(env) of
               [env, eCode] -> [env, code <+> eCode] 
             esac
-        | CALL (name, nargs) ->
-          fun pushRegs(regs) {
-            foldl(
-              fun (code, reg) {
-                code <+ Push(reg)
-              },
-              emptyBuffer(),
-              regs
-            )
-          } 
-          
-          fun popRegs(regs) {
-            foldl(
-              fun (code, reg) {
-                code <+ Pop(reg)
-              },
-              emptyBuffer(),
-              regs
-            )
-          }
-
-          fun pushArgs([env, code], nargs) {
-            case nargs of
-              0 -> [env, code]
-              | _ -> 
-                case pop(env) of
-                  [arg, env] -> pushArgs([env, code <+ Push(arg)], nargs-1) 
+        | BUILTIN (name, nargs) -> callFunc("L" ++ name, nargs, env, code, emptyBuffer())
+        | CALL (name, nargs) -> callFunc(name, nargs, env, code, emptyBuffer())
+        | ARRAY (n) -> 
+              callFunc("Barray", n, env, code, singletonBuffer(Push(L(n))))
+        | STRING (s) ->
+            case addString(env, s) of
+              [env, smem] -> 
+                case allocate(env) of 
+                  [s, env] -> callFunc("Bstring", 1, env, code <+ Lea (M(smem), s), emptyBuffer())
                 esac
             esac
-          }
-
-          var liveRegs = liveRegisters(env, nargs);
-          var pushedRegs = pushRegs(liveRegs);
-          var poppedRegs = popRegs(reverse(liveRegs));
-          case pushArgs([env, emptyBuffer()], nargs) of 
-            [env, pushedArgs] ->
-              case allocate(env) of 
-                [s, env] -> [env, code <+> pushedRegs <+> pushedArgs <+ Call (name) <+ Binop("+", L (wordSize * nargs), esp) <+> poppedRegs <+ Mov(eax, s)]
-              esac 
-          esac  
+        | ELEM -> callFunc("Belem", 2, env, code, emptyBuffer())
+        | STA -> callFunc("Bsta", 3, env, code, emptyBuffer())
+        | SEXP (tag, n) -> 
+            case allocate(env) of 
+              [t, env] -> callFunc("Bsexp", n + 1, env, code <+> move(L(tagHash(tag)), t), singletonBuffer(Push(L(n + 1))))
+            esac
         (* Assignment *)
         
          -- Some guidelines for generating function calls:
@@ -665,7 +676,8 @@ public fun compileX86 (args, code) {
                     getBuffer $ 
                       singletonBuffer (Meta ("\t.global\tmain\n")) <+>
                       dataSection (listBuffer (map (intDef   , getGlobals (env))) <+>
-                                   listBuffer (map (stringDef, getStrings (env)))) <+>
+                                   listBuffer (map (stringDef, getStrings (env)))
+                                   ) <+>
                       codeSection (code)                   
                     ).stringcat);
                     
