@@ -52,35 +52,45 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+fun doJump(c, n) {
+  case c of
+      "z"  -> n == 0
+    | "nz" -> n != 0
+  esac
+}
+
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c@[stack, state, w], insns) {
   case insns of
       { }       -> c
     | i : insns ->
-      eval (env,
-        case i of
-            READ       ->
-              case readWorld (w) of
-                [n, w] -> [n:stack, state, w]
-              esac
-          | WRITE      ->
-              case stack of
-                n : st -> [st, state, writeWorld (n, w)]
-              esac
-          | BINOP (op) ->
-              case stack of
-                x : y : st -> [evalOp (op, x, y):st, state, w]
-              esac
-          | CONST (n)  -> [n:stack, state, w]
-          | LD (x)     -> [state (x):stack, state, w]
-          | ST (x)     ->
-              case stack of
-                n : st -> [st, state <- [x, n], w]
-              esac
-        esac,
-        insns
-      )
+      case i of
+          READ         ->
+            case readWorld(w) of
+              [n, w] -> eval(env, [n:stack, state, w], insns)
+            esac
+        | WRITE        ->
+          case stack of
+            n : st -> eval(env, [st, state, writeWorld(n, w)], insns)
+          esac
+        | BINOP (op)   ->
+          case stack of
+            x : y : st -> eval(env, [evalOp(op, y, x):st, state, w], insns)
+          esac
+        | CONST (x)    -> eval(env, [x:stack, state, w], insns)
+        | LD (x)       -> eval(env, [state(x):stack, state, w], insns)
+        | ST (x)       ->
+          case stack of
+            top : stack -> eval(env, [stack, state <- [x, top], w], insns)
+          esac
+        | LABEL (_)    -> eval(env, [stack, state, w], insns)
+        | JMP   (l)    -> eval(env, [stack, state, w], env.fromLabel(l))
+        | CJMP  (c, l) ->
+          case stack of
+            n : st -> eval(env, [st, state, w], if doJump(c, n) then env.fromLabel(l) else insns fi)
+          esac
+      esac
   esac
 }
 
@@ -123,9 +133,9 @@ fun genLabels (env, n) {
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
   case expr of
-      Var (v)        -> { LD (v) }
-    | Const (i)      -> { CONST (i) }
-    | Binop(s, l, r) -> compileExpr (r) +++ compileExpr (l) +++ { BINOP (s) }
+      Var   (x)               -> singletonBuffer (LD (x))
+    | Const (n)               -> singletonBuffer (CONST (n))
+    | Binop (op, left, right) -> compileExpr (left) <+> compileExpr (right) <+ BINOP (op)
   esac
 }
 
@@ -167,7 +177,43 @@ public fun compileSM (stmt) {
                   esac
              esac
         esac
-    | _              -> failure ("compileSM not implemented\n")
+      | If (expr, thenBody, elseBody) ->
+        case env.genLabel of
+          [l1, env] ->
+            case compile (lab, env, thenBody) of
+              [_, env, thenCode] ->
+                case compile (lab, env, elseBody) of
+                  [_, env, elseCode] ->
+                    [true, env, compileExpr (expr) <+ CJMP ("z", l1) <+> thenCode <+ JMP (lab)
+                      <+ LABEL (l1) <+> elseCode <+ JMP (lab)]
+                esac
+            esac
+        esac
+      | While (expr, body) ->
+        case env.genLabel of
+          [l1, env] ->
+            case env.genLabel of
+              [l2, env] ->
+                case compile (l2, env, body) of
+                  [_, env, bodyCode] ->
+                    [false, env, singletonBuffer (JMP (l2)) <+ LABEL (l1) <+> bodyCode
+                      <+ LABEL (l2) <+> compileExpr (expr) <+ CJMP ("nz", l1)]
+                esac
+            esac
+        esac
+      | DoWhile (body, e)  ->
+        case env.genLabel of
+          [l1, env] ->
+            case env.genLabel of
+              [l2, env] ->
+                case compile (l2, env, body) of
+                  [isUsing, env, code] ->
+                    [false, env, singletonBuffer (LABEL (l1)) <+> code
+                      <+> label (l2, isUsing) <+> compileExpr (e) <+ CJMP ("nz", l1)]
+                esac
+            esac
+        esac
+      | _  -> failure ("Unknown statement: %s\n", stmt.string)
     esac
   }
 
