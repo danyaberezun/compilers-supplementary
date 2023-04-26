@@ -13,10 +13,10 @@ import Expr;
 import Builtins;
 import Buffer;
 
-var fl = fopen("debug.txt", "w");
+-- var fl = fopen("debug.txt", "w");
 
 fun log(msg) {
-  fprintf(fl, "%s\n", msg)
+ -- fprintf(fl, "%s\n", msg)
 }
 
 var currentState;
@@ -152,7 +152,13 @@ fun eval(env, w, insns) {
       | i : rest ->
         --log(showSMInsn(i));
         case i of
-           BINOP(op)           -> (
+           ST(x) ->
+             case st of
+               v : tail ->
+                 assign(state, x, v);
+                 eval([v:tail, cst, state, w], rest)
+             esac
+          | BINOP(op)           -> (
             case st of
               x : y : tail ->
                 eval([evalOp(op, y, x):tail, cst, state, w], rest)
@@ -182,20 +188,19 @@ fun eval(env, w, insns) {
             esac
           )
           | LABEL(l)            -> eval(c, rest)
-          | STI                 -> (
-            case st of
-              value : _ : Ref(pos) : tail -> (
-                assign(state, pos, value);
-                eval([value:tail, cst, state, w], rest)
-              )
-            esac
-          )
           | DROP                -> (
             case st of
               v : tail -> eval([tail, cst, state, w], rest)
             esac
           )
-          | LDA(x)              -> eval([0:Ref(x):st, cst, state, w], rest)
+          | LDA(x)              -> eval([Ref(x):st, cst, state, w], rest)
+          | STI ->
+              case st of
+                value : Ref(pos) : tail -> (
+                  assign(state, pos, value);
+                  eval([value:tail, cst, state, w], rest)
+                )
+              esac
           | GLOBAL(x)           -> (
             assign(state, Glb(x), 0);
             eval([st, cst, state, w], rest)
@@ -593,21 +598,88 @@ public fun compileSM(stmt) {
     case stmt of
         Skip              -> [false, env, emptyBuffer()]
       | Assn  (x, e)      ->
-        case env.genLabels(2) of
-          [lx, le, env] ->
-            case compile(lx, env, x) of
-              [lxUsed, env, xCode] ->
-                case compile(le, env, e) of
-                  [leUsed, env, eCode] -> [false, env,
-                    xCode <+>
-                      label(lx, lxUsed) <+>
-                      eCode <+>
-                      label(le, leUsed) <+>
-                      singletonBuffer(STA)
-                  ]
+        case x of
+          Ref(name) ->
+            -- Same as set
+            case genLabel(env) of
+              [lab, env] ->
+                case compile(lab, env, e) of
+                  [labUsed, env, code] ->
+                    [false, env,
+                      code <+>
+                        label(lab, labUsed) <+
+                        ST (lookupVar(env, name))]
                 esac
             esac
+          | ElemRef(_, _) ->
+              case env.genLabels(2) of
+                [lx, le, env] ->
+                  case compile(lx, env, x) of
+                    [lxUsed, env, xCode] ->
+                      case compile(le, env, e) of
+                        [leUsed, env, eCode] -> [false, env,
+                          xCode <+>
+                            label(lx, lxUsed) <+>
+                            eCode <+>
+                            label(le, leUsed) <+>
+                            singletonBuffer(STA)
+                        ]
+                      esac
+                  esac
+              esac
+          | _ ->
+              case env.genLabels(2) of
+                [lx, le, env] ->
+                  case compile(lx, env, x) of
+                    [lxUsed, env, xCode] ->
+                      case compile(le, env, e) of
+                        [leUsed, env, eCode] -> [false, env,
+                          xCode <+>
+                            label(lx, lxUsed) <+>
+                            eCode <+>
+                            label(le, leUsed) <+>
+                            singletonBuffer(STI)
+                        ]
+                      esac
+                  esac
+              esac
         esac
+
+--
+--         case x of
+--           ElemRef(e1, e2) ->
+--             case env.genLabels(2) of
+--               [lx, le, env] ->
+--                 case compile(lx, env, x) of
+--                   [lxUsed, env, xCode] ->
+--                     case compile(le, env, e) of
+--                       [leUsed, env, eCode] -> [false, env,
+--                         xCode <+>
+--                           label(lx, lxUsed) <+>
+--                           eCode <+>
+--                           label(le, leUsed) <+>
+--                           singletonBuffer(STA)
+--                       ]
+--                     esac
+--                 esac
+--             esac
+--         | _ ->
+--             case env.genLabels(2) of
+--               [lx, le, env] ->
+--                 case compile(lx, env, x) of
+--                   [lxUsed, env, xCode] ->
+--                     case compile(le, env, e) of
+--                       [leUsed, env, eCode] -> [false, env,
+--                         xCode <+>
+--                           label(lx, lxUsed) <+>
+--                           eCode <+>
+--                           label(le, leUsed) <+>
+--                           singletonBuffer(STI)
+--                       ]
+--                     esac
+--                 esac
+--             esac
+--         esac
       | Seq   (s1, s2)    ->
         case env.genLabel of
           [s2Lab, env] ->
@@ -763,10 +835,9 @@ public fun compileSM(stmt) {
             case compile(lab, env, expr) of
               [labUsed, env, code] ->
                 [false, env,
-                  singletonBuffer(LDA(lookupVar(env, name))) <+>
-                    code <+>
-                    label(lab, labUsed) <+
-                    STI]
+                  code <+>
+                  label(lab, labUsed) <+
+                  ST (lookupVar(env, name))]
             esac
         esac
       )
@@ -852,14 +923,19 @@ public fun compileSM(stmt) {
     [endLab, env] -> (
       case compile(endLab, env, stmt) of
         [endLabUsed, env, code] -> (
-          log("MAIN CODE COMPILED");
-          getBuffer $
+          var res;
+          log("MAIN CODE COMPILED:\n");
+
+          res := getBuffer $
             compileFunctions(env,
               singletonBuffer(LABEL("main")) <+>
                 singletonBuffer(BEGIN("main", 0, getLocals(env))) <+>
                 code <+>
                 label(endLab, endLabUsed) <+>
-                singletonBuffer(END))
+                singletonBuffer(END));
+
+          log(showSM(res));
+          res
         )
       esac
     )
