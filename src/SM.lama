@@ -85,22 +85,27 @@ fun eval (env, w, insns) {
   }
 
   -- Lookups a location in local/global states
-  fun lookup ([args, locs], loc) {
-    case loc of
-      Arg (i) -> args[i]
-    | Loc (i) -> locs[i]
-    | Glb (x) -> deref (globalState) (x)
+  fun lookupSM (s, loc) {
+    case s of
+    [args, locs] ->
+      case loc of
+        Arg (i) -> args[i]
+      | Loc (i) -> locs[i]
+      | Glb (x) -> deref (globalState) (x)
+      esac
     esac 
+    -- esac
   }
 
   -- Assigns a value to a location
-  fun assign ([args, locs], loc, v) {
+  fun assign (state@[args, locs], loc, v) {
     case loc of
       Arg (i) -> args[i] := v
     | Loc (i) -> locs[i] := v
     | Glb (x) -> var g = deref (globalState);
                  globalState ::= fun (y) {if compare (x, y) == 0 then v else g (y) fi}
-    esac
+    esac;
+    [args, locs]
   }
 
   -- Takes n positions from the list, retursn a pair: the remaining list and the taken
@@ -130,15 +135,15 @@ fun eval (env, w, insns) {
   | BINOP (op) : cs ->  case stack of
                           (y:x:stackTail) -> eval([evalOp(op, x, y) : stackTail, cst, state, world], cs)
                         esac
-  | LD  (x) : cs    ->  eval([state (x) : stack, cst, state, world], cs)
-  | LDA (x) : cs    ->  eval([REF (x)   : stack, cst, state, world], cs)
+  | LD  (x) : cs    ->  eval([lookupSM (state, x) : stack, cst, state, world], cs)
+  | LDA (x) : cs    ->  eval([                 x  : stack, cst, state, world], cs)
   | ST  (x) : cs    ->  case stack of
                           (r:stackTail)   -> 
-                            eval([stackTail, cst, state <- [x, r], world], cs)
+                            eval([stackTail, cst, assign(state, x, r), world], cs)
                         esac
-  | STI    : cs    ->  case stack of
-                          (v:REF(x):stackTail) ->
-                            eval([v:stackTail, cst, state <- [x, v], world], cs)
+  | STI    : cs    ->   case stack of
+                          (v:x:stackTail) ->
+                            eval([v:stackTail, cst, assign(state, x, v), world], cs)
                         esac
   | CONST (n) : cs  ->  eval([n:stack, cst, state, world], cs)
   | LABEL (l) : cs  ->  eval(c, cs)
@@ -150,10 +155,23 @@ fun eval (env, w, insns) {
                                                 eval([stackTail, cst, state, world], cs)
                                               fi
                         esac
-  | DROP      : cs  ->  case stack of 
-                          _ : stackTail -> eval([stackTail, cst, state, world], cs)
-                        esac  
-  | GLOBA (x) : cs  -> eval ([stack, cst, assign(0, Glb(x), 0), world], cs)
+  | DROP      : cs        ->  case stack of 
+                                _ : stackTail -> eval([stackTail, cst, state, world], cs)
+                              esac
+  | GLOBA (x) : cs        ->  eval ([stack, cst, assign(state, Glb(x), 0), world], cs)
+  | CALL (f, n) : cs      ->  eval([stack, [state, cs]:cst, state, world], fromLabel(env, f))
+  | BEGIN (f, a, l) : cs  ->  case take(stack, a) of
+                                [stack, argsValues] -> 
+                                  case makeState(a, l) of
+                                    state -> 
+                                      foldl (fun (i, a) {  assign(state, Arg (i), a); i + 1  }, 0, argsValues); 
+                                      eval([stack, cst, state, world], cs)
+                                  esac
+                              esac
+  | END : cs              ->  case cst of
+                                {} -> c
+                              | [state, cs] : cst -> eval([stack, cst, state, world], cs)
+                              esac
   esac
   }
   (* End *)
@@ -394,26 +412,30 @@ fun addGlobals(env, names, globalsCode) {
   fi
 }
 
-fun addAndRememberFun (env, name, args, body) {
-  var lab = genFunLabel (env, name);
-  rememberFun (addFun (env, name, lab, size (args)), lab, args, body)
-}
-
 fun addDefs (env, defs) {
   foldl (
-    fun ([env, globalsCode], def) {
+    fun ([env, funs, globalsCode], def) {
       case def of
-        Var (names)             ->
-          case addGlobals(env, names, globalsCode) of
-            globalsCode -> [addVars (env, names), globalsCode]
-          esac
+        Var (names) ->           
+          [addVars (env, names), funs, addGlobals(env, names, globalsCode)]
       | Fun (name, args, body) -> 
-          [addAndRememberFun (env, name, args, body), globalsCode] 
+          case genFunLabel (env, name) of
+            [lab, env] -> [addFun (env, name, lab, size(args)), [lab, args, body] : funs, globalsCode] 
+          esac
       esac
     }, 
-    [env, emptyBuffer ()],
+    [env, {}, emptyBuffer ()],
     defs
   )
+}
+
+fun rememberFuns (env, funs) {
+  foldl(
+    fun (env, f) { 
+      case f of
+        [lab, args, body] -> rememberFun(env, lab, args, body)
+      esac 
+  }, env, funs)
 }
 
 public fun compileSM (stmt) {
@@ -431,8 +453,8 @@ public fun compileSM (stmt) {
   fun compile (lab, env, stmt) {
     case stmt of
       Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
+    | Var    (x)        -> [false, env, singletonBuffer (LD (lookupVar(env, x)))]
+    | Ref    (x)        -> [false, env, singletonBuffer (LDA (lookupVar(env, x)))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
     
     ----added by pddmain----
@@ -575,35 +597,60 @@ public fun compileSM (stmt) {
                                 esac
                             esac
     | Scope (defs, e)   ->  case addDefs (beginScope (env), defs) of
-                              [env, globalsCode] -> 
-                                case compile (lab, env, e) of
-                                  [labUsed, env, code] -> [labUsed, endScope (env), globalsCode <+> code]
+                              [env, funs, globalsCode] ->
+                                case rememberFuns (env, funs) of
+                                  env ->
+                                    case compile (lab, env, e) of
+                                      [labUsed, env, code] -> [labUsed, endScope (env), globalsCode <+> code]
+                                    esac
                                 esac
                             esac
-                            
     | Call (name, args) ->  case env.genLabel of
-                              [env, aLab] -> 
+                              [aLab, env] -> 
                                 case compileList (aLab, env, args) of
                                   [aLabUsed, env, argsCode] ->
-                                    case lookup (env, name) of  
+                                    case env.lookupFun (name) of  
                                       Fun (name, nArgs) ->
-                                        [false, env, emptyBuffer () <+ 
-                                        -- argsCode <+> label (aLab, aLabUsed) <+
-                                          case name of 
-                                            Builtin (builtinName)  -> BUILTIN (builtinName, nArgs)
-                                          | _               -> CALL (name, nArgs)
-                                          esac]
+                                        [false, env, argsCode <+> label (aLab, aLabUsed) <+ CALL (name, nArgs)]
                                     esac
                                 esac
                             esac
     esac
   }
 
-  case initCompEnv ().genLabel of
+  fun appendFunctions(env) {
+    fun generateStateCode(env, Fun(flabel, args, body, state)) {
+      case genLabel(addArgs(beginFun(env, state), args)) of
+        [lbl, env] -> 
+          case compile(lbl, env, body) of
+            [used, env, code] ->
+              singletonBuffer(LABEL (flabel)) <+
+                BEGIN(flabel, size(args), getLocals(env)) <+> 
+                code <+>
+                label(lbl, used) <+
+                END <+>
+                appendFunctions(env)
+        esac
+      esac
+    }
+    case getFuns(env) of
+      [funs, env] ->
+        foldl(fun(code, f){ code <+> generateStateCode(env, f) }, emptyBuffer (), funs)
+    esac
+  }
+
+  case genLabel(initCompEnv()) of
     [endLab, env] ->
-       case compile (endLab, env, stmt) of
-         [endLabUsed, _, code] -> getBuffer $ code <+> label (endLab, endLabUsed) 
-       esac
+      case compile (endLab, env, stmt) of
+        [endLabUsed, env, code] ->
+          getBuffer $
+                  singletonBuffer(LABEL("main"))
+              <+  BEGIN("main", 0, getLocals(env))
+              <+> code
+              <+> label(endLab, endLabUsed)
+              <+  END
+              <+> appendFunctions(env)
+      esac
   esac
 }
 
