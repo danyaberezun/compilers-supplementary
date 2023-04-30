@@ -1,20 +1,9 @@
 import Fun;
-import Fun;
 import SM;
 import Collection;
 import List;
 import Manifest;
 import Buffer;
-import Buffer;
-
-
-fun addBuffers(buf, lst) {
-  case lst of {} -> buf | x:xs -> addBuffers(bufs <+ x, xs) esac
-}
-
-fun concatBuffers(lst) {
-  case lst of {} -> emptyBuffer() | buf:xs -> buf <+> concatBuffers(lst) esac
-}
 
 var regs = ["%ebx", "%ecx", "%esi", "%edi", "%eax", "%edx", "%ebp", "%esp"];
 
@@ -52,7 +41,6 @@ fun insnString (insn) {
                    then sprintf ("-%d(%%ebp)", (i+1) * wordSize)
                    else sprintf ("%d(%%ebp)", 8 + (-1-i) * wordSize)
                    fi
-
     | M (x)    -> x
     | L (i)    -> sprintf ("$%d", i)
     | I (0, x) -> sprintf ("(%s)", opndString (x))
@@ -65,7 +53,6 @@ fun insnString (insn) {
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
   | IDiv  (s1)         -> sprintf ("\tidivl\t%s\n", opndString (s1))
   | Binop (op, s1, s2) -> sprintf ("\t%s\t%s,\t%s\n", binopString (op), opndString (s1), opndString (s2))
-  | Lea   (s1, s2)     -> sprintf ("\tleal\t%s,\t%s\n", opndString (s1), opndString (s2))
   | Lea   (s1, s2)     -> sprintf ("\tleal\t%s,\t%s\n", opndString (s1), opndString (s2))
   | Mov   (s1, s2)     -> sprintf ("\tmovl\t%s,\t%s\n", opndString (s1), opndString (s2))
   | Push  (s)          -> sprintf ("\tpushl\t%s\n", opndString (s))
@@ -172,8 +159,9 @@ fun makeEnv (stack, stackSlots, globals, strings, stringIndex, barrier, stackMap
   fun liveRegisters () {
     fun inner (acc, st) {
       case st of
-        (r@R(_)) : tl -> inner (r : acc, tl)
-      | _             -> acc
+        {}            -> acc
+      | (r@R(_)) : tl -> inner (r : acc, tl)
+      | _ : tl        -> inner (acc, tl)
       esac
     }
 
@@ -203,7 +191,7 @@ fun makeEnv (stack, stackSlots, globals, strings, stringIndex, barrier, stackMap
   }
 
   fun staticSize () {
-    nLocals + stackSlots
+    stackSlots
   }
 
   fun getStack() {
@@ -364,9 +352,10 @@ fun stackOpnd (opnd) {
 
 fun memOpnd (opnd) {
   case opnd of
-    S (_) -> true
-  | M (_) -> true
-  | _     -> false
+    S (_)    -> true
+  | M (_)    -> true
+  | I (_, _) -> true
+  | _        -> false
   esac
 }
 
@@ -452,11 +441,20 @@ fun compile (env, code) {
   }
 
   fun isArithmeticOp(op) {
-    op == "+" !! op == "-" !! op == "*"
+    case op of
+      "*" -> true
+    | "+" -> true
+    | "-" -> true
+    | _   -> false
+    esac
   }
 
   fun isLogicOp(op) {
-    op == "!!" !! op == "&&"
+    case op of
+      "!!" -> true
+    | "&&" -> true
+    | _   -> false
+    esac
   }
 
   fun peekN(env, n) {
@@ -497,6 +495,51 @@ fun compile (env, code) {
     esac
   }
 
+  fun makeCall(name, nargs, env, code) {
+      var liveRegs = liveRegisters(env), args = peekN(env, nargs);
+      case allocate(dropN(env, nargs)) of
+        [s, env] -> [env, 
+                        code <+>
+                        moveN(liveRegs) <+>
+                        moveN(reverse(args)) <+>
+                        singletonBuffer(Call(name)) <+>
+                        deleteN(nargs) <+>
+                        returnN(liveRegs) <+
+                        Mov(eax, s)]
+      esac
+  }
+
+  fun makeArrayCall(name, nargs, env, code) {
+      var liveRegs = liveRegisters(env), args = peekN(env, nargs);
+      case allocate(dropN(env, nargs)) of
+        [s, env] -> [env, 
+                        code <+>
+                        moveN(liveRegs) <+>
+                        moveN(reverse(args)) <+>
+                        singletonBuffer(Push(L(nargs))) <+>
+                        singletonBuffer(Call(name)) <+>
+                        deleteN(nargs + 1) <+>
+                        returnN(liveRegs) <+
+                        Mov(eax, s)]
+      esac
+  }
+
+  fun makeSexpCall(name, nargs, nm, env, code) {
+      var liveRegs = liveRegisters(env), args = peekN(env, nargs);
+      case allocate(dropN(env, nargs)) of
+        [s, env] -> [env, 
+                        code <+>
+                        moveN(liveRegs) <+>
+                        singletonBuffer(Push(L(tagHash(nm)))) <+>
+                        moveN(reverse(args)) <+>
+                        singletonBuffer(Push(L(nargs + 1))) <+>
+                        singletonBuffer(Call(name)) <+>
+                        deleteN(nargs + 2) <+>
+                        returnN(liveRegs) <+
+                        Mov(eax, s)]
+      esac
+  }
+
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
@@ -505,22 +548,7 @@ fun compile (env, code) {
         BEGIN (fLab, na, nl) ->
           [enterFunction(env, fLab, nl), code <+> prologue(fLab)]
       | CALL (fLab, nArgs) ->
-          var liveRegs = liveRegisters(env);
-          var args = peekN(env, nArgs);
-
-          case allocate(dropN(env, nArgs)) of
-            [s, env] -> [env, 
-                        concatBuffers(
-                          {
-                            code,
-                            moveN(liveRegs),
-                            moveN(reverse(args)),
-                            singletonBuffer(Call(fLab)),
-                            deleteN(nArgs),
-                            returnN(liveRegs)
-                          }
-                        ) <+ Mov(eax, s)]
-          esac
+          makeCall(fLab, nArgs, env, code)
       | GLOBAL (s) -> [addGlobal(env, s), code]
       | LD (x) ->
           case allocate(env) of
@@ -567,23 +595,21 @@ fun compile (env, code) {
           case pop2(env) of
             [s2, s1, env] -> [push(env, s1), code <+> move(s2, I(0, s1)) <+> move(s2, s1)]
           esac
-      | READ ->
-            case allocate(env) of
-	            [s, env] -> [env, addBuffers(
-                                  code, {
-                                    Push (edx),
-                                    Push (ecx),
-                                    Call ("Lread"),
-                                    Pop (ecx),
-                                    Pop (edx),
-                                    Mov (eax, s)
-                                  }
-                                )]
-            esac             
-      | WRITE ->
-            case pop(env) of
-	            [s, env] -> [env, addBuffers(code, {Push (edx), Push (ecx), Push (s), Call ("Lwrite"), Pop (eax), Pop (ecx), Pop (edx)})]
-            esac
+      | BUILTIN(nm, nArgs) ->
+          makeCall(stringcat({"L", nm}), nArgs, env, code)
+      | STA ->
+          makeCall("Bsta", 3, env, code)
+      | ELEM ->
+          makeCall("Belem", 2, env, code)
+      | ARRAY(n) -> makeArrayCall("Barray", n, env, code)
+      | SEXP(nm, n) -> makeSexpCall("Bsexp", n, nm, env, code)
+      | STRING(s) ->
+          case addString(env, s) of
+            [env, sName] ->
+              case allocate(env) of
+                [ss, env] -> makeCall("Bstring", 1, env, code <+> leaMove(M(sName), ss))
+              esac
+          esac
       esac
     }, [env, emptyBuffer ()], code)
 }
@@ -598,7 +624,7 @@ public fun compileX86 (args, code) {
                      esac ++ "/runtime.o";
 
        fwrite (asmFile,
-               stringCat(map (insnString, 
+               stringcat(map (insnString, 
                     getBuffer(
                       singletonBuffer (Meta ("\t.global\tmain\n")) <+>
                       dataSection (listBuffer (map (intDef   , getGlobals (env))) <+>
