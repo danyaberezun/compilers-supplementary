@@ -1,64 +1,184 @@
 -- Stack machine.
 
+import Array;
 import List;
+import Fun;
+import Collection;
 import World;
 import State;
 import Expr;
 import Buffer;
-import Fun;
 
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
 public fun showSMInsn (i) {
   case i of
-    READ      -> sprintf ("READ")
-  | WRITE     -> sprintf ("WRITE")
-  | BINOP (s) -> sprintf ("BINOP %s", s)
-  | LD    (x) -> sprintf ("LD %s", x)
-  | ST    (x) -> sprintf ("ST %s", x)
-  | CONST (n) -> sprintf ("CONST %d", n)
+    READ         -> sprintf ("READ")
+  | WRITE        -> sprintf ("WRITE")
+  | BINOP (s)    -> sprintf ("BINOP %s", s)
+  | LD    (x)    -> sprintf ("LD %s", x)
+  | ST    (x)    -> sprintf ("ST %s", x)
+  | CONST (n)    -> sprintf ("CONST %d", n)
+  | LABEL (s)    -> sprintf ("LABEL %s", s)
+  | JMP   (l)    -> sprintf ("JMP %s", l)
+  | CJMP  (c, l) -> sprintf ("CJMP %s, %s", c, l)
   esac
 }
 
-public fun showSM (prg) {
-  map (fun (i) {showSMInsn (i) ++ "\n"}, prg).stringcat
+public fun showSM(prg) {
+  map(fun (i) { showSMInsn(i) +++ "\n" }, prg).stringcat
 }
 
--- Stack machine interpreter. Takes an SM-configuration and a program,
+-- Parse binary operation and return function to compute values with it.
+fun parseBinop(op) {
+  case op of
+    "+"  -> (infix +) |
+    "-"  -> (infix -) |
+    "*"  -> (infix *) |
+    "/"  -> (infix /) |
+    "%"  -> (infix %) |
+    "<"  -> (infix <) |
+    ">"  -> (infix >) |
+    "<=" -> (infix <=) |
+    ">=" -> (infix >=) |
+    "==" -> (infix ==) |
+    "!=" -> (infix !=) |
+    "&&" -> (infix &&) |
+    "!!" -> (infix !!) |
+    _    -> failure("Unexcepted operation %s\n", op.string)
+  esac
+}
+
+-- Evaluate single SM instruction.
+-- Takes SM-configuration and an instruction.
+-- Returns a final configuration.
+fun evalInsn(env, c@[stack, state, world], insn) {
+  case insn of
+      READ       ->
+      case readWorld(world) of
+        [x, newWorld] -> [env, [x:stack, state, newWorld]]
+      esac
+    | WRITE      ->
+      case stack of
+          x : stackRest -> [env, [stackRest, state, writeWorld(x, world)]]
+        | _             -> failure("Unexpected instruction WRITE: stack is empty\n")
+      esac
+    | BINOP (op) ->
+      case stack of
+          y : x : stackRest -> [env, [(parseBinop(op)(x, y)):stackRest, state, world]]
+        | _                 -> failure("Unexpected BINOP: stack must contains at least two values\n")
+      esac
+    | LD (x)     -> [env, [state(x):stack, state, world]]
+    | ST (x)     ->
+      case stack of
+          value : stackRest -> [env, [stackRest, state <- [x, value], world]]
+        | _                 -> failure("Unexpected ST: stack must contains at least one value\n")
+      esac
+    | CONST (v)  -> [env, [v:stack, state, world]]
+    | LABEL (l) -> [env, c]
+    | JMP (l) -> [env, c]
+    | CJMP(c, l) ->
+        case stack of
+            _ : stackRest -> [env, [stackRest, state, world]]
+          | _ -> failure("Stack must be not empty for CJMP operation invoke")
+        esac
+  esac
+}
+
+-- Evaluation environment: keeps a mapping between labels and (sub)programs
+fun initEvalEnv (insns) {
+  var map =
+    fix (fun (rec) {
+          fun ([m, insns]) {
+            case insns of
+              {}               -> m
+            | LABEL (lab) : tl -> rec ([addMap (m, lab, insns), tl])
+            | _ : tl           -> rec ([m, tl])
+            esac
+          }
+        }) $ [emptyMap (compare), insns];
+
+  [fun (l) {
+     case findMap (map, l) of Some (insns) -> insns esac
+  }]
+}
+
+-- Accessor function
+fun fromLabel (env, lab) {
+  env [0] (lab)
+}
+
+-- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (c@[stack, state, world], insns){
+fun eval(env, c@[stack, state, world], insns) {
   case insns of
-  {} -> c
-  | READ:other       -> case readWorld(world) of
-                        [n, world2] -> eval([n:stack, state, world2], other)
-                        esac
-  | WRITE:other      -> case stack of
-                        top:stack2 -> eval([stack2, state, writeWorld(top, world)], other)
-                        esac
-  | BINOP(op): other -> case stack of
-                        top:top2:stack2 -> eval([evalOp(op)(top2, top):stack2, state, world], other)
-                        esac
-  | LD (x):other     -> eval( [state(x):stack, state , world], other)
-  | ST (x):other     -> case stack of
-                        top:stack2 -> eval([stack2, state <- [x, top], world], other)
-                        esac
-  | CONST(n):other   -> eval( [n:stack, state, world], other)
+    { }           -> c |
+    p : insnsRest ->
+    case evalInsn(env, c, p) of
+      [env, c] ->
+        case p of
+            JMP (l) -> eval(env, c, fromLabel(env, l))
+          | CJMP (flag, l) ->
+            case stack of
+              x : stackRest ->
+                case [flag, x] of
+                    ["z", 0] -> eval(env, c, fromLabel(env, l))
+                  | ["z", x] -> eval(env, c, insnsRest)
+                  | ["nz", 0] -> eval(env, c, insnsRest)
+                  | ["nz", x] -> eval(env, c, fromLabel(env, l))
+                  | _ -> failure("Unexpected CJMP arguments")
+                esac
+            esac
+          | _ -> eval(env, c, insnsRest)
+        esac
+    esac
   esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM (input, insns) {
-  eval ([{}, emptyState, createWorld (input)], insns)[2].getOutput
+  eval (initEvalEnv (insns), [{}, emptyState, createWorld (input)], insns)[2].getOutput
+}
+
+-- Compilation environment: generates labels
+fun makeCompEnv (n) {
+  [fun () {
+     [sprintf ("L%d", n), makeCompEnv (n+1)]
+  }]
+}
+
+fun initCompEnv () {
+  makeCompEnv (0)
+}
+
+-- Accessor function: generates one label
+fun genLabel (env) {
+  env [0] ()
+}
+
+-- Utility function: generates n labels
+fun genLabels (env, n) {
+  fun inner (env, n) {
+    if n == 0
+    then {env}
+    else case env.genLabel of
+           [lab, env] -> lab : inner (env, n-1)
+         esac
+    fi
+  }
+
+  listArray (inner (env, n))
 }
 
 -- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list (of, possibly, lists)
+-- Takes an expression, returns a list
 -- of stack machine instructions
-fun compileExpr (expr) {
+fun compileExpr(expr) {
   case expr of
-   Var (x) -> {LD (x)}
-  | Const (n) -> {CONST (n)}
-  | Binop (op, l, r) -> (compileExpr(l) +++ compileExpr(r)) +++ {BINOP (op)}
+    Var (x)                  -> singletonBuffer(LD(x)) |
+    Const (v)                -> singletonBuffer(CONST(v)) |
+    Binop (op, expr1, expr2) -> compileExpr(expr1) <+> compileExpr(expr2) <+ BINOP(op) |
+    _                        -> failure("Unexcepted expression %s\n", expr.string)
   esac
 }
 
@@ -66,11 +186,75 @@ fun compileExpr (expr) {
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  case (stmt) of
-    Assn  (x, e)    -> compileExpr(e) +++ {ST(x)}
-  | Seq   (s1, s2)  -> compileSM(s1) +++ compileSM(s2)
-  | Skip            -> {}
-  | Read  (x)       -> {READ} +++ {ST(x)}
-  | Write (e)       -> compileExpr(e) +++ {WRITE}
+  -- Generates a buffer with an optional label
+  --    lab     --- the name of the label
+  --    labUsed --- a flag if the lebel is needed
+  fun label (lab, labUsed) {
+    if labUsed
+    then singletonBuffer (LABEL (lab))
+    else emptyBuffer ()
+    fi
+  }
+
+  -- Generates SM code for a given statement
+  --    lab  --- a label th go to after the statement is executed
+  --    env  --- compilation environment
+  --    stmt --- a statement to generate SM code for
+  -- Returns a triple:
+  --    boolean flag indicating if "lab" was used
+  --    updated environment
+  --    code buffer
+  fun compile (lab, env, stmt) {
+    case stmt of
+      Skip           -> [false, env, emptyBuffer ()]
+    | Read  (x)      -> [false, env, singletonBuffer (READ) <+ ST (x)]
+    | Write (e)      -> [false, env, compileExpr (e) <+ WRITE]
+    | Assn  (x, e)   -> [false, env, compileExpr (e) <+ ST (x)]
+    | Seq   (s1, s2) ->
+        case env.genLabel of
+          [s2Lab, env] ->
+             case compile (s2Lab, env, s1) of
+               [s2LabUsed, env, s1Code] ->
+                  case compile (lab, env, s2) of
+                    [labUsed, env, s2Code] -> [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
+                  esac
+             esac
+        esac
+    | If (e, s1, s2) ->
+      case genLabels(env, 2) of
+        [s1BeginLabel, s2EndLabel, env] ->
+          case compile(lab, env, s1) of
+            [s1BeginLabelUsed, env, s1Code] ->
+              case compile(s2EndLabel, env, s2) of
+                [s2EndLabelUsed, env, s2Code] ->
+                  [true, env, compileExpr (e) <+ CJMP ("nz", s1BeginLabel) <+>  s2Code <+ JMP (lab) <+  LABEL(s1BeginLabel) <+> s1Code <+ LABEL(lab)]
+              esac
+          esac
+      esac
+    | While (e, s) ->
+      case genLabels(env, 2) of
+        [sBeginLabel, sEndLabel, env] ->
+          case compile(sEndLabel, env, s) of
+            [sEndLabelUsed, env, sCode] ->
+              [false, env, singletonBuffer(JMP (sEndLabel)) <+ LABEL(sBeginLabel) <+> sCode <+ LABEL(sEndLabel) <+> compileExpr(e) <+ CJMP ("nz", sBeginLabel)]
+          esac
+      esac
+    | DoWhile (s, e) ->
+      case genLabels(env, 2) of
+        [sBeginLabel, sEndLabel, env] ->
+          case compile(sEndLabel, env, s) of
+            [sEndLabelUsed, env, sCode] ->
+              [false, env, singletonBuffer(LABEL(sBeginLabel)) <+> sCode <+> compileExpr(e) <+ CJMP ("nz", sBeginLabel)]
+          esac
+      esac
+    | _              -> failure ("Unexcepted statement %s\n", stmt.string)
+    esac
+  }
+
+  case initCompEnv ().genLabel of
+    [endLab, env] ->
+       case compile (endLab, env, stmt) of
+         [endLabUsed, _, code] -> getBuffer $  code <+> label (endLab, endLabUsed)
+       esac
   esac
 }
