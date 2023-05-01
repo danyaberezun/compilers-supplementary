@@ -5,6 +5,37 @@ import Lexer;
 import List;
 import Fun;
 import Matcher;
+import Ref;
+import Collection;
+
+-- Signals an error; takes an error message and location info
+fun error (msg, loc) {
+  failure ("%s at %d:%d\n", msg, loc.fst, loc.snd)
+}
+
+-- An attribute-processing functions
+-- Attributes are:
+--   Val  --- a plain value (aka "rvalue")
+--   Ref  --- a reference to a mutable cell (aka "lvalue")
+--   Void --- no value (aka "void"/"unit")
+
+-- Checks if a plain value "val" can be used in the context described by
+-- the attribute "atr".
+fun assertValue (atr, v, loc) {
+  case atr of
+    Ref  -> error ("reference expected", loc)
+  | Void -> Ignore (v)
+  | _    -> v
+  esac
+}
+
+fun assertVoid (atr, v, loc) {
+  case atr of
+    Void -> v
+  | Val  -> error ("value expected", loc)
+  | _    -> error ("reference expected", loc)
+  esac
+}
 
 -- A parser of "something" in brackets; l, r are left and right
 -- brackets as parsers, p --- a parser of "something"
@@ -12,59 +43,58 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
--- Primary expression
-var primary = memo $ eta (decimal @ fun (x) {Const (stringInt (x))} |
-                          lident  @ fun (x) {Var (x)} |
-                          inbr (s ("("), exp, s (")"))),
-    exp = memo $ eta expr({
-    [Left, {
-      [s("!!"), fun (l, op, r) { Binop(op, Binop("!=", l, Const(0)), Binop("!=", r, Const(0))) }]
-    }],
-    [Left, {
-      [s("&&"), fun (l, op, r) { Binop(op, Binop("!=", l, Const(0)), Binop("!=", r, Const(0))) }]
-    }],
-    [Nona, {
-      [s("=="), fun (l, op, r) { Binop(op, l, r) }],
-      [s("!="), fun (l, op, r) { Binop(op, l, r) }],
-      [s("<="), fun (l, op, r) { Binop(op, l, r) }],
-      [s("<"), fun (l, op, r) { Binop(op, l, r) }],
-      [s(">="), fun (l, op, r) { Binop(op, l, r) }],
-      [s(">"), fun (l, op, r) { Binop(op, l, r) }]
-    }],
-    [Left, {
-      [s("+"), fun (l, op, r) { Binop(op, l, r) }],
-      [s("-"), fun (l, op, r) { Binop(op, l, r) }]
-    }],
-    [Left, {
-      [s("*"), fun (l, op, r) { Binop(op, l, r) }],
-      [s("/"), fun (l, op, r) { Binop(op, l, r) }],
-      [s("%"), fun (l, op, r) { Binop(op, l, r) }]
-    }]
-  }, primary);
+fun binop (op) {
+  [syntax (pos -s[op]), fun (l, loc, r) {
+                          fun (a) {
+                            assertValue (a, Binop (op, l (Val), r (Val)), loc)
+                          }
+                        }
+  ]
+}
 
 var elifStmt = memo $ eta syntax (
-    e=exp kThen s1=stmt kElif s2=elifStmt { If(e, s1, s2) }
-  | e=exp kThen s1=stmt kElse s2=stmt kFi { If(e, s1, s2) }
+    e=exp kThen e1=exp kElif e2=elifStmt { fun (a) { If(e (Val), e1 (a), e2 (a)) } }
+  | e=exp kThen e1=exp kElse e2=exp kFi { fun (a) { If(e (Val), e1 (a), e2 (a)) } }
 );
 
-var nonSeqStmt = memo $ eta syntax (
-    kSkip { Skip }
-  | kRead x=inbr[s("("), lident, s(")")] { Read(x) }
-  | kWrite x=inbr[s("("), exp, s(")")] { Write(x) }
-  | x=lident s[":="] v=exp { Assn(x, v) }
-  | kIf e=exp kThen s1=stmt kElse s2=stmt kFi { If(e, s1, s2) }
-  | kIf e=exp kThen s=stmt kFi { If(e, s, Skip) }
-  | kIf e=exp kThen s1=stmt kElif s2=elifStmt { If(e, s1, s2) }
-  | kWhile e=exp kDo s=stmt kOd { While(e, s) }
-  | kDo s=stmt kWhile e=exp kOd { DoWhile(s, e) }
-  | kFor s1=stmt s[","] e=exp s[","] s2=stmt kDo s3=stmt kOd { Seq(s1, While(e, Seq(s3, s2))) }
-);
+var primary  = memo $ eta syntax (
+                                  -- decimal constant
+                                  loc=pos x=decimal                                 {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
 
-var stmt = memo $ eta syntax (
-    s1=nonSeqStmt s[";"] s2=stmt { Seq(s1, s2) }
-  | nonSeqStmt
-);
-
+                                  -- identifier
+                                  x=lident                                          {fun (a) {
+                                                                                       case a of
+                                                                                         Ref  -> Ref (x)
+                                                                                       | Void -> Ignore (Var (x))
+                                                                                       | _    -> Var (x)
+                                                                                       esac
+                                                                                    }} |
+                                  loc=pos x=inbr[s("("), exp, s(")")]               { fun (a) { x (a) } } |
+                                  loc=pos kSkip                                     { fun (a) { assertVoid(a, Skip, loc) } } |
+                                  loc=pos kRead x=inbr[s("("), lident, s(")")]      { fun (a) { assertVoid(a, Read (x), loc) } } |
+                                  loc=pos kWrite x=inbr[s("("), exp, s(")")]        { fun (a) { assertVoid(a, Write (x (Val)), loc) } } |
+                                  kIf e=exp kThen e1=exp kElse e2=exp kFi           { fun (a) { If(e (Val), e1 (a), e2 (a)) } } |
+                                  kIf e1=exp kThen e2=exp kFi                       { fun (a) { If(e1 (Val), e2 (a), Skip) } } |
+                                  kIf e=exp kThen e1=exp kElif e2=elifStmt          { fun (a) { If(e (Val), e1 (a), e2 (a)) } } |
+                                  loc=pos kWhile e1=exp kDo e2=exp kOd              { fun (a) { assertVoid(a, While(e1 (Val), e2 (Void)), loc) } } |
+                                  loc=pos kDo e1=exp kWhile e2=exp kOd              { fun (a) { assertVoid(a, DoWhile(e1 (Void), e2 (Var)), loc) } } |
+                                  loc=pos kFor
+                                    e1=exp s[","]
+                                    e2=exp s[","]
+                                    e3=exp kDo
+                                    e4=exp kOd                                      { fun (a) { assertVoid(a, Seq(e1 (Void), While(e2 (Val), Seq(e4 (Void), e3 (Void)))), loc) } }),
+    basic    = memo $ eta (expr ({[Right, {[s (":="),
+                                            fun (l, loc, r) {
+                                              fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
+                                            }]}],
+                                  [Left , map (binop, {"!!"})],
+                                  [Left , map (binop, {"&&"})],
+                                  [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
+                                  [Left , map (binop, {"+", "-"})],
+                                  [Left , map (binop, {"*", "/", "%"})]
+                                 },
+                                 primary)),
+    exp      = memo $ eta syntax (basic | s1=basic s[";"] s2=exp {fun (a) {Seq (s1 (Void), s2 (a))}});
 
 -- Public top-level parser
-public parse = stmt;
+public parse = syntax (s=exp {s (Void)});
