@@ -41,23 +41,26 @@ var wordSize = 4;
 --   Cltd                       -- see instruction set reference           
 --   Set   (string, string)     -- sets a value from flags; the first operand is the   
 --                                 suffix, which determines the value being set, the
---                                 the second --- (sub)register name 
+--                                 the second --- (sub)register name
+--   Jmp   (string)             -- unconditional jump to a label
+--   CJmp  (string, string)     -- conditional jump to a label
+--   Label (string)             -- a label
 --   Push  (opnd)               -- pushes the operand on the hardware stack
 --   Pop   (opnd)               -- pops from the hardware stack to the operand
---   Call  (string)             -- calls a function by its name 
+--   Call  (string)             -- calls a function by its name
 --   Ret                        -- returns from a function
 --   Meta  (string)             -- metainformation (declarations, etc.)
-                                                               
+
 -- Machine instruction printer
 fun insnString (insn) {
-  
+
   fun binopString (op) {
     case op of
       "+"   -> "addl"
     | "-"   -> "subl"
     | "*"   -> "imull"
     | "&&"  -> "andl"
-    | "!!"  -> "orl" 
+    | "!!"  -> "orl"
     | "^"   -> "xorl"
     | "cmp" -> "cmpl"
     esac
@@ -71,7 +74,7 @@ fun insnString (insn) {
     | L (i) -> sprintf ("$%d", i)
     esac
   }
-  
+
   case insn of
     Cltd               -> "\tcltd\n"
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
@@ -82,6 +85,9 @@ fun insnString (insn) {
   | Pop   (s)          -> sprintf ("\tpopl\t%s\n", opndString (s))
   | Ret                -> "\tret\n"
   | Call  (p)          -> sprintf ("\tcall\t%s\n", p)
+  | Label (l)          -> sprintf ("%s:\n", l)
+  | Jmp   (l)          -> sprintf ("\tjmp\t%s\n", l)
+  | CJmp  (c, l)       -> sprintf ("\tj%s\t%s\n", c, l)
   | Meta  (m)          -> m
   esac
 }
@@ -102,12 +108,12 @@ fun makeEnv (stack, stackSlots, globals) {
   fun envString () {
     sprintf ("Stack     : %s\nStackSlots: %d\nGlobals   : %s\n", stack.string, stackSlots, elements (globals).string)
   }
-  
+
   -- Allocates a new position on the symbolic stack;
   -- returns a pair: a location for allocated item and
   -- an updated environment
   fun allocate () {
-    case 
+    case
       case stack of
         {}        -> [ebx, 0]
       | S (n) : _ -> [S (n+1), n+2]
@@ -147,7 +153,7 @@ fun makeEnv (stack, stackSlots, globals) {
   fun loc (name) {
     M (globalName (name))
   }
-  
+
   -- Gets a list of global variables from the environment
   fun getGlobals () {
     globals.elements
@@ -200,7 +206,7 @@ fun getStackSize (env) {
 
 -- Creates an initial environment
 fun initEnv () {
-  makeEnv (0, 0, emptySet (compare))
+  makeEnv (0, emptySet (compare), emptySet (compare))
 }
 
 -- Codegeneration helper functions
@@ -239,7 +245,7 @@ fun stackOpnd (opnd) {
   case opnd of
     S (_) -> true
   | _     -> false
-  esac      
+  esac
 }
 
 -- Checks if an operand resides in memory
@@ -273,25 +279,15 @@ fun suffix (op) {
   esac
 }
 
-fun castToBool(x) {
-  Mov(L(0), eax).singletonBuffer <+ Binop("cmp", x, eax) <+ Mov(L(0), eax) <+ Set ("ne", "%al") <+ Mov(eax, x)
-}
-
-fun compileBinop(op, l, r, res) {
-  fun cmpop() {Mov (l, eax).singletonBuffer <+ Binop ("cmp", r, eax) <+ Mov(L(0), eax) <+ Set (suffix(op), "%al") <+ Mov(eax, res)}
-  fun simple_apply() {Mov (l, eax).singletonBuffer <+ Binop(op, r, eax) <+ Mov (eax, res)}
+fun isCmpOp(op) {
   case op of
-    "<"   -> cmpop ()
-  | "<="  -> cmpop ()
-  | "=="  -> cmpop ()
-  | "!="  -> cmpop ()
-  | ">="  -> cmpop ()
-  | ">"   -> cmpop ()
-  | "%"   -> Mov (l, eax).singletonBuffer <+ Cltd <+ IDiv (r) <+ Mov (edx, res)
-  | "/"   -> Mov (l, eax).singletonBuffer <+ Cltd <+ IDiv (r) <+ Mov (eax, res)
-  | "!!"  -> castToBool(l) <+> castToBool(r) <+> simple_apply ()
-  | "&&"  -> castToBool(l) <+> castToBool(r) <+> simple_apply ()
-  | _     -> simple_apply ()
+      "<"  -> true
+    | "<=" -> true
+    | "==" -> true
+    | "!=" -> true
+    | ">=" -> true
+    | ">"  -> true
+    | _    -> false
   esac
 }
 
@@ -302,35 +298,51 @@ fun compile (env, code) {
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of
-        READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-          esac
-       | BINOP (op) -> 
-          case env.pop2 of
-            [r, l, env] ->
-              case env.allocate of
-                [res, env] -> [env, code <+> compileBinop(op, l, r, res)]
-              esac 
-          esac
-      | LD (v) -> 
-        case env.allocate of 
-          [a, env] -> [env, code <+ Mov (env.loc(v), a)]
-        esac
-      | ST (v) -> 
-        var ne = env.addGlobal(v);
-        case ne.pop of 
-          [a, ne] -> [ne, code <+ Mov (a, ne.loc(v))]
-        esac
-
-      | CONST (n) ->
-        case env.allocate of 
-          [a, env] -> [env, code <+ Mov (L(n), a)]
-        esac 
+          READ       ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Call("Lread") <+ Mov(eax, s)]
+            esac
+        | WRITE      ->
+            case env.pop of
+              [s, env] -> [env, code <+ Push(s) <+ Call("Lwrite") <+ Pop(eax)]
+            esac
+        | CONST (v)  ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move(L(v), s)]
+            esac
+        | LD (x)     ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move(env.loc(x), s)]
+            esac
+        | ST (x)     ->
+            case env.pop of
+              [s, env] -> [env.addGlobal(x), code <+> move(s, env.loc(x))]
+            esac
+        | BINOP (op) ->
+            case env.pop2 of
+              [s1, s2, env] ->
+                case env.allocate of
+                  [res, env] ->
+                    case isCmpOp(op) of
+                        true  -> [env, code <+> move(s1, eax) <+ Binop("cmp", eax, s2) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, res)]
+                      | false ->
+                        case op of
+                            "/" -> [env, code <+> move(s2, eax) <+ Cltd <+ IDiv(s1) <+> move(eax, res)]
+                          | "%" -> [env, code <+> move(s2, eax) <+ Cltd <+ IDiv(s1) <+> move(edx, res)]
+                          | _   -> [env, code <+> move(s2, eax) <+ Binop(op, s1, eax) <+> move(eax, res)]
+                        esac
+                    esac
+                esac
+            esac
+        | LABEL (l) ->
+            [env, code <+ Label(l)]
+        | JMP (l) ->
+            [env, code <+ Jmp (l)]
+        | CJMP (c, l) ->
+            case env.pop of
+              [s, env] -> [env, code <+ Binop("cmp", L(0), s) <+ CJmp (c, l)]
+            esac
+        | _          -> failure("Unexpexted operation: %s\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
 }
@@ -342,12 +354,12 @@ public fun compileX86 (args, code) {
     [env, code] ->
        var asmFile = args.getBaseName ++ ".s",
            runtime = case getEnv ("LAMA_RUNTIME") of
-                       #val  -> "../runtime/"
-                     | path  -> path
+                       #val -> "../runtime/"
+                     | path     -> path
                      esac ++ "/runtime.o";
-       
+
        fwrite (asmFile,
-               map (insnString, 
+               map (insnString,
                     getBuffer $
                       singletonBuffer (Meta ("\t.global\tmain\n")) <+>
                       dataSection (listBuffer $ map (dataDef, getGlobals (env))) <+>
@@ -358,7 +370,7 @@ public fun compileX86 (args, code) {
                         epilogue ()
                       )
                     ).stringcat);
-                    
+
        system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
 }
