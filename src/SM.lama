@@ -57,10 +57,37 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+fun evalInstruction(env, [stack, st, w], instruction:rest) { 
+  case instruction of 
+    READ         -> case readWorld(w) of [d, nw] -> [d:stack, st, nw, rest] esac
+  | WRITE        -> case stack of d:nstack -> [nstack, st, writeWorld(d, w), rest] esac
+  | BINOP (s)    -> case stack of n2:n1:nstack -> [evalOp(s, n1, n2):nstack, st, w, rest] esac
+  | LD    (x)    -> [st(x):stack, st, w, rest]
+  | ST    (x)    -> case stack of d:nstack -> [nstack, st <- [x, d], w, rest] esac
+  | CONST (n)    -> [n:stack, st, w, rest]
+  | JMP   (l)    -> [stack, st, w, env.fromLabel(l)]
+  | LABEL (l)    -> [stack, st, w, rest]
+  | CJMP  (c, l) -> 
+    case c of 
+      "z"  -> case stack of v:stack -> [stack, st, w, if v == 0 then env.fromLabel(l) else rest fi] esac
+    | "nz" -> case stack of v:stack -> [stack, st, w, if v != 0 then env.fromLabel(l) else rest fi] esac
+    esac
+  | LDA (x)      -> [Ref(x):stack, st, w, rest]
+  | STI          -> case stack of v:Ref(x):stack -> [v:stack, st <- [x, v], w, rest] esac
+  | DROP         -> case stack of x:stack -> [stack, st, w, rest] esac
+  esac
+}
+
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+  case insns of 
+    {} -> c
+  | _  -> 
+    case evalInstruction (env, c, insns) of 
+      [stack, st, nw, rest] -> eval (env, [stack, st, nw], rest)
+    esac
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -108,14 +135,83 @@ public fun compileSM (stmt) {
     else emptyBuffer ()
     fi
   }
-  
+
+  fun appendCode (env, e, ins) {
+    case env.genLabel of 
+      [eLab, env] ->
+        case compile (eLab, env, e) of
+          [labUsed, env, code] -> [false, env, code <+> label (eLab, labUsed) <+> singletonBuffer (ins)]
+        esac
+    esac
+  }
+
   fun compile (lab, env, stmt) {
     case stmt of
-      Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 ->  failure ("compileSM not implemented\n")
+      Skip           -> [false, env, emptyBuffer ()]
+    | Var   (x)      -> [false, env, singletonBuffer (LD (x))]
+    | Ref   (x)      -> [false, env, singletonBuffer (LDA (x))]
+    | Const (n)      -> [false, env, singletonBuffer (CONST (n))]
+    | Read  (x)      -> [false, env, singletonBuffer (READ) <+ ST (x)]
+    | Write (e)          -> appendCode (env, e, WRITE)
+    | Assn  (Var (x), e) -> appendCode (env, e, ST (x))
+    | Assn  (x, e)       -> appendCode (env, Seq(x, e), STI)
+    | Ignore (e)         -> appendCode (env, e, DROP)
+    | Binop (op, e1, e2) -> appendCode (env, Seq(e1, e2), BINOP (op))
+    | Seq   (s1, s2) ->
+      case genLabel (env) of
+        [s2Lab, env] ->
+          case compile (s2Lab, env, s1) of
+            [s2LabUsed, env, s1Code] ->
+              case compile (lab, env, s2) of
+                [labUsed, env, s2Code] -> [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
+              esac
+          esac
+      esac
+    | If (e, s1, s2) ->
+      case genLabels(env, 3) of 
+        [eLabel, s1Label, elseLabel, env] -> 
+          case compile (eLabel, env, e) of
+            [eLabelUsed, env, eCode] ->
+              case compile (s1Label, env, s1) of
+                [s1LabelUsed, env, s1Code] -> 
+                  case compile (lab, env, s2) of
+                    [_, env, s2Code] -> [
+                      true, env, 
+                      eCode <+> label (eLabel, eLabelUsed) <+> singletonBuffer (CJMP("z", elseLabel)) <+> s1Code 
+                        <+> label (s1Label, s1LabelUsed) <+> listBuffer ({JMP(lab), LABEL (elseLabel)}) <+> s2Code
+                    ]
+                  esac
+              esac
+          esac
+      esac
+    | While (e, s) -> 
+      case genLabels(env, 2) of
+        [sStartLabel, sEndLabel, env] -> 
+          case appendCode (env, e, CJMP ("nz", sStartLabel)) of
+            [_, env, eCode] -> 
+              case compile (sEndLabel, env, s) of
+                [_, env, code] -> [
+                  false, env, 
+                  listBuffer ({JMP (sEndLabel), LABEL(sStartLabel)}) <+> code
+                    <+> singletonBuffer (LABEL (sEndLabel)) <+> eCode
+                ]
+              esac
+          esac
+      esac
+    | DoWhile (s, e) ->
+      case genLabels(env, 2) of
+        [sStartLabel, sEndLabel, env] ->
+          case appendCode (env, e, CJMP ("nz", sStartLabel)) of
+            [_, env, eCode] ->
+              case compile (sEndLabel, env, s) of
+                [endLabelUsed, env, code] -> [ 
+                  false, env,
+                  singletonBuffer (LABEL (sStartLabel)) <+> code
+                    <+> label (sEndLabel, endLabelUsed) <+> eCode
+                ]
+              esac
+          esac
+      esac
     esac
   }
 
