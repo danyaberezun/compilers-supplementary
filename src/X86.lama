@@ -411,19 +411,192 @@ fun suffix (op) {
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
   fun compile (env, code) {
+    fun arithmeticHandler(opStr, left, right, s) {
+      singletonBuffer (Mov (left, eax))
+        <+ Binop (opStr, right, eax)
+        <+ Mov (eax, s)
+    }
+    fun logicHandler(opStr, left, right, s) {
+      emptyBuffer()
+        <+ Binop ("^", eax, eax)
+        <+ Binop ("cmp", L (0), left)
+        <+ Set ("ne", "%al")
+        <+ Binop ("^", edx, edx)
+        <+ Binop ("cmp", L (0), right)
+        <+ Set ("ne", "%dl")
+        <+ Binop (opStr, edx, eax) <+ Mov (eax, s)
+    }
+    fun cmpHandler (opStr, left, right, s) {
+      singletonBuffer (Mov (left, eax))
+        <+ Binop ("^", edx, edx)
+        <+ Binop ("cmp", right, eax)
+        <+ Set (suffix (opStr), "%dl")
+        <+ Mov (edx, s)
+    }
+    fun divHandler (opStr, left, right, s) {
+      singletonBuffer (Mov (left, eax))
+        <+ Cltd
+        <+ IDiv (right)
+        <+ Mov (case opStr of "/" -> eax | "%" -> edx esac, s)
+    }
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
         case i of
           READ ->
             case env.allocate of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
-            esac             
+              [s, env] ->
+                var newCode = code
+                  <+ Push (edx) <+ Push (ecx)
+                  <+ Call ("Lread")
+                  <+ Pop (ecx) <+ Pop (edx)
+                  <+ Mov (eax, s);
+                [env, newCode]
+            esac
         | WRITE ->
             case env.pop of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
+              [s, env] ->
+                var newCode = code
+                  <+ Push (edx) <+ Push (ecx)
+                  <+ Push (s)
+                  <+ Call ("Lwrite")
+                  <+ Pop (eax)
+                  <+ Pop (ecx) <+ Pop (edx);
+                [env, newCode]
             esac
+        | BINOP(op) ->
+          case env.pop2 of
+              [right, left, env] ->
+                case env.allocate of
+                  [s, env] ->
+                    var newCode = code
+                      <+> case op of
+                            "+"  -> arithmeticHandler
+                          | "-"  -> arithmeticHandler
+                          | "*"  -> arithmeticHandler
+                          | "&&" -> logicHandler
+                          | "!!" -> logicHandler
+                          | "/"  -> divHandler
+                          | "%"  -> divHandler
+                          | "<"  -> cmpHandler
+                          | "<=" -> cmpHandler
+                          | ">"  -> cmpHandler
+                          | ">=" -> cmpHandler
+                          | "==" -> cmpHandler
+                          | "!=" -> cmpHandler
+                          esac (op, left, right, s);
+                    [env, newCode]
+                esac
+            esac
+        | CONST(n) ->
+            case env.allocate of
+              [s, newEnv] -> [newEnv, code <+ Mov(L(n), s)]
+            esac
+        | LD(x) -> 
+          case env.allocate of
+            [s, env] ->
+              var newCode = code <+> move(env.loc(x), s);
+              [env, newCode]
+          esac
+        | LDA (x) ->
+          case env.allocate of
+            [s, env] ->
+              var newCode = code <+ Lea(loc(env, x), s);
+              [env, newCode]
+          esac
+        | ST(x) ->
+          var newCode = code <+> move(peek(env), env.loc(x));
+          [env, newCode]
+        | STI ->
+          case pop2(env) of
+            [n, ref, env] ->
+              case env.allocate of
+                [s, env] ->
+                  var newCode = code <+> move(n, I(0, ref)) <+> move(n, s);
+                  [env, newCode]
+              esac
+          esac
+        | JMP (lab) -> [setBarrier(setStack(env, lab)), code <+ Jmp (lab)]
+        | LABEL (lab) ->
+          var newEnv =
+            case isBarrier(env) of
+              _ -> retrieveStack(env, lab)
+            | 0 -> env
+            esac;
+          var newCode = code <+ Label (lab);
+          [newEnv, newCode]
+        | CJMP(flag, lab) ->
+          case env.pop of
+            [s, env] ->
+              var newCode = code
+                <+ Mov(s, eax)
+                <+ Binop("cmp", L(0), eax)
+                <+ CJmp (flag, lab);
+              [setStack(env, lab), newCode]
+          esac
+        | DROP ->
+          case pop(env) of
+            [_, newEnv] -> [newEnv, code]
+          esac
         (* Assignment *)
+        | GLOBAL(x) -> [addGlobal(env, x), code]
+        | BEGIN(name, argsCnt, locsCnt) ->
+          var envEntered = enterFunction(env, name, locsCnt);
+          var newCode = code <+> prologue(name);
+          [envEntered, newCode]
+        | END ->
+          case epilogue(env) of
+            [env, epiCompiled] -> 
+              var newCode = code <+> epiCompiled;
+              [env, newCode]
+          esac
+        | CALL (name, nargs) ->
+          -- Generate code for pushing registers.
+          fun pushRegisters(registers) {
+            case registers of
+              fst : rest -> singletonBuffer(Push(fst)) <+> pushRegisters(rest)
+            | _ -> emptyBuffer()
+            esac
+          }
+          -- Generate code for popping registers. (in reverse order).
+          fun popRegisters(registers) {
+            case registers of
+              fst : rest -> popRegisters(rest) <+ Pop(fst)
+            | _ -> emptyBuffer()
+            esac
+          }
+          -- Generate code for pushing registers.
+          fun pushArguments(env, argsCnt) {
+            fun pushArgumentsImpl(currEnv, code, argsCnt) {
+              case argsCnt of
+                0 -> [currEnv, code]
+              | _ -> 
+                case pop(currEnv) of
+                  [arg, currEnv] ->
+                    var newCode = code <+ Push(arg);
+                    pushArgumentsImpl(currEnv, newCode, argsCnt - 1)
+                esac
+              esac
+            }
+            pushArgumentsImpl(env, emptyBuffer(), argsCnt)
+          }
+          var liveRegs = liveRegisters(env, nargs);
+          var registersPushCode = pushRegisters(liveRegs);
+          var registersPopCode = popRegisters(liveRegs);
+          case pushArguments(env, nargs) of
+            [env, argsPushCode] ->
+              case allocate(env) of
+                [s, env] -> 
+                  var newCode = code
+                    <+> registersPushCode
+                    <+> argsPushCode
+                    <+ Call(name)
+                    <+ Binop("+", L(wordSize * nargs), esp)
+                    <+> registersPopCode
+                    <+ Mov (eax, s);
+                  [env, newCode]
+              esac
+          esac
         
          -- Some guidelines for generating function calls:
          --
