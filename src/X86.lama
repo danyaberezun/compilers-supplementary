@@ -444,23 +444,190 @@ fun suffix (op) {
   esac
 }
 
+fun opType(op) {
+  case op of 
+      "+" -> Math
+    | "-" -> Math
+    | "*" -> Math
+    | "&&" -> Bool 
+    | "!!" -> Bool
+    | "/" ->  Div
+    | "%" ->  Div 
+    | "<" ->  Cmp 
+    | ">" ->  Cmp 
+    | "<=" -> Cmp
+    | ">=" -> Cmp
+    | "==" -> Cmp
+    | "!=" -> Cmp 
+  esac 
+}
+
+fun rmov(src, dst, reg) {
+  singletonBuffer (Mov(src, eax)) <+ Mov(eax, dst)
+}
+
+fun compileMath(op, x, y, s) {
+  singletonBuffer (Mov(y, eax)) <+ Mov(x, edx) <+ Binop(op, edx, eax) <+ Mov(eax, s)
+}
+
+fun compileCmp(op, x, y, s) {
+  singletonBuffer (Mov(L(0), eax)) <+ Mov(y, edx) <+ Binop ("cmp", x, edx) <+ Set (suffix(op), "%al") <+ Mov(eax, s)
+}
+
+fun compileDiv(op, x, y, s) {
+  var code = singletonBuffer(Mov(y, eax)) <+ Cltd <+ IDiv(x);
+  case op of 
+      "/" -> code <+ Mov (eax, s)
+    | "%" -> code <+ Mov (edx, s)
+  esac
+}
+
+fun toBool(x, bx) {
+  compileCmp("!=", L(0), x, bx)
+}
+
+fun compileBool(op, x, y, s) {
+  toBool(x, x) <+> toBool(y, y) <+> compileMath(op, x, y, s)
+}
+
+fun saveRegs(env, an) {
+  var liveRegs = liveRegisters(env, an);
+  [foldr (fun (code, reg) { code <+ Push (reg) }, emptyBuffer(), liveRegs), liveRegs, env]
+}
+
+fun restoreRegs(env, regs) {
+  [foldl (fun (code, reg) { code <+ Pop (reg) }, emptyBuffer(), regs), env]
+}
+
+fun getArgs(env, an) {
+  if an == 0 then [{}, env] else case pop(env) of [s, env] -> case getArgs(env, an - 1) of [args, env] -> [s : args, env] esac esac fi
+} 
+
+fun passArgs(env, an) {
+  case getArgs(env, an) of
+    [args, env] -> [foldl(fun (code, arg) { code <+ Push(arg) }, emptyBuffer(), args), env]
+  esac 
+}
+
+fun deleteArgs(env, an) {
+  if an == 0 then 
+    [emptyBuffer(), env] 
+  else 
+    case deleteArgs(env, an - 1) of 
+      [code, env] -> [code <+ Pop(ebx), env]
+    esac 
+  fi
+}
+
+fun callRuntime(env, fLabel, an, runtimeArgsBeforeArgs, runtimeArgsAfterArgs) {
+  fun passArgs(env, an, runtimeArgsBeforeArgs, runtimeArgsAfterArgs) {
+    case getArgs(env, an) of
+      [args, env] -> [foldl(fun (code, arg) { code <+ Push(arg) }, emptyBuffer(), runtimeArgsAfterArgs +++ args +++ runtimeArgsBeforeArgs), env]
+    esac 
+  }
+
+  -- printf("%s %d %d\n", fLabel, runtimeArgsBeforeArgs.size, runtimeArgsAfterArgs.size);
+  case saveRegs(env, an) of  
+    [saveRegsCode, regs, env] -> case passArgs(env, an, runtimeArgsBeforeArgs, runtimeArgsAfterArgs) of 
+      [passArgsCode, env] -> case allocate(env) of
+        [retVal, env] -> case deleteArgs(env, an + runtimeArgsBeforeArgs.size + runtimeArgsAfterArgs.size) of 
+          [deleteArgsCode, env] -> case restoreRegs(env, regs) of 
+            [restoreRegsCode, env] -> [env, saveRegsCode <+> passArgsCode <+ Call (fLabel) <+> deleteArgsCode <+> restoreRegsCode <+ Mov (eax, retVal)]
+          esac 
+        esac 
+      esac 
+    esac 
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
-fun compile (env, code) {  
+fun compile (env, code) {
   fun compile (env, code) {
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-
         case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+        LD (x) -> 
+          case allocate(env) of 
+            [s, env] -> [env, code <+> rmov(loc(env, x), s, eax)]
+          esac
+        | CONST (x) -> 
+            case allocate(env) of 
+              [s, env] -> [env, code <+> rmov(L(x), s, eax)]
+            esac 
+        | BINOP (op) -> 
+            case pop2(env) of 
+              [x, y, env] -> case allocate(env) of 
+                [s, env] -> case (case opType(op) of 
+                    Math -> [env, compileMath(op, x, y, s)]
+                  | Cmp -> [env, compileCmp(op, x, y, s)] 
+                  | Div -> [env, compileDiv(op, x, y, s)]
+                  | Bool -> [env, compileBool(op, x, y, s)]
+                esac) of 
+                    [env, op_code] -> [env, code <+> op_code]
+                  esac
+                esac 
+              esac
+        | LABEL (lab) -> [retrieveStack(env, lab), code <+ Label(lab)]
+        | JMP (lab) -> [setStack(env, lab), code <+ Jmp(lab)] 
+        | CJMP (cond, lab) -> case pop(env) of 
+            [s, env] -> [setStack(env, lab), code <+ Binop ("cmp", L(0), s) <+ CJmp(cond, lab)]
+          esac
+        | DROP -> case pop(env) of [_, env] -> [env, code] esac
+        | LDA (x) -> 
+          case allocate(env) of 
+            [s, env] -> [env, code <+ Lea (loc(env, x), s)]
+          esac
+        | STI -> case pop2(env) of 
+            [v, x, env] -> case allocate(env) of 
+              [s, env] -> [env, code <+ Mov(v, I(0, x)) <+> rmov(v, s, eax)]
             esac
+          esac 
+        | GLOBAL (x) -> [addGlobal(env, x), code]
+        | BEGIN (fLabel, an, locals) -> var envn = enterFunction(env, fLabel, locals); [envn, code <+ Label (fLabel) <+> prologue(fLabel)]
+        | END -> case epilogue(env) of 
+            [env, epilogue_code] -> [env, code <+> epilogue_code]
+          esac 
+        | CALL (fLabel, an) -> case saveRegs(env, an) of  
+            [saveRegsCode, regs, env] -> case passArgs(env, an) of 
+              [passArgsCode, env] -> case allocate(env) of
+                [retVal, env] -> case deleteArgs(env, an) of 
+                  [deleteArgsCode, env] -> case restoreRegs(env, regs) of 
+                    [restoreRegsCode, env] -> [env, code <+> saveRegsCode <+> passArgsCode <+ Call (fLabel) <+> deleteArgsCode <+> restoreRegsCode <+ Mov (eax, retVal)]
+                  esac 
+                esac 
+              esac 
+            esac 
+          esac
+        | ST (x) -> case pop(env) of 
+            [s, env] -> case allocate(env) of 
+              [news, env] -> [env, code <+> rmov(s, loc(env, x), eax) <+> rmov(s, news, eax)]
+            esac
+          esac
+        | STRING (str_) -> case addString(env, str_) of 
+            [env, strVar] -> case callRuntime(env, "Bstring", 0, {M(sprintf("$%s", strVar))}, {}) of 
+              [env, runtimeCallCode] -> [env, code <+> runtimeCallCode]
+            esac 
+          esac
+        | ARRAY (n) -> case callRuntime(env, "Barray", n, {L(n)}, {}) of 
+            [env, runtimeCallCode] -> [env, code <+> runtimeCallCode]
+          esac
+        | SEXP (name, n) -> case addString(env, name) of
+            [env, nameVar] -> case callRuntime(env, "Bsexp", n, {L(n + 1)}, {I(0, M(sprintf("%s", nameVar)))}) of 
+              [env, runtimeCallCode] -> [env, code <+> runtimeCallCode]
+            esac
+          esac 
+        | STA -> case callRuntime(env, "Bsta", 3, {}, {}) of 
+            [env, runtimeCallCode] -> [env, code <+> runtimeCallCode]
+          esac 
+        | ELEM -> case callRuntime(env, "Belem", 2, {}, {}) of 
+            [env, runtimeCallCode] -> [env, code <+> runtimeCallCode]
+          esac
+        | BUILTIN (f, n) -> case callRuntime(env, sprintf("L%s", f), n, {}, {}) of 
+            [env, runtimeCallCode] -> [env, code <+> runtimeCallCode]
+          esac
+        (* Assignment *)
         
          -- Some guidelines for generating function calls:
          --
@@ -477,15 +644,14 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-               
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+        (* End *)
         esac
       }, [env, emptyBuffer ()], code)
   }
 
+  -- printf("%s\n", showSM(code));
   compile (env, code) 
 }
-
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
 public fun compileX86 (args, code) {
