@@ -6,7 +6,6 @@ import State;
 import World;
 import Lexer;
 import Parser;
-import Fun;
 import Builtins;
 
 -- As association map which maps "\otimes" into "\oplus"
@@ -31,6 +30,7 @@ var ops = {
 public fun evalOp (op, l, r) {
   case assoc (ops, op) of
     Some (f) -> f (l, r)
+  | None     -> failure ("Unknown operator: %s\n", op)
   esac
 }
 
@@ -63,7 +63,7 @@ public fun evalOp (op, l, r) {
 -- a given state
 fun lookupVal (state, name) {
   case state.lookup (name) of
-    x@Val (_) -> x
+    Val (x) -> x
   | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
   esac
 }
@@ -82,9 +82,24 @@ fun addNames (state, names) {
   foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
 }
 
+fun addArgs (state, names, values) {
+  foldl (fun (s, [name, value]) {s.addName (name, Val (value))}, state, zip (names, values))
+}
+
 -- Helper function: adds a function in current scope
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
+}
+
+fun addDefs (state, ds) {
+  foldl (fun (s, d) {
+    case d of
+      Val (names)            -> addNames (s, names)
+    | Var (names)            -> addNames (s, names)
+    | Fun (name, args, body) -> addFunction (s, name, args, body)
+    | _                      -> failure ("Uknown definition: %s\n", d.string)
+    esac
+  }, state, ds)
 }
                                         
 -- Evaluates a list of expressions, properly threading a configurations.
@@ -101,10 +116,93 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (c@[st, w], expr) {
+  case expr of
+    Skip                         -> [c, Unit]
+  | Set     (x, expr)            ->
+      case eval (c, expr) of
+        [[st, w], v] -> [[st <- [x, Val (v)], w], v]
+      esac
+  | Var     (x)                  -> [c, lookupVal (st, x)]
+  | Ref     (x)                  -> [c, x]
+  | Const   (n)                  -> [c, n]
+  | Assn    (x, expr)            ->
+      case evalList (c, {x, expr}) of
+        [[st, w], {x, v}] ->
+          case x of
+            ElemRef (arr, i) -> [[st, w], arr[i] := v]
+          | #str              ->
+            lookupVal (st, x); -- Check x is a variable
+            [[st <- [x, Val (v)], w], v]
+          | _                 -> failure (sprintf ("Invalid left-hand side of assignment: %s\n", x.string))
+          esac
+      esac
+  | Seq     (left, right)        ->
+      case evalList (c, {left, right}) of
+        [c, {_, v}] -> [c, v]
+      esac
+  | If      (cond, tBody, eBody) ->
+      case eval (c, cond) of
+        [c, n] -> eval (c, if n then tBody else eBody fi)
+      esac
+  | While   (cond, body)               -> eval (c, If (cond, Seq (body, expr), Skip))
+  | DoWhile (body, cond)               -> eval (c, Seq (body, While (cond, body)))
+  | Binop   (op, left, right)          ->
+      case evalList (c, {left, right}) of
+        [c, {l, r}] -> [c, evalOp (op, l, r)]
+      esac
+  | Call    (name, args)         ->
+      case lookupFun (st, name) of
+        Fun (argNames, body) -> 
+          if size (argNames) != size (args)
+          then error (sprintf ("wrong number of arguments for ""%s"", extected %d, found %d", name, size (argNames), size (args)), getLoc (name))
+          else
+            case evalList (c, args) of
+              [[st, w], vs] -> case body of
+                External -> case evalBuiltin (name, vs, w) of
+                    [v, w] -> [[st, w], v]
+                  esac
+              | #sexp    -> case eval ([addArgs (enterFunction (st), argNames, vs), w], body) of
+                  [[stFun, w], v] -> [[leaveFunction (st, getGlobal (stFun)), w], v]
+                esac
+              | _        -> failure ("Invalid function body: %s\n", body.string)
+              esac
+            esac
+          fi
+      | _ -> failure ("Uknown function: %s\n", name)
+      esac
+  | Scope   (defs, expr)         ->
+      case eval ([addDefs (enterScope (st), defs), w], expr) of
+        [[st, w], n] -> [[leaveScope (st), w], n]
+      esac
+  | Ignore  (expr)               ->
+      case eval (c, expr) of
+        [c, _] -> [c, Unit]
+      esac
+  | String  (value)              -> [c, value]
+  | Array   (values)             -> case (evalList (c, values)) of
+      [c, vs] -> [c, listArray (vs)]
+    esac
+  | Sexp   (name, values)        ->
+      case evalList (c, values) of
+        [c, vs] -> [c, Sexp (name, listArray (vs))]
+      esac
+  | Elem    (arr, index)         ->
+      case evalList (c, {arr, index}) of
+        [c, {a, i}] -> case a of
+          Sexp (_, vs) -> [c, vs[i]]
+        | #str         -> [c, a[i]]
+        | #array       -> [c, a[i]]
+        | _            -> failure ("Invalid array: %s\n", arr.string)
+        esac
+      esac
+  | ElemRef (arr, index)         ->
+      case evalList (c, {arr, index}) of
+        [c, {a, i}] -> [c, ElemRef (a, i)]
+      esac
+  | _                            -> failure ("Uknown expression: %s\n", expr.string)
+  esac
 }
-
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
