@@ -44,6 +44,7 @@ public fun showSMInsn (i) {
   | BEGIN  (f, a, l) -> sprintf ("BEGIN %s, %d, %d", f, a, l)
   | GLOBAL (x)       -> sprintf ("GLOBAL %s", x)
   | END              -> sprintf ("END")
+  | DUP              -> "DUP"
   | DROP             -> "DROP"
   | STRING (s)       -> sprintf ("STRING ""%s""", s)
   | ARRAY  (n)       -> sprintf ("ARRAY %d", n)
@@ -52,6 +53,7 @@ public fun showSMInsn (i) {
   | BUILTIN (f, n)   -> sprintf ("BUILTIN %s, %d", f, n)
   | META (m)         -> sprintf ("META %s", m.string)
   | PATT (p)         -> sprintf ("PATT %s", p.string)
+  | FAIL (l, c)      -> sprintf ("FAIL %d, %d", l, c)
   esac
 }
 
@@ -188,10 +190,15 @@ fun eval (env, w, insns) {
             [st, tail] : cst -> eval ([stack, cst, st, w], tail)
           | _        -> c
           esac
+      | DUP               ->
+          case stack of
+            v : _ -> eval ([v : stack, cst, st, w], tail)
+          | _     -> emptyStackError ("DUP")
+          esac
       | DROP              ->
           case stack of
             _ : stack -> eval ([stack, cst, st, w], tail)
-          | _           -> emptyStackError ("DROP")
+          | _         -> emptyStackError ("DROP")
           esac
       | STA               ->
           case stack of
@@ -213,7 +220,7 @@ fun eval (env, w, insns) {
           case take (stack, n) of
             [stack, args] -> eval ([listArray (args) : stack, cst, st, w], tail)
           esac
-      | SEXP    (x, n)   ->
+      | SEXP    (x, n)    ->
           case take (stack, n) of
             [stack, args] -> eval ([Sexp (x, listArray (args)) : stack, cst, st, w], tail)
           esac
@@ -232,6 +239,23 @@ fun eval (env, w, insns) {
             [stack, args] -> case evalBuiltin (f, args, w) of
               [v, w] -> eval ([v : stack, cst, st, w], tail)
             esac
+          esac
+      | PATT    (p)       ->
+          case stack of
+            v : stack ->
+              case p of
+                Tag (t, n) -> eval ([case v of
+                  Sexp (vT, vs) -> compare (t, vT) == 0 && length (vs) == n
+                | _             -> false
+                esac : stack, cst, st, w], tail)
+              | _          -> failure ("Invalid pattern: %s\n", p.string)
+              esac
+            | _       -> emptyStackError ("PATT")
+          esac
+      | FAIL (l, c)       ->
+          case stack of
+            v : stack -> failure ("Match failure at %d:%d, value '%s'\n", l, c, v.string)
+          | _         -> emptyStackError ("FAIL")
           esac
       | _                 -> failure ("Unknown SM instruction: %s\n", ins.string)
       esac
@@ -566,7 +590,7 @@ public fun compileSM (stmt) {
     esac
   }
 
-  fun compileArgs(env, args) {
+  fun compileArgs (env, args) {
     foldl (fun ([env, code], arg) {
              case genLabel (env) of
                [lab, env] -> case compile (lab, env, arg) of
@@ -576,13 +600,94 @@ public fun compileSM (stmt) {
            }, [env, emptyBuffer ()], args)
   }
 
+  fun dropLabelName (lab, depth) {
+    if depth == 0
+    then lab
+    else lab ++ "_" ++ depth.string
+    fi
+  }
+
+  fun dropLabels (lab, maxDepth) {
+    fun inner (n) {
+      singletonBuffer (LABEL (dropLabelName (lab, n))) <+> if n == 0
+                                                           then emptyBuffer ()
+                                                           else singletonBuffer (DROP) <+> inner (n - 1)
+                                                           fi
+    }
+
+    inner (maxDepth)
+  }
+
+  fun max (a, b) {
+    if a > b
+    then a
+    else b
+    fi
+  }
+
+  fun compileMatch (lab, pattern, depth) {
+    case dropLabelName (lab, depth) of
+      dLab -> case pattern of
+        Wildcard      -> [-1, emptyBuffer ()]
+      | Named (x, p)  -> compileMatch (lab, p, depth)
+      | Const (n)     -> [depth, singletonBuffer (DUP) <+ CONST (n) <+ BINOP ("==") <+ CJMP ("z", dLab)]
+      | Sexp  (t, ps) ->
+          case compileElemsMatch (lab, listArray (ps), depth + 1) of
+            [maxDepth, code] -> [max (maxDepth, depth), singletonBuffer (DUP) <+ PATT (Tag (t, size (ps))) <+ CJMP ("z", dLab) <+> code]
+          esac
+      esac
+    esac
+  }
+
+  fun compileElemsMatch (lab, ps, depth) {
+    var code = emptyBuffer ();
+    var maxDepth = -1;
+    
+    for var i; i := 0,
+        i < length (ps),
+        i := i + 1
+    do
+      case compileMatch (lab, ps[i], depth) of
+        [newDepth, matchCode] ->
+          maxDepth := max (maxDepth, newDepth);
+          code := code <+ DUP <+ CONST (i) <+ ELEM <+> matchCode <+ DROP
+      esac
+    od;
+
+    [maxDepth, code]
+  }
+
+  fun compileBranches (lab, env, brs, [line, col]) {
+    fun inner (env, brs) {
+      case brs of
+        {}                    -> [env, singletonBuffer (FAIL (line, col))]
+      | [pattern, expr] : brs -> case genLabel (env) of
+          [nextLab, env] -> case compileMatch (nextLab, pattern, 0) of
+            [maxDepth, matchCode] -> case compile (lab, env, expr) of
+              [_, env, exprCode] ->
+                if maxDepth >= 0
+                then
+                  case inner (env, brs) of
+                    [env, code] -> [env, matchCode <+ DROP <+> exprCode <+ JMP (lab) <+> dropLabels (nextLab, maxDepth) <+> code]
+                  esac
+                else [env, matchCode <+ DROP <+> exprCode]
+                fi
+            esac
+          esac
+        esac
+      esac
+    }
+
+    inner (env, brs)
+  }
+
   fun compile (lab, env, expr) {
     case expr of
       Skip                         -> [false, env, emptyBuffer ()]
     | Set     (x, expr)            ->
       case genLabel (env) of
         [stLab, env] -> case compile (stLab, env, expr) of
-          [stLabUsed, env, code] -> [false, env, code <+> label (stLab, stLabUsed) <+ ST (lookupVar (env, x))]
+          [stLabUsed, env, code] -> [false, env, code <+> label (stLab, stLabUsed) <+ ST (lookupVal (env, x))]
         esac
       esac
     | Var     (x)                  -> [false, env, singletonBuffer (LD (lookupVal (env, x)))]
@@ -725,6 +830,10 @@ public fun compileSM (stmt) {
     | Sexp   (name, exprs)        ->
         case compileArgs (env, exprs) of
           [env, code] -> [false, env, code <+ SEXP (name, size (exprs))]
+        esac
+    | Case   (name, brs, loc)     ->
+        case compileBranches (lab, env, brs, loc) of
+          [env, code] -> [true, env, singletonBuffer (LD (lookupVal (env, name))) <+> code]
         esac
     | _                            -> failure ("Unknown expression: %s\n", expr.string)
     esac
