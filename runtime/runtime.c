@@ -136,6 +136,7 @@ extern void* Bsexp (int bn, ...) {
   data   *d;  
   int n = UNBOX(bn);
 
+  __pre_gc();
   r = (sexp*) alloc (sizeof(int) * (n+1));
   d = &(r->contents);
   r->tag = 0;
@@ -153,6 +154,8 @@ extern void* Bsexp (int bn, ...) {
 
   r->tag = UNBOX(va_arg(args, int));
 
+  __post_gc();
+
   va_end(args);
 
   return d->contents;
@@ -164,6 +167,7 @@ void* Barray (int n0, ...) {
   int     i, ai; 
   data    *r; 
 
+  __pre_gc();
   r = (data*) alloc (sizeof(int) * (n+1));
 
   r->tag = ARRAY_TAG | (n << 3);
@@ -176,6 +180,7 @@ void* Barray (int n0, ...) {
   }
   
   va_end(args);
+  __post_gc();
   return r->contents;
 }
 
@@ -461,7 +466,7 @@ extern void Bmatch_failure (void *v, char *fname, int line, int col) {
 /*         GC: Mark-and-Copy                */
 /* ======================================== */
 
-/* Heap is devided on two semi-spaces called active (to-) space and passive (from-) space. */
+/* Heap is divided on two semi-spaces called active (to-) space and passive (from-) space. */
 /* Each space is a continuous memory area (aka pool, see @pool). */
 /* Note, it have to be no external fragmentation after garbage collection. */
 /* Memory is allocated by function @alloc. */
@@ -470,7 +475,7 @@ extern void Bmatch_failure (void *v, char *fname, int line, int col) {
 
 /* The section implements stop-the-world mark-and-copy garbage collection. */
 /* Formally, it consists of 4 stages: */
-/* 1. Root set constraction */
+/* 1. Root set construction */
 /* 2. Mark phase */
 /*   I.e. marking each reachable from the root set via a chain of pointers object as alive. */
 /* 3. Copy */
@@ -481,10 +486,10 @@ extern void Bmatch_failure (void *v, char *fname, int line, int col) {
 /* In the implementation, the first four steps are performed together. */
 /* Where root can be found in: */
 /* 1) Static area. */
-/*   Globals @__gc_data_end and @__gc_data_start are used to idenfity the begin and the end */
+/*   Globals @__gc_data_end and @__gc_data_start are used to identify the begin and the end */
 /*   of the static data area. They are defined while generating X86 code in src/X86.lama. */
 /* 2) Program stack. */
-/*   Globals @__gc_stack_bottom and @__gc_stack_top (see runctime/gc_runtime.s) have to be set */
+/*   Globals @__gc_stack_bottom and @__gc_stack_top (see runtime.c/gc_runtime.s) have to be set */
 /*   as the begin and the end of program stack or its part where roots can be found. */
 /* 3) Traditionally, roots can be also found in registers but our compiler always saves all */
 /*   registers on program stack before any external function call. */
@@ -495,7 +500,7 @@ extern void Bmatch_failure (void *v, char *fname, int line, int col) {
 /* rest a forward pointer instead of the object, scan object for pointers, call copying */
 /* for each found pointer. */
 
-// The begin and the end of static area (are specified in src/X86.lama fucntion genasm)
+// The begin and the end of static area (are specified in src/X86.lama function genasm)
 extern const size_t __gc_data_end, __gc_data_start;
 
 // @L__gc_init is defined in runtime/runtime.s
@@ -507,7 +512,7 @@ extern void L__gc_init ();
 extern void __gc_root_scan_stack ();
 
 // You also have to define two functions @__pre_gc and @__post_gc in runtime/gc_runtime.s.
-// These auxiliary functions have to be defined in oder to correctly set @__gc_stack_top.
+// These auxiliary functions have to be defined in order to correctly set @__gc_stack_top.
 // Note that some of our functions (from runtime.c) activation records can be on top of the
 // program stack. These activation records contain usual values and thus we do not have a
 // way to distinguish pointers from non-pointers. And some of these values may accidentally be
@@ -537,15 +542,31 @@ static size_t *current;   // Pointer to the free space begin in active space
 static size_t SPACE_SIZE = 8;
 # define POOL_SIZE (2*SPACE_SIZE)
 
+static void init_space(pool *space) {
+  space->size = SPACE_SIZE;
+  space->begin = mmap(NULL, SPACE_SIZE * sizeof(size_t), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_32BIT | MAP_ANONYMOUS, -1, 0);
+  space->end = space->begin + SPACE_SIZE;
+  space->current = space->begin;
+}
+
 // @init_to_space initializes to_space
 // @flag is a flag: if @SPACE_SIZE has to be increased or not
-static void init_to_space (int flag) { NIMPL }
+static void init_to_space (int flag) {
+  if (flag) SPACE_SIZE *= 2;
+  init_space(&to_space);
+}
 
 // @free_pool frees memory pool p
-static int free_pool (pool * p) { NIMPL }
+static int free_pool (pool * p) {
+  munmap((void*)p->begin, p->size);
+}
 
 // swaps active and passive spaces
-static void gc_swap_spaces (void) { NIMPL }
+static void gc_swap_spaces (void) {
+  pool tmp = to_space;
+  to_space = from_space;
+  from_space = tmp;
+}
 
 // checks if @p is a valid pointer to the active (from-) space
 # define IS_VALID_HEAP_POINTER(p)\
@@ -567,27 +588,90 @@ extern size_t * gc_copy (size_t *obj);
 // @copy_elements
 //   1) copies @len words from @from to @where
 //   2) calls @gc_copy for those of these words which are valid pointers to from_space
-static void copy_elements (size_t *where, size_t *from, int len) { NIMPL }
+static void copy_elements (size_t *where, size_t *from, int len) {
+  for (int i = 0; i < len; i++) {
+    if (IS_VALID_HEAP_POINTER(*(from + i))) {
+      *(where + i) = gc_copy(*(from + i));
+    } else {
+      *(where + i) = *(from + i);
+    }
+  }
+}
+
+static void extend_space(pool *space) {
+  mremap(space->begin, SPACE_SIZE, SPACE_SIZE * 2, 0);
+  space->size += SPACE_SIZE;
+  space->end += SPACE_SIZE;
+}
 
 // @extend_spaces extends size of both from- and to- spaces
-static void extend_spaces (void) { NIMPL }
+static void extend_spaces (void) {
+  extend_space(&from_space);
+  extend_space(&to_space);
+
+  SPACE_SIZE *= 2;
+}
 
 // @gc_copy takes a pointer to an object, copies it
 //   (i.e. moves from from_space to to_space)
 //   , rests a forward pointer, and returns new object location.
-extern size_t * gc_copy (size_t *obj) { NIMPL }
+extern size_t * gc_copy (size_t *obj) {
+  data *d = TO_DATA(obj);
+  if (IS_FORWARD_PTR(d->tag)) {
+    return d->tag;
+  }
+  if (!(TAG(d->tag) == STRING_TAG | TAG(d->tag) == ARRAY_TAG | TAG(d->tag) == SEXP_TAG)) {
+    failure("Wrong tag: %d\n", d->tag);
+  }
+  size_t* position;
+  size_t len;
+  if (TAG(d->tag) == STRING_TAG || TAG(d->tag) == ARRAY_TAG) {
+    *to_space.current++ = d->tag;
+
+    position = to_space.current;
+    len = LEN(d->tag);
+    d->tag = position;
+  } else {
+    sexp *s = TO_SEXP(obj);
+    *to_space.current++ = s->tag;
+    *to_space.current++ = s->contents.tag;
+
+    position = to_space.current;
+    len = LEN(s->contents.tag);
+    s->contents.tag = position;
+  }
+  if (TAG(d->tag == STRING_TAG)) {
+    strncpy((char *)position, (char *)d->contents, len + 1);
+    to_space.current += (len / sizeof(size_t)) + !!(len % sizeof(size_t));
+  } else {
+    to_space.current += len;
+    copy_elements(position, obj, len);
+  }
+  return position;
+}
 
 // @gc_test_and_copy_root checks if pointer is a root (i.e. valid heap pointer)
 //   and, if so, calls @gc_copy for each found root
-extern void gc_test_and_copy_root (size_t ** root) { NIMPL }
+extern void gc_test_and_copy_root (size_t ** root) {
+  if (IS_VALID_HEAP_POINTER(*root)) {
+    *root = gc_copy(*root);
+  }
+}
 
 // @gc_root_scan_data scans static area for root
 //   for each root it calls @gc_test_and_copy_root
-extern void gc_root_scan_data (void) { NIMPL }
+extern void gc_root_scan_data (void) {
+  for (size_t* i = &__gc_data_start; i < &__gc_data_end; i++) {
+    gc_test_and_copy_root(i);
+  }
+}
 
 // @init_pool is a memory pools initialization function
 //   (is called by L__gc_init from runtime/gc_runtime.s)
-extern void init_pool (void) { NIMPL }
+extern void init_pool (void) {
+  init_to_space(0);
+  init_space(&from_space);
+}
 
 // @gc performs stop-the-world mark-and-copy garbage collection
 //   and extends pools (i.e. calls @extend_spaces) if necessarily
@@ -599,10 +683,33 @@ extern void init_pool (void) { NIMPL }
 //   2) call @__gc_root_scan_stack (finds roots in program stack
 //        and calls @gc_test_and_copy_root for each found root)
 //   3) extends spaces if there is not enough space to be allocated after gc
-static void * gc (size_t size) { NIMPL }
+static void * gc (size_t size) {
+  gc_root_scan_data();
+  __gc_root_scan_stack();
+
+  for (int i = 0; i < extra_roots.current_free; i++) {
+    gc_test_and_copy_root(extra_roots.roots[i]);
+  }
+
+  while (to_space.current + size > to_space.end) {
+    extend_spaces();
+  }
+
+  gc_swap_spaces();
+  to_space.current = to_space.begin;
+  return from_space.current;
+}
 
 // @alloc allocates @size memory words
-//   it enaibles garbage collection if out-of-memory,
+//   it enables garbage collection if out-of-memory,
 //   i.e. calls @gc when @current + @size > @from_space.end
 // returns a pointer to the allocated block of size @size
-extern void * alloc (size_t size) { NIMPL }
+extern void * alloc (size_t size) {
+  size_t real_size = size / sizeof(size_t) + (size % sizeof(size_t) != 0);
+  if (from_space.current + real_size > from_space.end) {
+    gc(real_size);
+  }
+  size_t *allocated = from_space.current;
+  from_space.current += real_size;
+  return allocated;
+}
