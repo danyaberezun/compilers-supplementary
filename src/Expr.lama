@@ -41,23 +41,24 @@ public fun evalOp (op, l, r) {
 -- A expression is represented by a data structure of the following shape:
 --
 -- expr = Assn    (expr, expr)         |
---        Set     (string, expr)       |
 --        Seq     (expr, expr)         |
 --        Skip                         |
---        if      (expr, expr, expr)   |
+--        If      (expr, expr, expr)   |
 --        While   (expr, expr)         |
---        Repeat  (expr, expr)         |
+--        DoWhile (expr, expr)         |
 --        Var     (string)             |
 --        Ref     (string)             |
 --        Const   (int)                |
 --        Binop   (string, expr, expr) |
+--        Scope   (def list, expr)     |
 --        Call    (string, expr list)  |
 --        Ignore  (expr)               |
 --        String  (string)             |
 --        Array   (expr list)          |
 --        Elem    (expr, expr)         |
 --        ElemRef (expr, expr)         |
---        Builtin (string, expr list)
+--        Builtin (string, expr list)  |
+--        Case    (string, br list)
 
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
@@ -101,8 +102,163 @@ fun evalList (c, exprs) {
   esac
 }
 
+fun checkSexp(e) {
+  case e of
+    Sexp (_, arr) -> arr
+  | _ -> e
+  esac
+}
+
+fun match(s, v, brs) {
+  fun matchList(s, brs, vs) {
+    case [brs, vs] of
+      [{}, {}]           -> Some (s)
+    | [br : brs, v : vs] -> case tryMatch(s, br, v) of
+                              Some (s) -> matchList(s, brs, vs)
+                            | None     -> None
+                            esac
+    | _                  -> None
+    esac
+  }
+
+  fun matchSexp(s, name, args, v) {
+    case v of
+      Sexp (vName, vArgs) ->
+        if compare(vName, name) != 0
+          then None
+          else matchList(s, args, arrayList(vArgs)) fi
+    | _ -> None
+    esac
+  }
+
+  fun tryMatch(s, br, v) {
+    case br of
+      Const (x)         -> if x == v then Some (s) else None fi
+    | Var (name)        -> Some (addName(s, name, v))
+    | Sexp (name, args) -> matchSexp(s, name, args, v)
+    | Hole              -> Some (s)
+    | Named (name, br)  -> tryMatch(addName(s, name, v), br, v)
+    | _                 -> failure(sprintf("Unexpected pattern `%s` in 'case' expression\n", string(br)))
+    esac
+  }
+
+  case brs of
+    {} -> failure(sprintf("Couldn match `%s`\n", string(v)))
+  | [br, e] : brs ->
+    case tryMatch(s, br, v) of
+      Some (s) -> [s, e]
+    | None -> match(s, v, brs)
+    esac
+  esac
+}
+
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Assn (s1, s2) ->
+      case evalList (c, {s1, s2}) of
+        [[s, w], { ref, n }] ->
+          case ref of
+            Ref (x) -> [[s <- [x, n], w], n]
+          | ElemRef (arr, idx) -> checkSexp(arr)[idx] := n; [[s, w], n]
+          esac
+      esac
+  | Seq (s1, s2) ->
+      case evalList(c, {s1, s2}) of
+        [c, {_, r}] -> [c, r]
+      esac
+  | Skip -> [c, Bottom]
+  | If (e, s1, s2) ->
+      case eval(c, e) of
+        [c, n] -> if n then eval (c, s1) else eval (c, s2) fi
+      esac
+  | While (e, s) ->
+      while case eval (c, e) of [newC, b] -> c := newC; b esac do
+        c := fst (eval (c, s))
+      od;
+      [c, Bottom]
+  | DoWhile (s, e) ->
+      do
+        c := fst (eval (c, s))
+      while case eval (c, e) of [newC, b] -> c := newC; b esac od;
+      [c, Bottom]
+  | Var (x) ->
+      [c, lookup (s, x)]
+  | r@Ref (x) ->
+      [c, r]
+  | Const (x) -> [c, x]
+  | Binop (op, s1, s2) ->
+      case evalList (c, { s1, s2 }) of
+        [c, {l, r}] ->
+          [c, evalOp (op, l, r)]
+      esac
+  | Scope (defs, es) ->
+      case enterScope (s) of
+        s ->
+          s := foldl (fun(s, e) {
+            case e of
+              Var (names)            -> addNames (s, names)
+            | Val (names)            -> addNames (s, names)
+            | Fun (name, args, body) -> addFunction(s, name, args, body)
+            esac
+          }, s, defs);
+          case eval ([s, w], es) of
+            [[s, w], v] -> [[leaveScope(s), w], v]
+          esac
+      esac
+  | Call (f, args) ->
+      lookupFun (s, f);
+      case evalList (c, args) of
+        [[s, w], args] ->
+          case lookup (s, f) of
+            Fun (argNames, body) ->
+              case body of
+                External -> case evalBuiltin(f, args, w) of [v, w] -> [[s, w], v] esac
+              | _ ->
+                  var funS = foldl(fun (s, [name, v]) { addName(s, name, v) }, enterFunction (s), zip (argNames, args));
+                  case eval ([funS, w], body) of
+                    [[funS, w], v] -> [[leaveFunction (s, getGlobal (funS)), w], v]
+                  esac
+              esac
+          esac
+      esac
+  | Ignore (e) ->
+    case eval (c, e) of
+      [c, _] -> [c, Bottom]
+    esac
+  | String (s) -> [c, s]
+  | Array (es) ->
+      case evalList(c, es) of
+        [c, vals] -> [c, listArray(vals)]
+      esac
+  | Sexp (name, es) ->
+      case evalList(c, es) of
+        [c, vals] -> [c, Sexp (name, listArray(vals))]
+      esac
+  | Elem (s1, s2) ->
+      case evalList(c, {s1, s2}) of
+        [c, {arr, idx}] ->
+          [c, checkSexp(arr)[idx]]
+      esac
+  | ElemRef (s1, s2) ->
+      case evalList(c, {s1, s2}) of
+        [c, {arr, idx}] -> [c, ElemRef (arr, idx)]
+      esac
+  | Builtin (name, es) ->
+      case evalList(c, es) of
+        [[s, w], args] ->
+          case evalBuiltin(name, args, w) of
+            [v, w] -> [[s, w], v]
+          esac
+      esac
+  | Case (name, brs) ->
+      case lookup(s, name) of
+        v ->
+          case match(s, v, brs) of
+            [s, br] -> eval([s, w], br)
+          esac
+      esac
+  | e -> failure("unknown expr: " ++ string(e) ++ "\n")
+  esac
 }
 
 

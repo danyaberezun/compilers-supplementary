@@ -95,7 +95,7 @@ fun expandScope (defs, expr) {
     foldr (fun ([defs, expr], def) {     
              case def of
                 [ident, None]         -> [ident : defs, expr]
-             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
+             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Assn (Ref (ident), value)), expr)]
              esac
            },
            [{}, expr],
@@ -104,7 +104,7 @@ fun expandScope (defs, expr) {
 
   fun expandValDefs (defs, expr) {
     foldr (fun ([defs, expr], [ident, value]) {     
-             [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
+             [ident : defs, Seq (Ignore (Assn (Ref (ident), value)), expr)]
            },
            [{}, expr],
            defs)
@@ -182,7 +182,68 @@ fun reifyPatternBindings (matched, brs) {
   )
 }
 
+fun assertIf(e, s1, s2) {
+  fun (a) {
+    e (Val) =>> fun (e) {
+    s1 (a) =>> fun (s1) {
+    s2 (a) => fun (s2) {
+      If (e, s1, s2)
+    }}}
+  }
+}
+
 var
+  pIf = memo $ eta syntax (kIf e=exp kThen s1=exp s2=pElif {assertIf(e, s1, s2)}),
+
+  pElif = memo $ eta syntax (
+    inbr[kElse, exp, kFi] |
+    loc=pos kFi {
+      fun (a) {
+        assertVoid(a, returnST $ Skip, loc)
+      }
+    } |
+    kElif e=exp kThen s1=exp s2=pElif {
+      assertIf(e, s1, s2)
+    }),
+
+  pCaseMatcher = memo $ eta syntax (
+    -- const
+    x=decimal {Const (stringInt(x))} |
+
+    -- lident
+    x=lident {Var (x)} |
+
+    -- Sexp
+    x=uident args=inbr[s("("), list0(pCaseMatcher), s(")")]? {
+      case args of
+        None        -> Sexp (x, {})
+      | Some (args) -> Sexp (x, args)
+      esac
+    } |
+
+    -- Hole
+    s["_"] {Hole}
+  ),
+
+  pCaseName = memo $ eta syntax (lident -s["@"]),
+
+  pNamedCaseMatcher = memo $ eta syntax (
+    name=pCaseName? m=pCaseMatcher {
+      case name of
+        None -> m
+      | Some (name) -> Named (name, m)
+      esac
+    }
+  ),
+
+  pCaseBr = memo $ eta syntax (pat=pNamedCaseMatcher s["->"] br=scopeExpr {
+    fun (a) {
+      br (a) => fun (br) {
+        [pat, br]
+      }
+    }
+  }),
+
   primary = memo $ eta syntax (
     -- array constant
     loc=pos x=inbr[s("["), list0(syntax (e=exp {e(Val)})), s("]")] {
@@ -225,8 +286,63 @@ var
                         | Some (args) -> chainST (args) => fun (args) {Sexp (x, args)}
                         esac, loc)}
     } |
-  
-    $(failure ("the rest of primary parsing in not implemented\n"))),
+
+    -- skip
+    loc=pos kSkip {fun (a) {assertVoid(a, returnST $ Skip, loc)}} |
+
+    -- if
+    pIf |
+
+    -- while
+    loc=pos kWhile e=exp kDo s=scopeExpr kOd {
+      fun (a) {
+        var body =
+          e (Val) =>> fun (e) {
+          s (Void) => fun (s) {
+            While (e, s)
+          }};
+        assertVoid(a, body, loc)
+      }
+    } |
+
+    -- do-while
+    loc=pos kDo s=scopeExpr kWhile e=exp kOd {
+      fun (a) {
+        var body =
+          e (Val) =>> fun (e) {
+          s (Void) => fun (s) {
+            distributeScope(s, fun (s) {DoWhile (s, e)})
+          }};
+        assertVoid(a, body, loc)} } |
+
+    -- for-loop
+    loc=pos kFor s1=scopeExpr s[","] e=exp s[","] s2=exp kDo s3=exp kOd {
+      fun (a) {
+        var body =
+          s1 (Void) =>> fun (s1) {
+          e (Val) =>> fun (e) {
+          s2 (Void) =>> fun (s2) {
+          s3 (Void) => fun (s3) {
+            distributeScope(s1, fun (s1) {Seq(s1, While(e, Seq(s3, s2)))})
+          }}}};
+        assertVoid(a, body, loc)}
+    } |
+
+    -- case
+    loc=pos kCase e=exp kOf brs=listBy[pCaseBr, s("|")] kEsac {
+      fun (a) {
+        e (Val) =>> fun (e) {
+        chainST $ map(fun (br) {br(a)}, brs) =>> fun (brs) {
+          fun (env) {
+            case freshName(env) of
+              [env, name] -> [env, expandScope({Var ({[name, Some(e)]})}, Case(name, reifyPatternBindings(name, brs)))]
+            esac
+          }
+        }}
+      }
+    } |
+
+    inbr[s("("), scopeExpr, s(")")]),
    
 
   basic = memo $ eta (
