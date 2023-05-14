@@ -88,6 +88,10 @@ fun list (item) {
   listBy (item, s(","))
 }
 
+fun caseBranches (item) {
+  listBy (item, s("|"))
+}
+
 -- Helper AST function: expands a "raw" scope expression, reifying
 -- initializers into assignments
 fun expandScope (defs, expr) {
@@ -133,7 +137,7 @@ fun expandScope (defs, expr) {
 -- Helper AST function: distributes a scope through an expression
 fun distributeScope (expr, exprConstructor) {
   case expr of
-    Scope (defs, sexpr) -> Scope (defs, exprConstructor (sexpr))
+    Scope (defs, sexpr) -> exprConstructor(sexpr) => fun (expr) { Scope (defs, expr) }
   | _                   -> exprConstructor (expr)
   esac
 }
@@ -225,9 +229,128 @@ var
                         | Some (args) -> chainST (args) => fun (args) {Sexp (x, args)}
                         esac, loc)}
     } |
-  
-    $(failure ("the rest of primary parsing in not implemented\n"))),
-   
+
+    loc=pos kWhile e=exp kDo body=scopeExpr kOd    {fun (a) {
+                                                        assertVoid(a, e(Val) =>> fun(e) {
+                                                          body(Void) => fun(body) {
+                                                            While(e, body)
+                                                          }
+                                                        }, loc)
+                                                      }} |
+
+    loc=pos kFor s1=scopeExpr s[","] e=exp s[","] s2=exp kDo s3=scopeExpr kOd {fun(a) {
+                                                                                  s1(Void) =>> fun (s1) {
+                                                                                    fun addIni(ini) {
+                                                                                      assertVoid(a, 
+                                                                                        e(Val) =>> fun (e) {
+                                                                                          s3(Void) =>> fun (s3) {
+                                                                                            s2(Void) => fun (s2) {
+                                                                                              Seq (ini, While (e, Seq(s3, s2)))
+                                                                                            }
+                                                                                          }
+                                                                                        }, 
+                                                                                      loc)
+                                                                                    }
+                                                                                    distributeScope(s1, addIni)
+                                                                                  }
+                                                                              }} |
+
+    loc=pos kDo body=scopeExpr kWhile e=exp kOd    {fun (a) { 
+                                                              body(Void) =>> fun (body) {
+                                                                  fun addBody(body) {
+                                                                    assertVoid(a, 
+                                                                      e(Val) => fun (e) {
+                                                                          DoWhile(body, e)
+                                                                      },
+                                                                      loc
+                                                                    )
+                                                                  }
+                                                                  distributeScope(body, addBody)
+                                                              }
+                                                  }} |
+
+    kIf e=exp kThen tru=scopeExpr kElse fls=scopeExpr kFi    {fun (a) {
+                                                      e(Val) =>> fun(e) {
+                                                        tru(a) =>> fun(tru) {
+                                                          fls(a) => fun(fls) {
+                                                            If (e, tru, fls)
+                                                          }
+                                                        }
+                                                      }
+                                                  }} |
+
+    kIf e=exp kThen tru=scopeExpr fls=elifB      {fun (a) {
+                                                      e(Val) =>> fun(e) {
+                                                        tru(a) =>> fun(tru) {
+                                                          fls(a) => fun(fls) {
+                                                            If (e, tru, fls)
+                                                          }
+                                                        }
+                                                      }
+                                                  }} |
+
+    loc=pos kSkip                          {fun (a) {
+                                              assertVoid(a, returnST $ Skip, loc)
+                                          }} |
+
+    x=inbr[s ("("), scopeExpr, s (")")] {x} |
+
+    kCase e=exp kOf brs=caseBranches[syntax ( p=pat s["->"] e=exp { fun (a) {
+                                      e(a) => fun (e) {
+                                        [p, e]
+                                      }}})] kEsac { fun(a) {
+                                        
+                                        e(Val) =>> fun (e) {
+                                          freshName =>> fun (name) {
+                                            chainST(map(fun (br) { br(a) }, brs)) => fun (brs) {
+                                              case reifyPatternBindings(name, brs) of brs -> (
+                                                var defValue = case a of  -- Dirty hack: in case of error defValue makes stack size equal for branches and failed expr => SM invariant is preserved
+                                                  Ref -> Ref (name)
+                                                | Void -> Skip
+                                                | _ -> Var (name)
+                                                esac;
+                                                Scope ({Var({name})}, Seq(Ignore(Set(name, e)), Case(name, brs, defValue)))
+                                              )
+                                              esac
+                                            }
+                                          }
+                                        }
+                                    }}),
+
+  pat = memo $ eta syntax (
+    x=decimal { Const (stringInt(x)) } |
+    s["_"] { Wildcard } |
+    x=inbr[s("["), list0(syntax (e=pat {e})), s("]")] { Array(x) } |
+    x=uident args=inbr[s("("), list0(syntax(p=pat {p})), s(")")]?  {case args of
+                          None        -> Sexp (x, {})
+                        | Some (args) -> Sexp (x, args)
+                        esac} |
+    x=lident s["@"] p=pat { Named(x, p) } |
+    x=lident { Named(x, Wildcard) }
+  ),
+
+
+  elifB = memo $ eta syntax (kFi {fun (a) {
+                                    assertVoid(a, returnST $ Skip, loc)
+                                  }} |
+  kElif e=exp kThen tru=scopeExpr kElse fls=scopeExpr kFi {fun (a) {
+                                              e(Val) =>> fun(e) {
+                                                tru(a) =>> fun(tru) {
+                                                  fls(a) => fun(fls) {
+                                                    If (e, tru, fls)
+                                                  }
+                                                }
+                                              }
+                                                }} |
+  kElif e=exp kThen tru=scopeExpr fls=elifB {fun (a) {
+                                              e(Val) =>> fun(e) {
+                                                tru(a) =>> fun(tru) {
+                                                  fls(a) => fun(fls) {
+                                                    If (e, tru, fls)
+                                                  }
+                                                }
+                                              }
+                                      }}),
 
   basic = memo $ eta (
     expr ({[Right, {[s (":="), fun (l, loc, r) {
