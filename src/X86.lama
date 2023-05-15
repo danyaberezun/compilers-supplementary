@@ -470,7 +470,39 @@ fun suffix (op) {
   | "!=" -> "ne"
   | ">=" -> "ge"
   | ">"  -> "g"
+  | _    -> ""
   esac
+}
+
+fun isBoolOp (op) {
+  case op of
+      "&&" -> true
+    | "!!" -> true
+    | "^"  -> true
+    | _    -> false
+  esac
+}
+
+fun compareWithNull (x) {
+  emptyBuffer()
+    <+ Mov (L (0), eax)
+    <+ Binop ("cmp", L (0), x)
+    <+ Set ("ne", "%al")
+    <+ Mov (eax, x)
+}
+
+fun popN (env, n) {
+  fun popN (n, env, poped) {
+    if n == 0 then
+      [env, reverse(poped)]
+    else
+      case pop(env) of
+        [s, env] -> popN(n - 1, env, s : poped)
+      esac
+    fi
+  }
+
+  popN(n, env, {})
 }
 
 -- Boxes an immediate value
@@ -484,6 +516,41 @@ fun toFixedNum (r) {
   singletonBuffer (Sal1 (r)) <+ Or1 (r)
 }
 
+fun fromFixedNum (r) {
+  singletonBuffer (Sar1 (r))
+}
+
+fun genCall(env, code, fLab, na, modArgs) {
+  fun push(r) {
+    foldl(fun (code, r) { code <+ Push (r) }, emptyBuffer(), r)
+  }
+  fun pop(r) {
+    foldl(fun (code, r) { code <+ Pop (r) }, emptyBuffer(), reverse(r))
+  }
+  fun discard(n) {
+    if n == 0 then emptyBuffer() else discard(n - 1) <+ Pop(eax) fi
+  }
+
+  var r = liveRegisters(env, na);
+
+  if fLab[0] == '$' then fLab[0] := 'L' fi;
+
+  case popN(env, na) of
+    [env, args] ->
+      args := modArgs(args);
+      case allocate(env) of
+        [s, env] ->
+          [env, code
+            <+> push(r)
+            <+> push(args)
+            <+ Call (fLab)
+            <+ Mov (eax, s)
+            <+> discard(size(args))
+            <+> pop(r)
+          ]
+      esac
+  esac
+}
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
@@ -492,55 +559,112 @@ fun compile (args, env, code) {
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+        case i of
+          BINOP (op) ->
+            case pop2(env) of
+              [y, x, env] ->
+                code := code <+> fromFixedNum(y) <+> fromFixedNum(x);
+                case allocate(env) of
+                  [x, env] ->
+                    case op of
+                        "/" -> [env, code <+ Mov (x, eax) <+ Cltd <+ IDiv (y) <+> toFixedNum(eax) <+ Mov (eax, x)]
+                      | "%" -> [env, code <+ Mov (x, eax) <+ Cltd <+ IDiv (y) <+> toFixedNum(edx) <+ Mov (edx, x)]
+                      | op ->
+                        case suffix (op) of
+                            "" ->
+                              if isBoolOp (op) then
+                                code := code <+> compareWithNull(x) <+> compareWithNull(y) fi;
 
-        -- printf ("Insn: %s\n", i.string);
+                              code :=
+                                if (compare(op, "*") == 0) then
+                                  code <+ Mov (x, eax) <+ Binop (op, y, eax) <+ Mov (eax, x) else
+                                  code <+ Mov (y, eax) <+ Binop (op, eax, x) fi;
 
-        -- This if removes unreachable code; otherwise
-        -- the stack invariants for the symbolic interpreter
-        -- are violated
-        if env.isBarrier 
-        then case i of
-               LABEL (l, true) -> [env.dropBarrier, code <+ Label (l)]
-             | LABEL (l, _)    -> if hasStack (env, l)
-                                  then [retrieveStack (env, l), code <+ Label (l)]
-                                  else [env, code]
-                                  fi
-             | _               -> [env, code]
-             esac
-        else
-          case i of
-            READ ->
-              case env.allocate of
-                [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-              esac             
-          | WRITE ->
-              case env.pop of
-                [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-              esac
-        
-           -- Some guidelines for generating function calls:
-           --
-           -- 1. generate instructions to save live registers on the X86 stack (use
-           --    env.liveRegisters (number of arguments);
-           -- 2. generate instructions to move actual parameters from the symbolic
-           --    stack to the hardware one;
-           -- 3. generate the call itself;
-           -- 4. discard the actual parameters from the stack;
-           -- 5. restore saved live registers.
-           --
-           -- Some guidelines for generating functions:
-           --
-           -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-           --    env.enterFunction to create a proper environment;
-           -- 2. generate epilogue for END instruction.
-               
-          | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-          esac
-        fi
+                              [env, code <+> toFixedNum(x)]
+                          | suf -> [env, code <+ Mov (L (0), eax) <+ Mov (y, edx) <+ Binop ("cmp", edx, x) <+ Set (suf, "%al") <+> toFixedNum(eax) <+ Mov (eax, x)]
+                        esac
+                    esac
+                esac
+            esac
+        | CONST (n) ->
+            case allocate(env) of
+              [s, env] -> [env, code <+ Mov (L (makeBox(n)), s)]
+            esac
+        | LD (x) ->
+            case allocate(env) of
+              [s, env] -> [env, code <+> move(loc(env, x), s)]
+            esac
+        | LDA (x) ->
+            case allocate(env) of
+              [s, env] -> [env, code <+ Lea (loc(env, x), eax) <+ Mov (eax, s)]
+            esac
+        | ST (x) ->
+            case pop(env) of
+              [s, env] -> [env, code <+> move (s, loc(env, x))]
+            esac
+        | STI ->
+            case pop2(env) of
+              [x, n, env] -> [env, code <+> move (x, eax) <+> move (n, edx) <+> move (edx, I (0, eax))]
+            esac
+        | LABEL (s) -> [retrieveStack(env, s), code <+ Label (s)]
+        | JMP (l) -> [setStack(env, l), code <+ Jmp (l)]
+        | CJMP (c, l) ->
+            case pop(env) of
+              [s, env] -> [setStack(env, l), code <+ Mov (L (0), eax) <+ Binop ("cmp", L (makeBox(0)), s) <+ CJmp (c, l)]
+            esac
+        | DUP ->
+            case peek(env) of
+              x ->
+                case allocate(env) of
+                  [s, env] -> [env, code <+> move(x, s)]
+                esac
+            esac
+        | DROP -> case pop(env) of [_, env] -> [env, code] esac
+
+        | GLOBAL (name) ->
+            env := addGlobal(env, name);
+            [env, code <+ Lea (loc(env, Glb (name)), eax) <+ Mov (L (makeBox(0)), I (0, eax))]
+
+        -- Some guidelines for generating function calls:
+        --
+        -- 1. generate instructions to save live registers on the X86 stack (use
+        --    env.liveRegisters (number of arguments);
+        -- 2. generate instructions to move actual parameters from the symbolic
+        --    stack to the hardware one;
+        -- 3. generate the call itself;
+        -- 4. discard the actual parameters from the stack;
+        -- 5. restore saved live registers.
+        | CALL (fLab, na) -> genCall(env, code, fLab, na, id)
+        -- Some guidelines for generating functions:
+        --
+        -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
+        --    env.enterFunction to create a proper environment;
+        -- 2. generate epilogue for END instruction.
+        | BEGIN (fLab, na, nl) ->
+            code := code <+> prologue(fLab);
+            env := enterFunction(env, fLab, nl);
+            [env, code]
+        | END ->
+            case epilogue(env) of
+              [env, eCode] -> [env, code <+> eCode]
+            esac
+        | STRING (s) ->
+            case addString(env, s) of
+              [env, sLab] ->
+                case allocate(env) of
+                  [s, env] -> [env, code <+> move(M ("$" ++ sLab), s) <+ Push (s) <+ Call ("Bstring") <+ Mov (eax, s) <+ Pop (eax)]
+                esac
+            esac
+        | ARRAY (n) -> genCall(env, code, "Barray", n, fun (args) {args +++ {L (makeBox(n))}})
+        | SEXP (name, n) -> genCall(env, code, "Bsexp", n, fun (args) { L (makeBox(tagHash(name))) : args +++ {L (makeBox(n+1))} })
+        | STA -> genCall(env, code, "Bsta", 2, reverse)
+        | ELEM -> genCall(env, code, "Belem", 2, id)
+        | META (_) -> [env, code]
+        | PATT (Sexp (name, n)) -> genCall(env, code, "Btag", 1, fun (args) {L (makeBox(n)) : L (makeBox(tagHash(name))) : args})
+        | _ -> failure("Unknown instruction: %s\n", string (i))
+        esac
       }, [env, emptyBuffer ()], code)
   }
-
-  -- printf ("%s\n", showSM (code));
 
   compile (env, code) 
 }
