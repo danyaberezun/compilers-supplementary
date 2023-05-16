@@ -63,8 +63,8 @@ public fun evalOp (op, l, r) {
 -- a given state
 fun lookupVal (state, name) {
   case state.lookup (name) of
-    x@Val (_) -> x
-  | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
+      Val (x) -> x
+    | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
   esac
 }
 
@@ -72,8 +72,8 @@ fun lookupVal (state, name) {
 -- a given state
 fun lookupFun (state, name) {
   case state.lookup (name) of
-    x@Fun (_, _) -> x
-  | _            -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
+      x@Fun (_, _) -> x
+    | _            -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
   esac
 }
 
@@ -86,31 +86,150 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
   case foldl (fun ([c, vals], e) {
-                case eval (c, e) of
-                  [c, v] -> [c, v : vals]
-                esac
-              },
-              [c, {}],
-              exprs) of
+    case eval (c, e) of
+      [c, v] -> [c, v : vals]
+    esac
+  },
+    [c, {}],
+    exprs) of
     [c, vals] -> [c, reverse (vals)]
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun addArgs (state, names, values) {
+  foldl (fun (s, [name, value]) {s.addName (name, Val (value))}, state, zip (names, values))
+}
+
+
+fun addDefs (state, defs) {
+  foldl (fun (state, def) {
+    case def of
+        Var (names)            -> addNames (state, names)
+      | Fun (name, args, body) -> addFunction (state, name, args, body)
+      | _                      -> failure ("Unexcepted definition: %s\n", def.string)
+    esac
+  }, state, defs)
+}
+
+fun eval (c@[state, world], expr) {
+--   TODO: Debug only
+--   printf("[Expr] IN:\t%s\n", expr.string);
+  (var out = case expr of
+      Sexp (name, exprs) ->
+        case evalList(c, exprs) of
+          [c, vals] -> [c, Sexp(name, listArray(vals))]
+        esac
+    | Assn  (expr1, expr2)            ->
+        case evalList(c, { expr1, expr2 }) of
+          [[state, world], { l, r }] ->
+            case l of
+                ElemRef(arr, i) -> [[state, world], arr[i] := r]
+              | #str -> [[state <- [l, Val(r)], world], r]
+            esac
+        esac
+    | Set (x, expr) ->
+        case eval(c, expr) of
+          [[state, world], value] -> [[state <- [x, Val(value)], world], value]
+        esac
+    | Seq   (expr1, expr2)            ->
+        case eval(c, expr1) of
+          [c, _] -> eval(c, expr2)
+        esac
+    | Skip                            -> [c, Void]
+    | If (ifExpr, thenExpr, elseExpr) ->
+        case eval(c, ifExpr) of
+            [c, 0] -> eval(c, elseExpr)
+          | [c, _] -> eval(c, thenExpr)
+        esac
+    | While (expr1, expr2)            ->
+        case eval(c, expr1) of
+            [c, 0] -> [c, Void]
+          | [c, _] -> eval(c, Seq (expr2, expr))
+        esac
+    | DoWhile (expr1, expr2)          -> eval(c, Seq(expr1, While(expr2, expr1)))
+    | Var (x)                         -> [c, state.lookupVal(x)]
+    | Ref (x)                         -> [c, x]
+    | Const (v)                       -> [c, v]
+    | Binop (o, e1, e2) ->
+        case eval(c, e1) of
+          [c, v1] ->
+            case eval(c, e2) of
+              [c, v2] -> [c, evalOp(o, v1, v2)]
+            esac
+        esac
+    | Ignore (expr)                   ->
+        case eval(c, expr) of
+          [c, _] -> [c, Void]
+        esac
+    | Call (name, exprs) ->
+        case lookupFun (state, name) of
+            Fun (argNames, body) ->
+              if size (argNames) != size (exprs)
+                then failure("Function arg length must be equals to actual passed amount")
+                else
+                  case evalList (c, exprs) of
+                    [[state, world], values] ->
+                      case body of
+                          External ->
+                            case evalBuiltin (name, values, world) of
+                              [value, world] -> [[state, world], value]
+                            esac
+                        | _ ->
+                            case eval ([addArgs (enterFunction (state), argNames, values), world], body) of
+                              [[innerSt, world], value] -> [[leaveFunction (state, getGlobal (innerSt)), world], value]
+                            esac
+                      esac
+                  esac
+              fi
+        esac
+    | Scope (defs, expr) ->
+        case state.enterScope of
+          state ->
+            case state.addDefs(defs) of
+              state ->
+                case eval([state, world], expr) of
+                  [[state, world], v] -> [[state.leaveScope, world], v]
+                esac
+            esac
+        esac
+    | String (s) -> [c, s]
+    | Array (exprs) ->
+        case evalList(c, exprs) of
+          [c, vals] -> [[state, world], listArray(vals)]
+        esac
+    | Elem (arr, i) ->
+        case evalList(c, {arr, i}) of
+          [c, {arr, i}] ->
+            case arr of
+                Sexp (tag, vals) -> [c, vals[i]]
+              | s@#str -> [c, s[i]]
+              | a@#array -> [c, a[i]]
+              | _ -> failure("Unexcepted elem %s\n", arr.string)
+            esac
+        esac
+    | ElemRef (arr, i) ->
+        case evalList(c, {arr, i}) of
+          [c, {arr, i}] -> [c, ElemRef(arr, i)]
+        esac
+    | _                               -> failure("Unexcepted expression %s\n", expr.string)
+  esac;
+  --   TODO: Debug only
+  --   printf("[Expr] OUT:\t%s\n", expr.string);
+  --   printf("[Expr] RET:\t\t%s\n", out[1].string);
+  out)
 }
 
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
   case eval ([emptyState ().enterScope.addName ("read",   Fun ({}, External))
-                                      .addName ("write",  Fun ({"a"}, External))
-                                      .addName ("length", Fun ({"a"}, External)), createWorld (input)], expr) of
+    .addName ("write",  Fun ({"a"}, External))
+    .addName ("length", Fun ({"a"}, External)), createWorld (input)], expr) of
     [c, _] -> c.snd.getOutput
   esac
 }
