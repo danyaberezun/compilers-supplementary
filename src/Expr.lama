@@ -55,9 +55,9 @@ public fun evalOp (op, l, r) {
 --        Ignore  (expr)               |
 --        String  (string)             |
 --        Array   (expr list)          |
+--        Sexp    (string, expr list)  |
 --        Elem    (expr, expr)         |
---        ElemRef (expr, expr)         |
---        Builtin (string, expr list)
+--        ElemRef (expr, expr)
 
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
@@ -101,10 +101,101 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun addDefs (state, defs) {
+  foldl (fun (state, def) {
+    case def of
+      Var (vars)              -> addNames (state, vars)
+      | Fun (name, args, body) -> addFunction (state, name, args, body)
+    esac
+  }, state, defs)
 }
 
+fun passArgs(state, args, vals) {
+  foldl (fun (state, [arg, v]) {
+    addName (state, arg, v)
+  }, state, zip (args, vals))
+}
+
+fun eval (c@[state, world], expr) {
+  case expr of
+      Assn (x, v)                   -> 
+        case evalList(c, {x, v}) of 
+          [c@[state, world], {x, v}] ->
+            case x of 
+              Ref (x) -> [[state <- [x, v], world], v]
+              | ElemRef (arr@#str, ind) -> arr[ind] := v; [c, v]
+              | ElemRef (arr@#array, ind) -> arr[ind] := v; [c, v]
+              | ElemRef (Sexp(_, vals), ind) -> vals[ind] := (v); [c, v]
+            esac
+        esac
+    | Set (x, expr)                 -> 
+      case eval(c, expr) of 
+        [c@[state, world], v] -> [[state <- [x, v], world], v]
+      esac
+    | Seq     (s1, s2)              -> eval (eval (c, s1).fst, s2)      
+    | Skip                          -> [c, Void]      
+    | If      (e, s1, s2)           ->
+        case eval (c, e) of 
+          [c, 1]   -> eval (c, s1)
+          | [c, 0] -> eval (c, s2)
+        esac
+    | While   (e, s)                ->
+        case eval (c, e) of 
+          [c, 1] -> eval (eval (c, s).fst, expr)
+          | [c, 0] -> [c, Void]
+        esac
+    | DoWhile (s, e)                ->
+        eval (eval (c, s).fst, While (e, s))
+    | Var     (x)                   -> [c, lookup (state, x)]
+    | Ref     (s)                   -> [c, Ref(s)]
+    | Const   (n)                   -> [c, n]
+    | Binop(op, a, b)               ->
+        case evalList (c, {a, b}) of
+          [c, {a, b}] -> [c, evalOp (op, a, b)]
+        esac
+    | Scope   (defs, e)             ->
+        case eval ([addDefs (enterScope (state), defs), world], e) of
+          [[state, world], v] -> [[leaveScope (state), world], v]
+        esac
+    | Call (f, args)                -> 
+      case evalList (c, args) of 
+        [[state, world], vals] -> 
+          case lookupFun (state, f) of 
+            Fun (args, External) ->
+              case evalBuiltin (f, reverse (vals), world) of
+                [v, world] -> [[state, world], v]
+              esac
+            | Fun (args, body) ->
+              case eval ([passArgs (enterFunction (state), args, vals), world], body) of 
+                [[funSt, world], v] -> [[leaveFunction (state, getGlobal (funSt)), world], v]
+              esac
+          esac
+      esac
+    | Ignore (e)                    -> [eval (c, e).fst, Void]
+    | String (s)                    -> [c, s] 
+    | Array (vals)                  -> 
+      case evalList(c, vals) of 
+        [c, vals] -> [c, listArray(vals)]
+      esac
+    | Sexp (name, vals)             -> 
+      case evalList(c, vals) of 
+        [c, vals] -> [c, Sexp(name, listArray(vals))]
+      esac
+    | Elem (arr, ind)               -> 
+      case evalList(c, {arr, ind}) of 
+        [c, {arr, ind}] ->
+          case arr of 
+            #str -> [c, arr[ind]] 
+            | #array -> [c, arr[ind]]
+            | Sexp(_, vals) -> [c, vals[ind]]
+          esac
+      esac
+    | ElemRef (arr, ind)            -> 
+      case evalList(c, {arr, ind}) of 
+        [c, {arr, ind}] -> [c, ElemRef (arr, ind)]
+      esac
+  esac
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
