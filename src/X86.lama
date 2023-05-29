@@ -15,6 +15,7 @@ var regs = ["%ebx", "%ecx", "%esi", "%edi", "%eax", "%edx", "%ebp", "%esp"];
 var nRegs = regs.length - 5;
 
 -- For convenience we define the following synonyms for the registers: 
+
 var ebx = R (0),
     ecx = R (1),
     esi = R (2),
@@ -52,6 +53,10 @@ var wordSize = 4;
 --   Call  (string)             -- calls a function by its name 
 --   Ret                        -- returns from a function
 --   Meta  (string)             -- metainformation (declarations, etc.)
+
+-- fun p(some) {
+--   system (sprintf("echo '%s' >&2", string(some)))
+-- }
                                                                
 -- Machine instruction printer
 fun insnString (insn) {
@@ -112,6 +117,7 @@ fun insnString (insn) {
 fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
   -- Returns an internal name for a global variable
   fun globalName (name) {
+    p ("globalName");
     "global_" ++ name
   }
 
@@ -159,10 +165,13 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
   fun peek () {
     stack.fst
   }
-  
+
   -- Adds a global variable; returns an updated environment
   fun addGlobal (name) {
-    makeEnv (stack, stackSlots, addSet (globals, globalName (name)), barrier, stackMap, fLabel, nLocals)
+    case name of 
+      Glb (name) -> makeEnv (stack, stackSlots, addSet (globals, globalName (name)), barrier, stackMap, fLabel, nLocals)
+    | name -> makeEnv (stack, stackSlots, addSet (globals, globalName (name)), barrier, stackMap, fLabel, nLocals)
+    esac
   }
 
   -- References an allocation
@@ -411,6 +420,38 @@ fun p(some) {
   system (sprintf("echo '%s' >&2", string(some)))
 }
 
+fun showLoc (d) {
+  case d of
+    Arg (i) -> sprintf ("arg[%d]", i)
+  | Loc (i) -> sprintf ("loc[%d]", i)
+  | Glb (x) -> x
+  esac
+}
+
+fun paramsToStack (env, code, nargs) {
+  fun inner (env, code, n) {
+    if n == 0 then [env, code]
+    else 
+      case pop (env) of
+        [arg, env] -> inner (env, code <+ Push (arg), n - 1)
+      esac
+    fi
+  }
+  inner (env, code, nargs)
+}
+
+fun discard (code, nargs) { 
+  fun inner (code, n) { 
+    if n == 0 then code else inner (code <+ Pop (ecx), n - 1) fi
+  }
+}
+
+fun pushMany (env, args) { 
+  foldl (fun (env, arg) {
+    push (env, arg)
+  }, env, args)
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -445,13 +486,13 @@ fun compile (env, code) {
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
 
-        | LD (x) -> 
+        | LD (x) -> p ("LD:"); p(x);
           case env.addGlobal(x).allocate of
             [s, env] -> [env, code <+> move(env.loc(x), s)]
           esac  
         | ST (x) ->
             case env.pop of
-              [s, env] -> 
+              [s, env] -> p ("ST:"); p(x);
                 case env.addGlobal(x) of 
                   env -> [env, code <+> move(s, env.loc(x))]
                 esac
@@ -467,13 +508,13 @@ fun compile (env, code) {
                   [top, env] -> [env, code <+> compileBinop(s, e1, e2, top)]
                 esac
             esac
-        | LABEL (s)    -> [if env.isBarrier then env.retrieveStack(s) else env fi, code <+ Label (s)]
+        | LABEL (s)    -> p("label"); [if env.isBarrier then env.retrieveStack(s) else env fi, code <+ Label (s)]
         | JMP   (l)    -> [env.setStack(l).setBarrier, code <+ Jmp (l)]
         | CJMP  (c, l) -> 
           case env.pop of 
             [s, env] -> [env.setStack(l), code <+ Mov (s, eax) <+ Binop ("cmp", L (0), eax) <+ CJmp (c, l)]
           esac
-        | LDA (x) -> 
+        | LDA (x) -> p ("LDA:"); p(x);
           case addGlobal(env, x).allocate of 
             [top, env] -> [env, code <+ Lea (I(0, loc(env, x)), top)]
           esac
@@ -482,6 +523,23 @@ fun compile (env, code) {
             [v, ref, env] -> [push(env, v), code <+> move (v, I(0, ref))]
           esac
         | DROP    -> case env.pop of [_, env] -> [env, code] esac
+        | CALL (f, nargs) -> p ("Call");
+          case liveRegisters (env, nargs) of 
+            regs ->
+              case paramsToStack (env, code, nargs) of
+                [env, code] ->
+                  case discard (code, nargs) of
+                    code -> [pushMany (env, regs), code]
+                  esac
+              esac
+          esac
+        | BEGIN (f, nargs, nlocals) -> p("BEGIN:"); p([f, nargs, nlocals]); 
+          [enterFunction (env, f, nlocals), code <+> prologue (f)]
+        | GLOBAL (x) -> p("GLOBAL:"); p(x); [addGlobal (env, x), code]
+        | END -> p("END"); 
+          case epilogue (env) of
+            [env, endCode] -> [env, code <+> endCode]
+          esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         (* End *)
         esac
@@ -489,6 +547,8 @@ fun compile (env, code) {
     )
   }
 
+  p("compile:");
+  p(code);
   compile (env, code) 
 }
 
@@ -518,22 +578,30 @@ fun truncateToBool (e) {
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
 public fun compileX86 (args, code) {
+  p ("CompileX86 inside");
   case compile (initEnv (), code) of
     [env, code] ->
-       var asmFile = args.getBaseName ++ ".s",
-             runtime = case getEnv ("LAMA_RUNTIME") of
-                         #val -> "../runtime/"
-                       | path     -> path
-                       esac ++ "/runtime.o";
+      var asmFile = args.getBaseName ++ ".s",
+          runtime = 
+            case getEnv ("LAMA_RUNTIME") of
+              #val -> "../runtime/"
+            | path -> path
+            esac ++ "/runtime.o";
+      
+      -- p ("Com")
+      p ("runtime: "); p (runtime);
 
-       fwrite (asmFile,
-               map (insnString, 
-                    getBuffer $
-                      singletonBuffer (Meta ("\t.global\tmain\n")) <+>
-                      dataSection (listBuffer $ map (dataDef, getGlobals (env))) <+>
-                      codeSection (code)
-                   ).stringcat);
-                    
-       system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
+      fwrite (
+        asmFile,
+        map (
+          insnString, 
+          getBuffer $
+            singletonBuffer (Meta ("\t.global\tmain\n")) <+>
+            dataSection (listBuffer $ map (dataDef, getGlobals (env))) <+>
+            codeSection (code)
+        ).stringcat
+      );
+
+      system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
 }
