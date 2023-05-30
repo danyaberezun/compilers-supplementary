@@ -7,6 +7,11 @@ import List;
 import Manifest;
 import Buffer;
 
+fun pr(some) {
+  -- system (sprintf("echo '%s' >&2", string(some)))
+  skip
+}
+
 -- Assembler language interface
 -- The registers: 
 var regs = ["%ebx", "%ecx", "%esi", "%edi", "%eax", "%edx", "%ebp", "%esp"];
@@ -54,10 +59,6 @@ var wordSize = 4;
 --   Ret                        -- returns from a function
 --   Meta  (string)             -- metainformation (declarations, etc.)
 
--- fun p(some) {
---   system (sprintf("echo '%s' >&2", string(some)))
--- }
-                                                               
 -- Machine instruction printer
 fun insnString (insn) {
   
@@ -117,7 +118,7 @@ fun insnString (insn) {
 fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
   -- Returns an internal name for a global variable
   fun globalName (name) {
-    p ("globalName");
+    pr ("globalName"); pr(name);
     "global_" ++ name
   }
 
@@ -168,6 +169,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
 
   -- Adds a global variable; returns an updated environment
   fun addGlobal (name) {
+    pr("addGlobal"); pr(name);
     case name of 
       Glb (name) -> makeEnv (stack, stackSlots, addSet (globals, globalName (name)), barrier, stackMap, fLabel, nLocals)
     | name -> makeEnv (stack, stackSlots, addSet (globals, globalName (name)), barrier, stackMap, fLabel, nLocals)
@@ -176,6 +178,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
 
   -- References an allocation
   fun loc (alloc) {
+    pr("loc"); pr("alloc");
     case alloc of
       Glb (x) -> M (globalName (x))
     | Arg (i) -> S (-1-i)
@@ -416,10 +419,6 @@ fun suffix (op) {
   esac
 }
 
-fun p(some) {
-  system (sprintf("echo '%s' >&2", string(some)))
-}
-
 fun showLoc (d) {
   case d of
     Arg (i) -> sprintf ("arg[%d]", i)
@@ -428,7 +427,13 @@ fun showLoc (d) {
   esac
 }
 
-fun paramsToStack (env, code, nargs) {
+fun regsToStack (regs) {
+  foldl (fun (code, reg) { 
+    code <+ Push (reg)
+  }, emptyBuffer (), regs)
+}
+
+fun argsToStack (env, nargs) { 
   fun inner (env, code, n) {
     if n == 0 then [env, code]
     else 
@@ -437,13 +442,13 @@ fun paramsToStack (env, code, nargs) {
       esac
     fi
   }
-  inner (env, code, nargs)
+  inner (env, emptyBuffer (), nargs)
 }
 
-fun discard (code, nargs) { 
-  fun inner (code, n) { 
-    if n == 0 then code else inner (code <+ Pop (ecx), n - 1) fi
-  }
+fun discard (args) { 
+  foldl (fun (code, arg) { 
+    code <+ Pop (arg)
+  }, emptyBuffer (), args)
 }
 
 fun pushMany (env, args) { 
@@ -459,6 +464,7 @@ fun compile (env, code) {
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+        pr("next is:"); pr(i);
         case i of
           READ ->
             case env.allocate of
@@ -486,17 +492,12 @@ fun compile (env, code) {
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
 
-        | LD (x) -> p ("LD:"); p(x);
-          case env.addGlobal(x).allocate of
+        | LD (x) -> pr ("LD:"); pr(x);
+          case env.allocate of
             [s, env] -> [env, code <+> move(env.loc(x), s)]
           esac  
         | ST (x) ->
-            case env.pop of
-              [s, env] -> p ("ST:"); p(x);
-                case env.addGlobal(x) of 
-                  env -> [env, code <+> move(s, env.loc(x))]
-                esac
-            esac
+            [env, code <+> move(peek (env), loc (env, x))]
         | CONST (n) -> 
             case env.allocate of
               [top, env] -> [env, code <+ Mov (L(n), top)]
@@ -508,35 +509,44 @@ fun compile (env, code) {
                   [top, env] -> [env, code <+> compileBinop(s, e1, e2, top)]
                 esac
             esac
-        | LABEL (s)    -> p("label"); [if env.isBarrier then env.retrieveStack(s) else env fi, code <+ Label (s)]
+        | LABEL (s)    -> pr("label"); [if env.isBarrier then env.retrieveStack(s) else env fi, code <+ Label (s)]
         | JMP   (l)    -> [env.setStack(l).setBarrier, code <+ Jmp (l)]
         | CJMP  (c, l) -> 
           case env.pop of 
             [s, env] -> [env.setStack(l), code <+ Mov (s, eax) <+ Binop ("cmp", L (0), eax) <+ CJmp (c, l)]
           esac
-        | LDA (x) -> p ("LDA:"); p(x);
-          case addGlobal(env, x).allocate of 
-            [top, env] -> [env, code <+ Lea (I(0, loc(env, x)), top)]
+        | LDA (x) -> pr ("LDA:"); pr(x);
+          case env.allocate of 
+            [top, env] -> [env, code <+ Lea (loc(env, x), top)]
           esac
         | STI     ->
           case env.pop2 of 
             [v, ref, env] -> [push(env, v), code <+> move (v, I(0, ref))]
           esac
         | DROP    -> case env.pop of [_, env] -> [env, code] esac
-        | CALL (f, nargs) -> p ("Call");
+        | CALL (f, nargs) -> pr ("Call");
           case liveRegisters (env, nargs) of 
             regs ->
-              case paramsToStack (env, code, nargs) of
-                [env, code] ->
-                  case discard (code, nargs) of
-                    code -> [pushMany (env, regs), code]
+              case regsToStack (regs) of
+                regPushCode ->
+                  case discard (regs) of
+                    discardCode -> 
+                      case argsToStack (env, nargs) of 
+                        [env, argsCode] -> 
+                          case allocate (env) of
+                            [top, env] -> [env, 
+                              code <+> regPushCode <+> argsCode <+ Call (f) <+ Binop("+", L(wordSize * nargs), esp)
+                                <+> discardCode <+ Mov (eax, top)
+                            ]
+                          esac
+                      esac
                   esac
               esac
           esac
-        | BEGIN (f, nargs, nlocals) -> p("BEGIN:"); p([f, nargs, nlocals]); 
+        | BEGIN (f, nargs, nlocals) -> pr("BEGIN:"); pr([f, nargs, nlocals]); 
           [enterFunction (env, f, nlocals), code <+> prologue (f)]
-        | GLOBAL (x) -> p("GLOBAL:"); p(x); [addGlobal (env, x), code]
-        | END -> p("END"); 
+        | GLOBAL (x) -> pr("GLOBAL:"); pr(x); [addGlobal (env, x), code]
+        | END -> pr("END"); 
           case epilogue (env) of
             [env, endCode] -> [env, code <+> endCode]
           esac
@@ -547,8 +557,8 @@ fun compile (env, code) {
     )
   }
 
-  p("compile:");
-  p(code);
+  pr("compile:");
+  pr(code);
   compile (env, code) 
 }
 
@@ -578,7 +588,7 @@ fun truncateToBool (e) {
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
 public fun compileX86 (args, code) {
-  p ("CompileX86 inside");
+  pr ("CompileX86 inside");
   case compile (initEnv (), code) of
     [env, code] ->
       var asmFile = args.getBaseName ++ ".s",
@@ -588,8 +598,8 @@ public fun compileX86 (args, code) {
             | path -> path
             esac ++ "/runtime.o";
       
-      -- p ("Com")
-      p ("runtime: "); p (runtime);
+      -- pr ("Com")
+      pr ("runtime: "); pr (runtime);
 
       fwrite (
         asmFile,
