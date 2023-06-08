@@ -351,6 +351,14 @@ fun suffix (op) {
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
   fun compile (env, code) {
+    fun compileCmp (op, a, b) {
+      singletonBuffer (Binop ("cmp", a, b)) <+ Mov (L (0), eax) <+ Set (suffix (op), "%al") <+> move (eax, edx)
+    }
+
+    fun compileBoolCast (x) {
+      singletonBuffer (Mov (L (0), edx)) <+> compileCmp ("!=", x, edx) <+> move (edx, x)
+    }
+
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
@@ -363,7 +371,62 @@ fun compile (env, code) {
             case env.pop of
               [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
             esac
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+        | CONST (c)    ->
+          case env.allocate of
+            [s, env] -> [env, code <+ Mov (L (c), s)]
+          esac
+        | LD (v)       ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (env.loc (v), s)]
+            esac
+        | ST (v)       ->
+            case env.pop of
+              [s, env2] ->
+                case env2.addGlobal (v) of
+                  env3 -> [env3, code <+> move (s, env3.loc (v))]
+                esac
+            esac
+        | BINOP (oper) ->
+            case env.pop2 of
+              [x, y, env2] ->
+                case env2.allocate of
+                  [s, env3] ->
+                    var newCode = case oper of
+                      "+"  -> code <+>  move (y, edx) <+  Binop      ("+",  x, edx)
+                    | "-"  -> code <+>  move (y, edx) <+  Binop      ("-",  x, edx)
+                    | "*"  -> code <+>  move (y, edx) <+  Binop      ("*",  x, edx)
+                    | "==" -> code <+>  move (y, edx) <+> compileCmp (oper, x, edx)
+                    | "!=" -> code <+>  move (y, edx) <+> compileCmp (oper, x, edx)
+                    | "<"  -> code <+>  move (y, edx) <+> compileCmp (oper, x, edx)
+                    | ">"  -> code <+>  move (y, edx) <+> compileCmp (oper, x, edx)
+                    | "<=" -> code <+>  move (y, edx) <+> compileCmp (oper, x, edx)
+                    | ">=" -> code <+>  move (y, edx) <+> compileCmp (oper, x, edx)
+                    | "/"  -> code <+>  move (y, eax) <+  Cltd <+ IDiv (x) <+> move (eax, edx)
+                    | "%"  -> code <+>  move (y, eax) <+  Cltd <+ IDiv (x)
+                    | "!!" -> code <+> compileBoolCast (x) <+> compileBoolCast (y) <+> move (y, edx) <+ Binop ("!!", x, edx)
+                    | "&&" -> code <+> compileBoolCast (x) <+> compileBoolCast (y) <+> move (y, edx) <+ Binop ("&&", x, edx)
+                    esac;
+                    [env3, newCode <+> move (edx, s)]
+                esac
+            esac
+        | LABEL (label)       -> [env.retrieveStack (label), code <+ Label (label)]
+        | JMP   (label)       -> [env.setStack      (label), code <+ Jmp   (label)]
+        | CJMP  (cond, label) ->
+            case env.pop of
+              [s, env2] -> [env2.setStack (label), code <+ Binop ("cmp", L (0), s) <+ CJmp (cond, label)]
+            esac
+        | LDA (x)             ->
+            case env.addGlobal (x).allocate of
+              [s, env2] -> [env2, code <+ Lea (loc (env2, x), s)]
+            esac
+        | STI                 ->
+            case env.pop2 of
+              [x, ref, env2] -> [env2.push (x), code <+> move (x, I (0, ref))]
+            esac
+        | DROP                ->
+            case env.pop of
+              [_, env2] -> [env2, code]
+            esac
         esac
       }, [env, emptyBuffer ()], code)
   }
@@ -381,9 +444,9 @@ public fun compileX86 (args, code) {
                        #val -> "../runtime/"
                      | path -> path
                      esac ++ "/runtime.o";
-       
+
        fwrite (asmFile,
-               map (insnString, 
+               map (insnString,
                     getBuffer $
                       singletonBuffer (Meta ("\t.global\tmain\n")) <+>
                       dataSection (listBuffer $ map (dataDef, getGlobals (env))) <+>
@@ -394,7 +457,7 @@ public fun compileX86 (args, code) {
                         epilogue ()
                       )
                    ).stringcat);
-                    
+
        system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
 }
