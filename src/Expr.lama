@@ -44,7 +44,7 @@ public fun evalOp (op, l, r) {
 --        Set     (string, expr)       |
 --        Seq     (expr, expr)         |
 --        Skip                         |
---        If      (expr, expr, expr)   |
+--        if      (expr, expr, expr)   |
 --        While   (expr, expr)         |
 --        DoWhile (expr, expr)         |
 --        Var     (string)             |
@@ -53,13 +53,12 @@ public fun evalOp (op, l, r) {
 --        Binop   (string, expr, expr) |
 --        Call    (string, expr list)  |
 --        Ignore  (expr)               |
+--        Scope (def list, expr)       |
 --        String  (string)             |
 --        Array   (expr list)          |
---        Sexp    (string, expr list)  |
 --        Elem    (expr, expr)         |
 --        ElemRef (expr, expr)         |
---        Builtin (string, expr list)  |
---        Scope   (def list, expr)
+--        Builtin (string, expr list)
 
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
@@ -103,129 +102,176 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[state, world], expr) {
-  fun addDefinitions(state, definitions) {
-    fun addDefinition(state, definition) {
-      case definition of 
-        Var (ds) ->
-          addNames(state, ds)                  |
-        Fun (name, args, body) ->
-          addFunction(state, name, args, body)
-      esac
-    }
-    case definitions of 
-      def : defsTail -> addDefinitions(addDefinition(state, def), defsTail) |
-      _ -> state
-    esac
+fun eval (c@[stack, world], expr) {
+  fun addDefs (state, defs) {
+    foldl (
+      fun (state, def) {
+        case def of
+          Var (vars) -> addNames(state, vars)
+        | Fun(name, args, body) -> addFunction(state, name, args, body)
+        esac
+      },
+      state,
+      defs
+    )
+  }
+
+  fun passArguments (state, args, vals) {
+    foldl (
+      fun (state, [argI, valI]) {
+        addName(state, argI, valI)
+      },
+      state,
+      zip(args, vals)
+    )
   }
 
   fun evalBinop(operation, lExpr, rExpr) {
-    case evalList(c, {lExpr, rExpr}) of
-      [newC, lRet : rRet : _] -> [
-        newC,
-        evalOp(operation, lRet, rRet)
-      ]
+    case eval(c, lExpr) of
+      [newC, Val (r1)] ->
+        case eval(newC, rExpr) of
+          [newC2, Val (r2)] -> [newC2, Val (evalOp(operation, r1, r2))]
+        esac
     esac
   }
 
   fun evalAssn(l, r) {
-    case evalList(c, {l, r}) of
-      [[newS, newW], x : v : _] ->
-          [[newS <- [x, Var(v)], newW], v]
+    case eval(c, l) of 
+      [newC, l] ->
+        case eval(newC, r) of 
+          [newC2@[newStack, newWorld], Val(r)] ->
+            case l of 
+              Ref (l) -> [[newStack <- [l, Val(r)], newWorld], Val(r)]
+            | ElemRef (arr@#str, idx) -> arr[idx] := r; [newC2, Val(r)]
+            | ElemRef (arr@#array, idx) -> arr[idx] := Val(r); [newC2, Val(r)]
+            | ElemRef (Sexp(_, vals), idx) ->
+                vals[idx] := Val(r); [newC2, Val(r)]
+            esac
+        esac
     esac
   }
 
-  fun evalRead(x) {
-    case readWorld(world) of
-      [v, newWorld] ->
-        var newC = [state <- [x, Var(v)], newWorld];
-        [newC, Void]
+  fun evalWhile(whileCond, whileBody) {
+    case eval(c, whileCond) of
+      [newC, Val(0)] -> [c, Void]
+    | [newC, _] ->
+        case eval(newC, whileBody) of
+          [newC2, _] -> eval(newC2, While (whileCond, whileBody))
+        esac
     esac
   }
 
-  fun evalWrite(e) {
-    case eval(c, e) of
-      [newC @ [newS, newW], x] -> 
-        var newC = [newS, writeWorld(x, newW)];
-        [newC, Void]
+  fun evalIf(condExpr, thenExpr, tailExpr) {
+    case eval(c, condExpr) of
+      [newC, Val(0)] -> eval(newC, tailExpr)
+    | [newC, _] -> eval(newC, thenExpr)
     esac
   }
 
-  fun evalWhile(whileExpr, whileStmt) {
-    case eval(c, whileExpr) of
-        [newC, 0] -> [c, Void]           |
-        [newC, _] -> 
-          var seq = Seq(whileStmt, While(whileExpr, whileStmt));
-          eval(newC, seq)
-      esac
+  fun evalDoWhile(doWhileBody, doWhileCond) {
+    case eval(c, doWhileBody) of
+      [newC, _] -> eval(newC, While(doWhileCond, doWhileBody))
+    esac
   }
 
-  fun evalIf(ifExpr, thenExpr, tailExpr) {
-    case eval (c, ifExpr) of
-        [newC, 0] -> eval(newC, tailExpr) |
-        [newC, _] -> eval(newC, thenExpr)
-      esac
-  }
-
-  fun evalDoWhile(doWhileStmt, doWhileExpr) {
-    var whileExpr = While(doWhileExpr, doWhileStmt);
-    eval(c, Seq(doWhileStmt, whileExpr))
-  }
-
-  fun evalCall(name, exprs) {
-    case checkFun(state, name) of
-      _ ->
-        case lookup(state, name) of
-          Fun (args, body) ->
-            case evalList(c, exprs) of
-              [[newSt, _], values] ->
-                var enteredSt = enterFunction(state);
-                var argsValuesMapping = zip(args, values);
-                var stEntered = foldl(
-                  fun(st, [arg, v]){st.addName(arg, Var (v))},
-                  enteredSt,
-                  argsValuesMapping
-                );
-                var cEntered = [stEntered, world];
-                case eval(cEntered, body) of
-                  [[stEnd, world], v] -> 
-                    var leftState = leaveFunction(state, getGlobal(stEnd));
-                    var leftC = [leftState, world];
-                    [leftC, v]
-                esac
+  fun evalCall(f, argsExpr) {
+    case lookupFun(stack, f) of
+      Fun(args, External) ->
+        case evalList(c, argsExpr) of
+          [_, vals] ->
+            var args = foldr(fun (acc, Val (x)) { x : acc }, {}, vals);
+            case evalBuiltin(f, args, world) of
+              [v, newWorld] -> [[stack, newWorld], Val(v)]
+            esac
+        esac
+    | Fun(args, body) ->
+        case evalList(c, argsExpr) of
+          [[newState, newWorld], vals] ->
+            var statePassed =
+              passArguments(enterFunction(newState), args, vals);
+            case eval([statePassed, newWorld], body) of
+              [[funState, newWorld2], r] ->
+                [[leaveFunction(stack, getGlobal(funState)), newWorld2], r]
             esac
         esac
     esac
   }
 
   fun evalScope(defs, expr) {
-    var stInScope = enterScope(state);
-    var stWithDefs = addDefinitions(stInScope, defs);
+    var stInScope = enterScope(stack);
+    var stWithDefs = addDefs(stInScope, defs);
     case eval([stWithDefs, world], expr) of
-      [[state, world], v] ->
-        var leftState = leaveScope(state);
-        var leftC = [leftState, world];
+      [[newStack, newWorld], v] ->
+        var leftState = leaveScope(newStack);
+        var leftC = [leftState, newWorld];
         [leftC, v]
     esac
   }
 
+  fun evalSet(x, expr) {
+    case eval(c, expr) of
+      [[newState, newWorld], v] -> [[newState <- [x, v], newWorld], v]
+    esac
+  }
+
+  fun evalArray(valsList) {
+    case evalList(c, valsList) of
+      [newC, vals] -> [newC, Val(listArray(vals))]
+    esac
+  }
+
+  fun evalSexp(name, valsList) {
+    case evalList(c, valsList) of
+      [newC, vals] -> [newC, Val(Sexp(name, listArray(vals)))]
+    esac
+  }
+
+  fun evalElem(arrExpr, idxExpr) {
+    case eval(c, arrExpr) of
+      [newC, Val(arr)] ->
+        case eval(newC, idxExpr) of
+          [newC2, Val (idx)] ->
+            [
+              newC2,
+              case arr of
+                #str          -> Val(arr[idx])
+              | #array        -> arr[idx]
+              | Sexp(_, vals) -> vals[idx]
+              esac
+            ]
+        esac
+    esac
+  }
+
+  fun evalElemRef(arrExpr, idxExpr) {
+    case eval(c, arrExpr) of
+      [newC, Val(arr)] ->
+        case eval(newC, idxExpr) of
+          [newC, Val(idx)] -> [newC, ElemRef(arr, idx)]
+        esac
+    esac
+  }
+
   case expr of
-    Var(varName) -> [c, case lookup(state, varName) of Var (v) -> v esac]      |
-    Const(valName) -> [c, valName]                                             |
-    Ref(refName) -> [c, refName]                                               |
+    Var(varName) -> [c, lookup(stack, varName)]                                |
+    Const(valName) -> [c, Val(valName)]                                        |
+    Ref(refName) -> [c, Ref(refName)]                                          |
     Binop(operation, lExpr, rExpr) -> evalBinop(operation, lExpr, rExpr)       |
     Skip -> [c, Void]                                                          |
     Assn(l, r) -> evalAssn(l, r)                                               |
     Seq(l, r) -> case eval(c, l) of [newC, _] -> eval(newC, r) esac            |
-    Read(x) -> evalRead(x)                                                     |
-    Write(e) -> evalWrite(e)                                                   |
-    If(ifExpr, thenExpr, tailExpr) -> evalIf(ifExpr, thenExpr, tailExpr)       |
-    While(whileExpr, whileStmt) -> evalWhile(whileExpr, whileStmt)             |
-    DoWhile(doWhileStmt, doWhileExpr) -> evalDoWhile(doWhileStmt, doWhileExpr) |
+    If(cond, thenExpr, elseExpr) -> evalIf(cond, thenExpr, elseExpr)           |
+    While(condExpr, bodyExpr) -> evalWhile(condExpr, bodyExpr)                 |
+    DoWhile(bodyExpr, condExpr) -> evalDoWhile(bodyExpr, condExpr)             |
     Ignore(e) -> case eval(c, e) of [c, _] -> [c, Void] esac                   |
     Call(name, exprs) -> evalCall(name, exprs)                                 |
     Scope(defs, expr) -> evalScope(defs, expr)                                 |
-    _ -> failure("No implementation for expr in eval.\n")
+    Set(x, expr) -> evalSet(x, expr)                                           |
+    String(s) -> [c, Val(s)]                                                   |
+    Array(valsList) -> evalArray(valsList)                                     |
+    Sexp(name, valsList) -> evalSexp(name, valsList)                           |
+    Elem(arrExpr, idxExpr) -> evalElem(arrExpr, idxExpr)                       |
+    ElemRef (arrExpr, idxExpr) -> evalElemRef(arrExpr, idxExpr)
   esac
 }
 
