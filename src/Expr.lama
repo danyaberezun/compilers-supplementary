@@ -44,7 +44,7 @@ public fun evalOp (op, l, r) {
 --        Set     (string, expr)       |
 --        Seq     (expr, expr)         |
 --        Skip                         |
---        if      (expr, expr, expr)   |
+--        If      (expr, expr, expr)   |
 --        While   (expr, expr)         |
 --        DoWhile (expr, expr)         |
 --        Var     (string)             |
@@ -58,7 +58,8 @@ public fun evalOp (op, l, r) {
 --        Sexp    (string, expr list)  |
 --        Elem    (expr, expr)         |
 --        ElemRef (expr, expr)         |
---        Builtin (string, expr list)
+--        Builtin (string, expr list)  |
+--        Scope   (def list, expr)
 
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
@@ -102,8 +103,130 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (c@[state, world], expr) {
+  fun addDefinitions(state, definitions) {
+    fun addDefinition(state, definition) {
+      case definition of 
+        Var (ds) ->
+          addNames(state, ds)                  |
+        Fun (name, args, body) ->
+          addFunction(state, name, args, body)
+      esac
+    }
+    case definitions of 
+      def : defsTail -> addDefinitions(addDefinition(state, def), defsTail) |
+      _ -> state
+    esac
+  }
+
+  fun evalBinop(operation, lExpr, rExpr) {
+    case evalList(c, {lExpr, rExpr}) of
+      [newC, lRet : rRet : _] -> [
+        newC,
+        evalOp(operation, lRet, rRet)
+      ]
+    esac
+  }
+
+  fun evalAssn(l, r) {
+    case evalList(c, {l, r}) of
+      [[newS, newW], x : v : _] ->
+          [[newS <- [x, Var(v)], newW], v]
+    esac
+  }
+
+  fun evalRead(x) {
+    case readWorld(world) of
+      [v, newWorld] ->
+        var newC = [state <- [x, Var(v)], newWorld];
+        [newC, Void]
+    esac
+  }
+
+  fun evalWrite(e) {
+    case eval(c, e) of
+      [newC @ [newS, newW], x] -> 
+        var newC = [newS, writeWorld(x, newW)];
+        [newC, Void]
+    esac
+  }
+
+  fun evalWhile(whileExpr, whileStmt) {
+    case eval(c, whileExpr) of
+        [newC, 0] -> [c, Void]           |
+        [newC, _] -> 
+          var seq = Seq(whileStmt, While(whileExpr, whileStmt));
+          eval(newC, seq)
+      esac
+  }
+
+  fun evalIf(ifExpr, thenExpr, tailExpr) {
+    case eval (c, ifExpr) of
+        [newC, 0] -> eval(newC, tailExpr) |
+        [newC, _] -> eval(newC, thenExpr)
+      esac
+  }
+
+  fun evalDoWhile(doWhileStmt, doWhileExpr) {
+    var whileExpr = While(doWhileExpr, doWhileStmt);
+    eval(c, Seq(doWhileStmt, whileExpr))
+  }
+
+  fun evalCall(name, exprs) {
+    case checkFun(state, name) of
+      _ ->
+        case lookup(state, name) of
+          Fun (args, body) ->
+            case evalList(c, exprs) of
+              [[newSt, _], values] ->
+                var enteredSt = enterFunction(state);
+                var argsValuesMapping = zip(args, values);
+                var stEntered = foldl(
+                  fun(st, [arg, v]){st.addName(arg, Var (v))},
+                  enteredSt,
+                  argsValuesMapping
+                );
+                var cEntered = [stEntered, world];
+                case eval(cEntered, body) of
+                  [[stEnd, world], v] -> 
+                    var leftState = leaveFunction(state, getGlobal(stEnd));
+                    var leftC = [leftState, world];
+                    [leftC, v]
+                esac
+            esac
+        esac
+    esac
+  }
+
+  fun evalScope(defs, expr) {
+    var stInScope = enterScope(state);
+    var stWithDefs = addDefinitions(stInScope, defs);
+    case eval([stWithDefs, world], expr) of
+      [[state, world], v] ->
+        var leftState = leaveScope(state);
+        var leftC = [leftState, world];
+        [leftC, v]
+    esac
+  }
+
+  case expr of
+    Var(varName) -> [c, case lookup(state, varName) of Var (v) -> v esac]      |
+    Const(valName) -> [c, valName]                                             |
+    Ref(refName) -> [c, refName]                                               |
+    Binop(operation, lExpr, rExpr) -> evalBinop(operation, lExpr, rExpr)       |
+    Skip -> [c, Void]                                                          |
+    Assn(l, r) -> evalAssn(l, r)                                               |
+    Seq(l, r) -> case eval(c, l) of [newC, _] -> eval(newC, r) esac            |
+    Read(x) -> evalRead(x)                                                     |
+    Write(e) -> evalWrite(e)                                                   |
+    If(ifExpr, thenExpr, tailExpr) -> evalIf(ifExpr, thenExpr, tailExpr)       |
+    While(whileExpr, whileStmt) -> evalWhile(whileExpr, whileStmt)             |
+    DoWhile(doWhileStmt, doWhileExpr) -> evalDoWhile(doWhileStmt, doWhileExpr) |
+    Ignore(e) -> case eval(c, e) of [c, _] -> [c, Void] esac                   |
+    Call(name, exprs) -> evalCall(name, exprs)                                 |
+    Scope(defs, expr) -> evalScope(defs, expr)                                 |
+    _ -> failure("No implementation for expr in eval.\n")
+  esac
 }
 
 
