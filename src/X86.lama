@@ -444,144 +444,129 @@ fun suffix (op) {
   esac
 }
 
-fun compileRuntimeCall(env, name, argsCnt, runtimeArgsBefore, runtimeArgsAfter) {
-  fun saveRegs(env, argsCnt) {
-    var liveRegs = liveRegisters(env, argsCnt);
-    [
-      foldr (fun (code, reg) { code <+ Push (reg) }, emptyBuffer(), liveRegs),
-      liveRegs,
-      env
-    ]
-  }
-  fun deleteArgs(env, argsCnt) {
-    if argsCnt == 0 then
-      [emptyBuffer(), env]
-    else 
-      case deleteArgs(env, argsCnt - 1) of
-        [code, envDelete] -> [code <+ Pop(ebx), envDelete]
-      esac 
-    fi
-  }
-
-  fun restoreRegs(env, regs) {
-    [foldl (fun (code, reg) { code <+ Pop (reg) }, emptyBuffer(), regs), env]
-  }
-
-  fun getArgs(env, argsCnt) {
-    if argsCnt == 0
-    then [{}, env]
-    else
-      case pop(env) of
-        [s, env] ->
-          case getArgs(env, argsCnt - 1) of
-            [args, env] -> [s : args, env]
+fun pushArgs(env, argsCnt) {
+  fun pushArgsImpl(env, argsCnt) {
+    case argsCnt of
+      0 -> [{}, env]
+    | _ -> 
+      case env.pop of
+        [s, newEnv] ->
+          case pushArgsImpl(newEnv, argsCnt - 1) of
+            [ret, finalEnv] -> [Push(s) : ret, finalEnv]
           esac
       esac
-    fi
-  } 
-
-  fun passArgs(env, argsCnt) {
-    case getArgs(env, argsCnt) of
-      [args, env] -> [
-          foldl(
-            fun (code, arg) { code <+ Push(arg) },
-            emptyBuffer(),
-            runtimeArgsAfter +++ args +++ runtimeArgsBefore
-          ),
-          env
-        ]
     esac
   }
-
-  var allArgsCnt = argsCnt + runtimeArgsBefore.size + runtimeArgsAfter.size;
-
-  case saveRegs(env, argsCnt) of
-    [saveRegsCode, regs, envRegsSaved] ->
-      fun allocateDeleteRestoreAndFinalCompile([passArgsCode, envRegsPassed]) {
-        fun deleteRestoreAndFinalCompile([retVal, envAllocated]) {
-          fun restoreAndFinalCompile([deleteArgsCode, envArgsDeleted]) {
-            fun finalCompile([restoreRegsCode, envCompiled]) {
-              var compiled = saveRegsCode
-                <+> passArgsCode
-                <+ Call (name)
-                <+> deleteArgsCode
-                <+> restoreRegsCode
-                <+ Mov (eax, retVal);
-              [envCompiled, compiled]
-            }
-            finalCompile(restoreRegs(envArgsDeleted, regs))
-          }
-          restoreAndFinalCompile(deleteArgs(envAllocated, allArgsCnt))
-        }
-        deleteRestoreAndFinalCompile(allocate(envRegsPassed))
-      }
-      allocateDeleteRestoreAndFinalCompile(passArgs(envRegsSaved, argsCnt))
+  case pushArgsImpl(env, argsCnt) of
+    [args, finalEnv] -> [listBuffer(args), finalEnv]
   esac
+}
+
+fun compileRuntimeCall (env, fLabel, an) {
+  fun stashRegs(regs) {
+    foldl (fun (code, reg) { code <+ Push (reg) }, emptyBuffer(), regs)
+  }
+  fun restoreRegs(regs) {
+    foldr (fun (code, reg) { code <+ Pop (reg) }, emptyBuffer(), regs)
+  }
+  var registers = liveRegisters(env, an);
+  case stashRegs(registers) of
+    stashCode ->
+      case pushArgs(env, an) of
+        [pushCode, env] -> 
+          case allocate (env) of
+            [ret, env] ->
+              case restoreRegs(registers) of
+                restoreCode ->
+                  var newCode = stashCode
+                    <+> pushCode
+                    <+ Call(fLabel)
+                    <+ Binop("+", L(wordSize * an), esp)
+                    <+> restoreCode
+                    <+> move(eax, ret);
+                  [env, newCode]
+              esac
+          esac
+      esac
+  esac
+}
+
+fun compileBinop (s, a, b, t) {
+  var isCmp =
+    case s of
+      "<" -> true
+    | ">" -> true
+    | "<=" -> true
+    | ">=" -> true
+    | "==" -> true
+    | "!=" -> true
+    | _ -> false
+    esac;
+  var isArithm = 
+    case s of
+      "+" -> true
+    | "-" -> true
+    | "*" -> true
+    | _ -> false
+    esac;
+  var isLogical =
+    case s of
+      "&&" -> true
+    | "!!" -> true
+    | _ -> false
+    esac;
+  if isCmp then
+    move(a, eax)
+      <+ Binop("cmp", eax, b)
+      <+> move(L(0), eax)
+      <+ Set(s.suffix, "%al")
+      <+> move(eax, t)
+  elif isArithm then
+    move(b, eax)
+      <+ Binop(s, a, eax)
+      <+> move(eax, t)
+  elif isLogical then
+    move(a, eax)
+      <+ Binop("cmp", L (0), eax)
+      <+ Set("!=".suffix, "%al")
+      <+> move(eax, a) 
+      <+> move(b, eax)
+      <+ Binop("cmp", L (0), eax)
+      <+ Set("!=".suffix, "%al")
+      <+ Binop(s, a, eax)
+      <+> move(L(0), eax)
+      <+ Set("!=".suffix, "%al")
+      <+> move(eax, t)
+  else
+    move(b, eax)
+      <+ Cltd
+      <+ IDiv(a)
+      <+> move(case s of "/" -> eax | "%" -> edx esac, t)
+  fi
 }
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
-fun compile (env, code) {
-  fun compile (env, code) {
-    fun arithmeticHandler(opStr, left, right, s) {
-      singletonBuffer (Mov (left, eax))
-        <+ Binop (opStr, right, eax)
-        <+ Mov (eax, s)
-    }
-    fun logicHandler(opStr, left, right, s) {
-      emptyBuffer()
-        <+ Binop ("^", eax, eax)
-        <+ Binop ("cmp", L (0), left)
-        <+ Set ("ne", "%al")
-        <+ Binop ("^", edx, edx)
-        <+ Binop ("cmp", L (0), right)
-        <+ Set ("ne", "%dl")
-        <+ Binop (opStr, edx, eax) <+ Mov (eax, s)
-    }
-    fun cmpHandler (opStr, left, right, s) {
-      singletonBuffer (Mov (left, eax))
-        <+ Binop ("^", edx, edx)
-        <+ Binop ("cmp", right, eax)
-        <+ Set (suffix (opStr), "%dl")
-        <+ Mov (edx, s)
-    }
-    fun divHandler (opStr, left, right, s) {
-      singletonBuffer (Mov (left, eax))
-        <+ Cltd
-        <+ IDiv (right)
-        <+ Mov (case opStr of "/" -> eax | "%" -> edx esac, s)
-    }
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+fun compile(env, code) {
+  fun compile(env, code) {
+    foldl(
+      fun([env, scode], i) {
+        var code = scode <+ Meta("# " ++ showSMInsn (i) ++ "\n");
         case i of
           BINOP(op) ->
             case env.pop2 of
               [right, left, env] ->
                 case env.allocate of
                   [s, newEnv] ->
-                    var newCode = code
-                      <+> case op of
-                            "+"  -> arithmeticHandler
-                          | "-"  -> arithmeticHandler
-                          | "*"  -> arithmeticHandler
-                          | "&&" -> logicHandler
-                          | "!!" -> logicHandler
-                          | "/"  -> divHandler
-                          | "%"  -> divHandler
-                          | "<"  -> cmpHandler
-                          | "<=" -> cmpHandler
-                          | ">"  -> cmpHandler
-                          | ">=" -> cmpHandler
-                          | "==" -> cmpHandler
-                          | "!=" -> cmpHandler
-                          esac (op, left, right, s);
+                    var newCode = code <+> compileBinop (op, right, left, s);
                     [newEnv, newCode]
                 esac
             esac
         | CONST(n) ->
             case env.allocate of
-              [s, newEnv] -> [newEnv, code <+ Mov(L(n), s)]
+              [s, newEnv] ->
+                var newCode = code <+> move(L(n), s);
+                [newEnv, newCode]
             esac
         | LD(x) -> 
           case env.allocate of
@@ -596,18 +581,23 @@ fun compile (env, code) {
               [newEnv, newCode]
           esac
         | ST(x) ->
-          var newCode = code <+> move(peek(env), env.loc(x));
-          [env, newCode]
+          case env.pop of
+            [s, newEnv] ->
+              var newCode = code <+> move(s, newEnv.loc(x));
+              [newEnv, newCode]
+          esac
         | STI ->
           case env.pop2 of
-            [n, ref, newEnv] ->
-              case newEnv.allocate of
-                [s, newEnv2] ->
-                  var newCode = code <+> move(n, I(0, ref)) <+> move(n, s);
-                  [newEnv2, newCode]
-              esac
+            [v, x, newEnv] ->
+              var newCode = code
+                <+> move(v, eax)
+                <+ Mov(eax, I(0, x))
+                <+> move(v, x);
+              [push(newEnv, v), newCode]
           esac
-        | JMP(lab) -> [setBarrier(setStack(env, lab)), code <+ Jmp (lab)]
+        | JMP(l) ->
+          var newCode = code <+ Jmp (l);
+          [setStack(env, l), newCode]
         | LABEL(lab) ->
           var newCode = code <+ Label(lab);
           [retrieveStack(env, lab), newCode]
@@ -615,8 +605,8 @@ fun compile (env, code) {
           case env.pop of
             [s, envPopped] ->
               var newCode = code
-                <+ Mov(s, eax)
-                <+ Binop("cmp", L(0), eax)
+                <+> move(L(0), eax)
+                <+ Binop ("cmp", L(0), s)
                 <+ CJmp (flag, lab);
               [setStack(envPopped, lab), newCode]
           esac
@@ -628,122 +618,99 @@ fun compile (env, code) {
         | GLOBAL(x) -> [addGlobal(env, x), code]
         | BEGIN(name, argsCnt, locsCnt) ->
           var envEntered = enterFunction(env, name, locsCnt);
-          var newCode = code <+ Label(name) <+> prologue(name);
+          var newCode = code <+> prologue(name);
           [envEntered, newCode]
         | END ->
           case epilogue(env) of
-            [newEnv, epiCompiled] -> 
+            [newEnv, epiCompiled] ->
               var newCode = code <+> epiCompiled;
               [newEnv, newCode]
           esac
         | CALL(name, nargs) ->
-          -- Generate code for pushing registers.
-          fun pushRegisters(registers) {
-            case registers of
-              fst : rest -> singletonBuffer(Push(fst)) <+> pushRegisters(rest)
-            | _ -> emptyBuffer()
+            case compileRuntimeCall(env, name, nargs) of
+              [env, callCode] ->
+                var newCode = code <+> callCode;
+                [env, newCode]
             esac
-          }
-          -- Generate code for popping registers. (in reverse order).
-          fun popRegisters(registers) {
-            case registers of
-              fst : rest -> popRegisters(rest) <+ Pop(fst)
-            | _ -> emptyBuffer()
-            esac
-          }
-          -- Generate code for pushing registers.
-          fun pushArguments(env, argsCnt) {
-            fun pushArgumentsImpl(currEnv, code, argsCnt) {
-              case argsCnt of
-                0 -> [currEnv, code]
-              | _ -> 
-                case pop(currEnv) of
-                  [arg, currEnv] ->
-                    var newCode = code <+ Push(arg);
-                    pushArgumentsImpl(currEnv, newCode, argsCnt - 1)
-                esac
-              esac
-            }
-            pushArgumentsImpl(env, emptyBuffer(), argsCnt)
-          }
-          var liveRegs = liveRegisters(env, nargs);
-          var registersPushCode = pushRegisters(liveRegs);
-          var registersPopCode = popRegisters(liveRegs);
-          case pushArguments(env, nargs) of
-            [newEnv, argsPushCode] ->
-              case allocate(newEnv) of
-                [s, newEnv2] ->
-                  var newCode = code
-                    <+> registersPushCode
-                    <+> argsPushCode
-                    <+ Call(name)
-                    <+ Binop("+", L(wordSize * nargs), esp)
-                    <+> registersPopCode
-                    <+ Mov (eax, s);
-                  [newEnv2, newCode]
+        | DUP ->
+          case env.pop of
+            [s, envPopped] ->
+              case envPopped.allocate of
+                [a, envAllocated] ->
+                  case envAllocated.allocate of
+                    [b, envAllocated2] ->
+                      var newCode = code
+                        <+> move (s, a)
+                        <+> move (s, b);
+                      [envAllocated2, newCode]
+                  esac
               esac
           esac
         | STRING(s) ->
           case addString(env, s) of
             [newEnv, strVar] ->
-              var argsBef = {M(sprintf("$%s", strVar))};
-              case compileRuntimeCall(newEnv, "Bstring", 0, argsBef, {}) of
-                [newEnv2, runtimeCallCode] ->
-                  var newCode = code <+> runtimeCallCode;
-                  [newEnv2, newCode]
+              case newEnv.allocate of
+                [x, envAllocated] ->
+                  case compileRuntimeCall(envAllocated, "Bstring", 1) of
+                    [envCompiled, callCode] ->
+                      var newCode = code
+                        <+> move(M ("$" ++ strVar), x)
+                        <+> callCode;
+                      [envCompiled, newCode]
+                  esac
               esac
           esac
         | ARRAY(n) ->
-          case compileRuntimeCall(env, "Barray", n, {L(n)}, {}) of
+          case compileRuntimeCall(env, "Barray", n + 1) of
             [envCompiled, runtimeCallCode] ->
               var newCode = code <+> runtimeCallCode;
               [envCompiled, newCode]
           esac
         | SEXP(name, n) ->
-          case addString(env, name) of
-            [envWithNameStr, nameVar] ->
-              var argsBef = {L(n + 1)};
-              var argsAft = {I(0, M(sprintf("%s", nameVar)))};
-              case compileRuntimeCall(envWithNameStr, "Bsexp", n, argsBef, argsAft) of
-                [envCompiled, runtimeCallCode] ->
-                  var newCode = code <+> runtimeCallCode;
-                  [envCompiled, newCode]
+          case env.allocate of
+            [s, envAllocated] ->
+              case addString(envAllocated, name) of 
+                [envAddString, name] ->
+                  case compileRuntimeCall (envAddString, "Bsexp", n + 2) of
+                    [envCompiled, callCode] ->
+                      var newCode = code <+> move (M (name), s) <+> callCode;
+                      [envCompiled, newCode]
+                  esac
               esac
           esac
         | STA ->
-          case compileRuntimeCall(env, "Bsta", 3, {}, {}) of
+          case compileRuntimeCall(env, "Bsta", 3) of
             [envCompiled, runtimeCallCode] ->
               var newCode = code <+> runtimeCallCode;
               [envCompiled, newCode]
           esac
         | ELEM ->
-          case compileRuntimeCall(env, "Belem", 2, {}, {}) of
+          case compileRuntimeCall(env, "Belem", 2) of
             [envCompiled, runtimeCallCode] ->
               var newCode = code <+> runtimeCallCode;
               [envCompiled, newCode]
           esac
         | BUILTIN(f, n) ->
-          case compileRuntimeCall(env, sprintf("L%s", f), n, {}, {}) of
+          case compileRuntimeCall(env, "L" ++ f, n) of
             [envCompiled, runtimeCallCode] ->
               var newCode = code <+> runtimeCallCode;
               [envCompiled, newCode]
           esac
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-               
+        -- Some guidelines for generating function calls:
+        --
+        -- 1. generate instructions to save live registers on the X86 stack (use
+        --    env.liveRegisters (number of arguments);
+        -- 2. generate instructions to move actual parameters from the symbolic
+        --    stack to the hardware one;
+        -- 3. generate the compileRuntimeCall itself;
+        -- 4. discard the actual parameters from the stack;
+        -- 5. restore saved live registers.
+        --
+        -- Some guidelines for generating functions:
+        --
+        -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
+        --    env.enterFunction to create a proper environment;
+        -- 2. generate epilogue for END instruction.
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
