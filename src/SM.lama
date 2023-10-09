@@ -9,6 +9,7 @@ import State;
 import Expr;
 import Buffer;
 import Fun;
+import Utils;
 
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
@@ -24,9 +25,28 @@ public fun showSMInsn (i) {
   | CONST (n)    -> sprintf ("CONST %d", n)
   | LABEL (s)    -> sprintf ("LABEL %s", s)
   | JMP   (l)    -> sprintf ("JMP %s", l)
-  | CJMP  (c, l) -> sprintf ("CJMP %s, %s", c, l)
+  | CJMP  (c, l) -> sprintf ("CJMP_%s  %s", c.string, l)
   | DUP          -> "DUP"
   | DROP         -> "DROP"  
+  esac
+}
+
+fun isSMInsn (i) {
+  case i of
+    READ         -> true
+  | WRITE        -> true
+  | BINOP (_)    -> true
+  | LD    (_)    -> true
+  | LDA   (_)    -> true
+  | ST    (_)    -> true
+  | STI          -> true
+  | CONST (_)    -> true
+  | LABEL (_)    -> true
+  | JMP   (_)    -> true
+  | CJMP  (_, _) -> true
+  | DUP          -> true
+  | DROP         -> true
+  | _            -> false
   esac
 }
 
@@ -57,10 +77,63 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+fun evalInsn (c, env, i) {
+  case i of
+    READ ->
+      -- c . fromTrd (readWorld) . intoFst (cons) . withNone
+      withNone (intoFst (fromTrd (c, readWorld), cons))
+  | WRITE ->
+      -- c . fromFst (split1) . intoTrd (writeWorld.curry) . withNone
+      withNone (intoTrd (fromFst (c, split1), curry (writeWorld)))
+  | BINOP (op) ->
+      -- c . fromFst (split2) . smap (fun ([y, x]) { evalOp (op, x, y) }) . intoFst (cons) . withNone
+      withNone (intoFst (smap (fromFst (c, split2), fun ([y, x]) { evalOp (op, x, y) }), cons))
+  | LD (x) ->
+      -- c . fromSnd ([withFunc, apply (x)]) . intoFst (cons) . withNone
+      withNone (intoFst (fromSnd (c, [withFunc, apply (x)]), cons))
+  | LDA (x) ->
+      -- c . onFst (cons (REF (x))) . withNone
+      withNone (onFst (c, cons (REF (x))))
+  | ST (x) ->
+      -- c . fromFst (split1) . smap (fun (z) { [x, z] }) . intoSnd ((infix <-).curryFlip) . withNone
+      withNone (intoSnd (smap (fromFst (c, split1), fun (z) { [x, z] }), curryFlip (infix <-)))
+  | STI ->
+      -- c . fromFst (split2) . smap (fun ([v, REF(x)]) { [x, v] }) . underSnd ((infix <-).curryFlip) . intoFst (snd >> cons) . withNone
+      withNone (intoFst (underSnd (smap (fromFst (c, split2), fun ([v, REF(x)]) { [x, v] }), curryFlip (infix <-)), snd >> cons))
+  | CONST (n) ->
+      -- c . onFst (cons (n)) . withNone
+      withNone (onFst (c, cons (n)))
+  | LABEL (_) ->
+      -- c . withNone
+      withNone (c)
+  | JMP (l) ->
+      -- c . withSome (env . fromLabel (l))
+      withSome (c, fromLabel (env, l))
+  | CJMP (Z, l) ->
+      -- c . fromFst (split1) . smap (fun (z) { bool (z == 0, Some (env . fromLabel (l)), None) })
+      smap (fromFst (c, split1), fun (z) { bool (z == 0, Some (fromLabel (env, l)), None) })
+  | CJMP (NZ, l) ->
+      -- c . fromFst (split1) . smap (fun (z) { bool (z != 0, Some (env . fromLabel (l)), None) })
+      smap (fromFst (c, split1), fun (z) { bool (z != 0, Some (fromLabel (env, l)), None) })
+  | DUP ->
+      -- c . fromFst ([withFunc, hd]) . intoFst (cons) . withNone
+      withNone (intoFst (fromFst (c, [withFunc, hd]), cons))
+  | DROP ->
+      -- c . onFst (tl) . withNone
+      withNone (onFst (c, tl))
+  esac
+}
+
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+  case insns of
+    {} -> c
+  | insn : oinsns ->
+      case evalInsn (c, env, insn) of [c, mCont] ->
+        eval (env, c, mCont . fromMaybe (oinsns))
+      esac
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -71,7 +144,7 @@ public fun evalSM (input, insns) {
 -- Compilation environment: generates labels
 fun makeCompEnv (n) {
   [fun () {
-     [sprintf ("L%d", n), makeCompEnv (n+1)]
+     [makeCompEnv (n+1), sprintf ("L%d", n)]
   }]
 }
 
@@ -88,41 +161,99 @@ fun genLabel (env) {
 fun genLabels (env, n) {
   fun inner (env, n) {
     if n == 0
-    then {env}
-    else case env.genLabel of
-           [lab, env] -> lab : inner (env, n-1)
-         esac
+    then env . withNull
+    else env . genLabel . onFst ([inner, n-1]) . intoSnd (cons)
     fi
   }
 
-  listArray (inner (env, n))
+  env . inner (n) . onSnd (listArray)
 }
 
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
-public fun compileSM (stmt) {
-  fun label (lab, labUsed) {
-    if labUsed
-    then singletonBuffer (LABEL (lab))
-    else emptyBuffer ()
-    fi
+public fun compileSM (expr) {
+  fun withBuf (envWithBuf) {
+    case envWithBuf of [env, buf] -> [env, buf] | env -> [env, emptyBuffer ()] esac
   }
-  
-  fun compile (lab, env, stmt) {
-    case stmt of
-      Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 ->  failure ("compileSM not implemented\n")
+
+  fun addBuf (envWithBuf, smInsns) {
+    onSnd (withBuf (envWithBuf), [bool (isSMInsn (smInsns), infix <+, infix <+>), smInsns])
+  }
+
+  fun catBuf (envWithTwoBufs) {
+    into (envWithTwoBufs, fun (smInsns) { [addBuf, smInsns] })
+  }
+
+  fun onEnv (envWithBuf, f) {
+    catBuf (fromFst (withBuf (envWithBuf), f))
+  }
+
+  fun compile (env, expr) {
+    case expr of
+      Assn (r, v) ->
+        -- env . onEnv ([compile, r]) . onEnv ([compile, v]) . addBuf (STI)
+        addBuf (onEnv (onEnv (env, [compile, r]), [compile, v]), STI)
+    | Seq (exp1, exp2) ->
+        -- env . onEnv ([compile, exp1]) . onEnv ([compile, exp2])
+        onEnv (onEnv (env, [compile, exp1]), [compile, exp2])
+    | Skip ->
+        -- env . withBuf
+        withBuf (env)
+    | Read (x) ->
+        -- env . addBuf (READ) . addBuf (ST (x))
+        addBuf (addBuf (env, READ), ST (x))
+    | Write (exp) ->
+        -- env . onEnv ([compile, exp]) . addBuf (WRITE)
+        addBuf (onEnv (env, [compile, exp]), WRITE)
+    | If (cond, tbr, ebr) ->
+        -- env . genLabels (2) . into (fun ([eStLbl, eFnLbl]) {
+        into (genLabels (env, 2), fun ([eStLbl, eFnLbl]) {
+          [onEnv, [compile, cond]] >>
+          [addBuf, CJMP (Z, eStLbl)] >>
+          [onEnv, [compile, tbr]] >>
+          [addBuf, JMP (eFnLbl)] >>
+          [addBuf, LABEL (eStLbl)] >>
+          [onEnv, [compile, ebr]] >>
+          [addBuf, LABEL (eFnLbl)]
+        })
+    | While (cond, body) ->
+        -- env . genLabels (2) . into (fun ([stLbl, fnLbl]) {
+        into (genLabels (env, 2), fun ([stLbl, fnLbl]) {
+          [addBuf, LABEL (stLbl)] >>
+          [onEnv, [compile, cond]] >>
+          [addBuf, CJMP (Z, fnLbl)] >>
+          [onEnv, [compile, body]] >>
+          [addBuf, JMP (stLbl)] >>
+          [addBuf, LABEL (fnLbl)]
+        })
+    | DoWhile (body, cond) ->
+        -- env . genLabels (1) . into (fun ([stLbl]) {
+        into (genLabels (env, 1), fun ([stLbl]) {
+          [addBuf, LABEL (stLbl)] >>
+          [onEnv, [compile, body]] >>
+          [onEnv, [compile, cond]] >>
+          [addBuf, CJMP (NZ, stLbl)]
+        })
+    | Var (x) ->
+        -- env . addBuf (LD (x))
+        addBuf (env, LD (x))
+    | Ref (x) ->
+        -- env . addBuf (LDA (x))
+        addBuf (env, LDA (x))
+    | Const (num) ->
+        -- env . addBuf (CONST (num))
+        addBuf (env, CONST (num))
+    | Binop (op, l, r) ->
+        -- env . onEnv ([compile, l]) . onEnv ([compile, r]) . addBuf (BINOP (op))
+        addBuf (onEnv (onEnv (env, [compile, l]), [compile, r]), BINOP (op))
+    | Ignore (exp) ->
+        -- env . onEnv ([compile, exp]) . addBuf (DROP)
+        addBuf (onEnv (env, [compile, exp]), DROP)
     esac
   }
 
-  case initCompEnv ().genLabel of
-    [endLab, env] ->
-       case compile (endLab, env, stmt) of
-         [endLabUsed, _, code] -> getBuffer $ code <+> label (endLab, endLabUsed) 
-       esac
+  case compile (initCompEnv (), expr) of
+    [_, code] -> getBuffer $ code
   esac
 }
