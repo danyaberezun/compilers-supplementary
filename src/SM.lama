@@ -10,8 +10,23 @@ import Expr;
 import Buffer;
 import Fun;
 
+-- Note: stack -- Array of integers
+-- type SMState — function which maps variable names into their values
+-- type SMWorld — pair of input, output : [List[integer], List[integer]]
+
+-- Note: SM TYPES
+-- Note: type SMInstruction -- Stack machine instruction
+-- Note: type SMCode == Buffer[SMInstruction] -- Stack machine code
+-- Note: type SMConfig == [SMStack, SMState, SMWorld] -- Stack machine configuration
+-- Note: type EvalEnv == Array[Function[String, SMcode]] -- array of a single function, which maps label names to corresponding program endings
+
+-- Note: COMPILATION TYPES
+-- Note: type CompEnv == [Function[[], [string, CompEnv]]] -- Compilation Environment: when called generates a pair of new label and new compilation environment
+
+
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
+-- typehint: showSMInsn (i == SMInstruction) == string
 public fun showSMInsn (i) {
   case i of
     READ         -> "READ"
@@ -24,18 +39,23 @@ public fun showSMInsn (i) {
   | CONST (n)    -> sprintf ("CONST %d", n)
   | LABEL (s)    -> sprintf ("LABEL %s", s)
   | JMP   (l)    -> sprintf ("JMP %s", l)
+  -- Note: conditional jump. First argument options: "z" or "nz" (zero and nonzero)
   | CJMP  (c, l) -> sprintf ("CJMP %s, %s", c, l)
   | DUP          -> "DUP"
   | DROP         -> "DROP"  
   esac
 }
 
+-- Note: stringify stack machine program
+-- typehint showSM (prg == List[SMInstruction]) == string
 public fun showSM (prg) {
   map (fun (i) {showSMInsn (i) ++ "\n"}, prg).stringcat
 }
 
 -- Evaluation environment: keeps a mapping between labels and (sub)programs
+-- typehint initEvalEnv (insns == SMCode) == EvalEnv
 fun initEvalEnv (insns) {
+  -- Map label names to remaining programs: Map[string, SMcode] 
   var map =
     fix (fun (rec) {
           fun ([m, insns]) {
@@ -47,44 +67,86 @@ fun initEvalEnv (insns) {
           }
         }) $ [emptyMap (compare), insns];
   
+  -- Note: QUESTION: why do we need an array?
   [fun (l) {
      case findMap (map, l) of Some (insns) -> insns esac
   }]
 }
 
 -- Accessor function
+-- Note: given EvalEnv and label, return program code starting from that label
+-- typehint fromLabel (env == EvalEnv, lab == string) == SMCode 
 fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
+-- typehint eval (env == EvalEnv, c == SMConfig, insns == SMCode) == SMConfig
 fun eval (env, c, insns) {
   failure ("SM eval not implemented\n")
 }
 
+-- Note: eval single SM instruction, return final SMConfig and code to run after
+-- typehint evalInstruction(env == EvalEnv, config == SMConfig, insn == SMInstruction, rest_insns == SMCode) == [SMConfig, SMCode]
+fun evalInstruction(env, config@[stack, state, world], insn, rest_insns) {
+    case insn of 
+        READ -> case readWorld(world) of
+            [value, new_world] -> [[value:stack, state, new_world], rest_insns]
+        esac
+        | WRITE -> case stack of 
+            value:new_stack -> [[new_stack, state, writeWorld(value, world)], rest_insns]
+        esac
+        | BINOP (operation) -> case stack of
+            right:left:new_stack -> [[evalOperation(operation, left, right):new_stack, state, world], rest_insns]
+        esac
+        | LD (name) -> [[state(name):stack, state, world], rest_insns]
+        | ST (name) -> case stack of
+            value:new_stack -> [[new_stack, state<-[name, value], world], rest_insns]
+        esac
+        | CONST (value) -> [[value:stack, state, world], rest_insns]
+        | LABEL (name) -> [config, rest_insns]
+        | JMP (label) -> [config, env.fromLabel (label)]
+        | CJMP ("z",  label) -> case stack of value:new_stack -> if value==0 then [[new_stack, state, world], env.fromLabel(label)] else [config, rest_insns] fi esac
+        | CJMP ("nz", label) -> case stack of value:new_stack -> if value!=0 then [[new_stack, state, world], env.fromLabel(label)] else [config, rest_insns] fi esac
+
+        | _ -> failure("evalInstruction: Unsupported instruction "++string(insn)++"\n")
+    esac
+}
+
+
+
 -- Runs a stack machine for a given input and a given program, returns an output
+-- Note: see src/World.lama for input format definition
+-- typehint evalSM (input == List[integers], insns == SMCode) == SMConfig 
 public fun evalSM (input, insns) {
   eval (initEvalEnv (insns), [{}, emptyState, createWorld (input)], insns)[2].getOutput
 }
 
+-- NOTE: COMPILATION TO STACK MACHINE CODE UTILS
+
 -- Compilation environment: generates labels
+-- typehint makeCompEnv (n == integer) == CompEnv
 fun makeCompEnv (n) {
   [fun () {
      [sprintf ("L%d", n), makeCompEnv (n+1)]
   }]
 }
 
+-- Note: initialize compilation environment
+-- typehint initCompEnv () == CompEnv
 fun initCompEnv () {
   makeCompEnv (0)
 }
 
 -- Accessor function: generates one label
+-- typehint genLabel (env == CompEnv) == [string, CompEnv]
 fun genLabel (env) {
   env [0] ()
 }
 
 -- Utility function: generates n labels
+-- typehint genLabels (env == CompEnv, n == integer) == [string, ..., string, CompEnv] of len n+1
 fun genLabels (env, n) {
   fun inner (env, n) {
     if n == 0
@@ -99,30 +161,95 @@ fun genLabels (env, n) {
 }
 
 -- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine
+-- Takes an expression, returns a list of stack machine instructions
+-- typehint compileExpr (expr == AST) == SMCode
+fun compileExpr (expr) {
+  case expr of
+    Var (variable_name) -> singletonBuffer( LD (variable_name))
+  | Const (value)       -> singletonBuffer( CONST (value) )
+  | Binop (operation, left_expr, right_expr) ->
+    compileExpr (left_expr) <+> compileExpr (right_expr) <+> singletonBuffer(BINOP (operation))
+  esac
+}
+
+-- Compiles a statement into a stack machine code.
+-- Takes a statement, returns a list of stack machine
 -- instructions.
+-- typehint compileSM (stmt == AST) == SMCode
 public fun compileSM (stmt) {
+
+  -- Generates a buffer with an optional label
+  --    lab     --- the name of the label
+  --    labUsed --- a flag if the lebel is needed
+
+  -- typehint label (lab == string, labUsed == boolean)  == SMCode
   fun label (lab, labUsed) {
     if labUsed
     then singletonBuffer (LABEL (lab))
     else emptyBuffer ()
     fi
   }
-  
+
+  -- Generates SM code for a given statement
+  --    lab  --- a label th go to after the statement is executed
+  --    env  --- compilation environment
+  --    stmt --- a statement to generate SM code for
+  -- Returns a triple:
+  --    boolean flag indicating if "lab" was used
+  --    updated environment
+  --    code buffer  
+  -- typehint compile (lab == string, env == CompEnv, stmt == AST) == [labelUsed == boolean, new_env == CompEnv, code == SMCode] 
   fun compile (lab, env, stmt) {
     case stmt of
-      Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 ->  failure ("compileSM not implemented\n")
+      Skip           -> [false, env, emptyBuffer ()]
+    | Read  (x)      -> [false, env, singletonBuffer (READ) <+ ST (x)]
+    | Write (e)      -> [false, env, compileExpr (e) <+ WRITE]
+    | Assn  (x, e)   -> [false, env, compileExpr (e) <+ ST (x)]
+    | While (cond, stmt) ->
+        case env.genLabels(2) of 
+            [condStart, stmtStart, intermediate_env] -> 
+                case compile(condStart, intermediate_env, stmt) of 
+                   [_, new_env, stmtCode] -> [false, new_env,
+                    singletonBuffer (JMP (condStart)) <+> label (stmtStart, true) <+> stmtCode <+> label (condStart, true) <+> compileExpr(cond) <+ CJMP ("nz", stmtStart)]
+                esac
+        esac
+    | If (condition, ifblock, elseblock) -> 
+        case env.genLabel of
+            [elseblockStart, env] ->
+                case compile (lab, env, ifblock) of
+                    [_, env, ifblockCode] ->
+                        case compile(lab, env, elseblock) of
+                            [_, env, elseblockCode] ->
+                                [true, env, compileExpr(condition) <+ CJMP ("z", elseblockStart) <+> ifblockCode <+ JMP (lab) <+> label(elseblockStart, true) <+> elseblockCode]
+                        esac
+                esac
+        esac
+    | Seq   (s1, s2) ->
+        case env.genLabel of
+          [s2Lab, env] ->
+             case compile (s2Lab, env, s1) of
+               [s2LabUsed, env, s1Code] ->
+                  case compile (lab, env, s2) of
+                    [labUsed, env, s2Code] -> [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
+                  esac
+             esac
+        esac
+    | DoWhile(statement, condition) ->
+        case env.genLabels(2) of 
+            [stmtStart, condStart, env] ->
+                case compile (condStart, env, statement) of
+                    [useCondStart, env, stmtCode] ->
+                         [false, env, label(stmtStart, true) <+> stmtCode <+> label(condStart, useCondStart) <+> compileExpr(condition) <+ CJMP("nz", stmtStart)]  
+                esac
+        esac
+    | _              -> failure ("compileSM for %s is not implemented\n", string(stmt))
     esac
-  }
+  }  
 
   case initCompEnv ().genLabel of
     [endLab, env] ->
        case compile (endLab, env, stmt) of
-         [endLabUsed, _, code] -> getBuffer $ code <+> label (endLab, endLabUsed) 
+         [endLabUsed, _, code] -> getBuffer $  code <+> label (endLab, endLabUsed)
        esac
   esac
 }
