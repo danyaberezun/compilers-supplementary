@@ -351,6 +351,80 @@ fun suffix (op) {
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
   fun compile (env, code) {
+
+    fun isRegOpnd(opnd) {
+      case opnd of 
+          R(_) -> true
+        | _    -> false
+      esac
+    } 
+
+    fun testOnZero(opnd) {
+      -- set the EFLAGS (z flag specially) to show if opnd == 0
+      -- TODO: replace `cmp` with `test`
+      singletonBuffer(Binop("cmp", L(0), opnd))
+    }
+
+    fun divide(lhs, rhs) {
+      -- rhs should be R, S or M operand
+      move(lhs, eax) <+ Cltd <+ IDiv(rhs) 
+    } 
+
+    fun compare(op, lhs, rhs) {
+      singletonBuffer(Binop("^", eax, eax))
+      <+> move(lhs, edx) 
+      <+ Binop("cmp", rhs, edx) 
+      <+ Set(suffix(op), "%al")
+    }
+
+    fun trivialBinop(op, lhs, rhs, dest) {
+      -- as I remember at least one operand of `addl`, `subl` etc 
+      -- should be a register, so I move one of them to `eax`
+
+      if isRegOpnd(lhs) then 
+          if lhs == dest then 
+              singletonBuffer(Binop(op, rhs, lhs))
+          else
+              singletonBuffer(Binop(op, rhs, lhs)) <+ Mov(lhs, dest)
+          fi
+      else 
+          move(lhs, eax) <+ Binop(op, rhs, eax) <+ Mov(eax, dest)
+      fi
+    }
+
+    fun logicalBinop(op, lhs, rhs) {
+
+      fun castToBool(opnd, reg, regLowerName) {
+        -- TODO: replace `cmp` with `test`
+        singletonBuffer(Binop("^", reg, reg))
+        <+ Binop("cmp", L(0), opnd)
+        <+ Set(suffix("!="), regLowerName)
+      }
+
+      castToBool(lhs, eax, "%al")
+      <+> castToBool(rhs, edx, "%dl") 
+      <+ Binop(op, edx, eax)
+    }
+
+    fun binopImpl(op, lhs, rhs, dest) {
+      -- TODO: replace with `if/else` statement
+      case op of
+          "+"  -> trivialBinop(op, lhs, rhs, dest) 
+        | "-"  -> trivialBinop(op, lhs, rhs, dest) 
+        | "*"  -> trivialBinop(op, lhs, rhs, dest) 
+        | "/"  -> divide(lhs, rhs) <+ Mov(eax, dest)
+        | "%"  -> divide(lhs, rhs) <+ Mov(edx, dest)
+        | "==" -> compare(op, lhs, rhs) <+ Mov(eax, dest) 
+        | "!=" -> compare(op, lhs, rhs) <+ Mov(eax, dest)
+        | "<"  -> compare(op, lhs, rhs) <+ Mov(eax, dest)
+        | "<=" -> compare(op, lhs, rhs) <+ Mov(eax, dest)
+        | ">"  -> compare(op, lhs, rhs) <+ Mov(eax, dest)
+        | ">=" -> compare(op, lhs, rhs) <+ Mov(eax, dest)
+        | "&&" -> logicalBinop(op, lhs, rhs) <+ Mov(eax, dest)
+        | "!!" -> logicalBinop(op, lhs, rhs) <+ Mov(eax, dest)
+      esac
+    }
+
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
@@ -363,11 +437,57 @@ fun compile (env, code) {
             case env.pop of
               [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
             esac
+        | LD(name) ->
+            case env.addGlobal(name).allocate of
+              [s, env] -> [env, code <+> move(env.loc(name), s)]
+            esac
+        | LDA(name) -> 
+            case env.addGlobal(name).allocate of 
+              [s, env] -> [env, code <+ Lea(env.loc(name), s)]
+            esac
+        | ST(name) ->
+            case env.addGlobal(name) of
+              env -> case env.peek of 
+                  s -> [env, code <+> move(s, env.loc(name))]
+              esac
+            esac
+        | STI -> 
+            case env.pop2 of 
+              [src, dest, env] -> 
+                case env.allocate of
+                  [s, env] -> [env, code <+> move(src, I(0, dest)) <+> move(src, s)]
+                esac
+            esac
+        | CONST(value) -> 
+            case env.allocate of 
+              [s, env] -> [env, code <+> move(L(value), s)]
+            esac
+        | BINOP(op) -> 
+            case env.pop2 of 
+              [rhs, lhs, env] -> case env.allocate of 
+                  [dest, env] -> [env, code <+> binopImpl(op, lhs, rhs, dest)]
+              esac 
+            esac
+        | LABEL(label) -> 
+            if env.isBarrier then 
+              [env.retrieveStack(label), code <+ Label(label)]
+            else 
+              [env, code <+ Label(label)]
+            fi
+        | JMP(label) -> 
+            [env.setStack(label).setBarrier, code <+ Jmp(label)]
+        | CJMP(mode, label) -> 
+            case env.pop of 
+              [s, env] -> [env.setStack(label), code <+> testOnZero(s) <+ CJmp(mode, label)]
+            esac
+        | DROP -> 
+            case env.pop of 
+              [_, env] -> [env, code]
+            esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
   }
-
   compile (env, code) 
 }
 
