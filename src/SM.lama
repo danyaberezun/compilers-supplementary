@@ -60,7 +60,113 @@ fun fromLabel (env, lab) {
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+  fun evalStep (env, c, instruction) {
+    fun readImpl ([stack, state, w]) {
+      case readWorld (w) of 
+        [value, newWorld] -> [[value : stack, state, newWorld], KeepLinear]
+      esac
+    }
+
+    fun writeImpl ([head : tail, state, w]) {
+      [[tail, state, writeWorld (head, w)], KeepLinear]
+    }
+
+    fun binopImpl ([rhs : lhs : tail, state, w], op) {
+      fun evalBinOp (op, lhs, rhs) {
+        case op of 
+          "+"  -> lhs + rhs
+        | "-"  -> lhs - rhs
+        | "*"  -> lhs * rhs
+        | "/"  -> lhs / rhs
+        | "%"  -> lhs % rhs
+        | "==" -> lhs == rhs
+        | "!=" -> lhs != rhs
+        | "<"  -> lhs < rhs
+        | "<=" -> lhs <= rhs
+        | ">"  -> lhs > rhs
+        | ">=" -> lhs >= rhs
+        | "&&" -> lhs && rhs
+        | "!!" -> lhs !! rhs
+        esac
+      }
+
+      [[evalBinOp (op, lhs, rhs) : tail, state, w], KeepLinear]
+    }
+
+    fun storeImpl ([value : tail, state, w], name) {
+      [[value : tail, state <- [name, value], w], KeepLinear]
+    }
+
+    fun stiImpl ([value : Ref (name) : tail, state, w]) {
+      [[value : tail, state <- [name, value], w], KeepLinear]
+    }
+
+    fun pushImpl ([stack, state, w], value) {
+      [[value : stack, state, w], KeepLinear]
+    }
+
+    fun loadImpl (c @ [stack, state, w], name) {
+      pushImpl (c, state (name))
+    }
+
+    fun ldaImpl (c @ [stack, state, w], name) {
+      [[Ref (name) : stack, state, w], KeepLinear]
+    }
+
+    fun dropImpl ([head : tail, state, world]) {
+      [[tail, state, world], KeepLinear]
+    }
+
+    fun labelImpl (c, label) {
+      [c, KeepLinear]
+    }
+
+    fun jmpImpl (c, label) {
+      case env.fromLabel(label) of
+        code -> [c, ShouldJump (code)]
+      esac
+    }
+
+    fun cjmpImpl (c @ [top : tail, state, w], kind, label) {
+      case kind of
+        "z"  -> 
+          case top of
+            0 -> jmpImpl ([tail, state, w], label)
+          | _ -> [[tail, state, w], KeepLinear]
+          esac
+      | "nz" -> 
+          case top of
+            0 -> [[tail, state, w], KeepLinear]
+          | _ -> jmpImpl ([tail, state, w], label)
+          esac
+      esac
+    }
+
+    case instruction of 
+      READ               -> readImpl (c)
+    | WRITE              -> writeImpl (c)
+    | BINOP (op)         -> binopImpl (c, op)
+    | LD    (name)       -> loadImpl (c, name)
+    | LDA   (name)       -> ldaImpl (c, name)
+    | ST    (name)       -> storeImpl (c, name)
+    | STI                -> stiImpl (c)
+    | CONST (value)      -> pushImpl (c, value)
+    | LABEL (_)          -> labelImpl (c)
+    | JMP (label)        -> jmpImpl (c, label)
+    | CJMP (kind, label) -> cjmpImpl (c, kind, label)
+    | DUP                -> failure ("DUP is not supported yet\n")
+    | DROP               -> dropImpl (c)
+    esac
+  }
+
+  case insns of 
+    {}                         -> c
+  | instruction : instructions -> 
+      case evalStep (env, c, instruction) of 
+        [c, KeepLinear]        -> eval (env, c, instructions)
+      | [c, ShouldJump (code)] -> eval (env, c, code)
+      esac
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -111,11 +217,81 @@ public fun compileSM (stmt) {
   
   fun compile (lab, env, stmt) {
     case stmt of
-      Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 ->  failure ("compileSM not implemented\n")
+      Skip                 -> [false, env, emptyBuffer ()]
+    | Var    (x)           -> [false, env, singletonBuffer (LD (x))]
+    | Ref    (x)           -> [false, env, singletonBuffer (LDA (x))]
+    | Const  (n)           -> [false, env, singletonBuffer (CONST (n))]
+    | Read   (name)        -> [false, env, singletonBuffer (READ) <+ ST (name)]
+    | Ignore (expr)        -> case compile (lab, env, expr) of 
+                                [used, env, code] -> [used, env, code <+ DROP]
+                              esac 
+    | Binop (op, lhs, rhs) -> case env.genLabels (2) of 
+                                [after1, after2, env] -> 
+                                  case compile (after1, env, lhs) of
+                                    [used1, env, code1] -> 
+                                      case compile (after2, env, rhs) of
+                                        [used2, env, code2] -> 
+                                          [false, env, code1 <+> label (after1, used1) <+> code2 <+> label (after2, used2) <+ BINOP (op)]
+                                      esac
+                                  esac
+                              esac
+    | Write (expr)         -> case env.genLabel of
+                                [lab, env] -> case compile (lab, env, expr) of
+                                                [used, env, code] -> [false, env, code <+> label(lab, used) <+ WRITE]
+                                              esac
+                              esac
+    | Assn (lhs, rhs)      -> case env.genLabels(2) of
+                                [lab2, lab1, env] ->
+                                  case compile(lab2, env, rhs) of 
+                                    [used2, env, code2] ->
+                                      case compile(lab1, env, lhs) of 
+                                        [used1, env, code1] -> 
+                                          [false, env, code1 <+> label (lab1, used1) <+> code2 <+> label (lab2, used2) <+ STI]
+                                      esac
+                                  esac
+                              esac
+    | Seq (lhs, rhs)       -> case env.genLabel of
+                                [lab2, env] -> case compile (lab2, env, lhs) of
+                                                 [used2, env, code1] -> case compile (lab, env, rhs) of
+                                                                          [used, env, code2] ->
+                                                                            [used, env, code1 <+> label (lab2, used2) <+> code2]
+                                                                        esac
+                                               esac
+                              esac
+    | While (e, s) ->
+        case env.genLabels (3) of 
+          [toCondLab, toCodeLab, eLab, env] -> 
+            case compile (toCondLab, env, s) of 
+              [_, env, sCode] -> 
+                case compile (eLab, env, e) of
+                  [eUsed, env, eCode] -> 
+                    [false, env, singletonBuffer (JMP (toCondLab)) <+ LABEL (toCodeLab) <+> sCode <+ LABEL (toCondLab) <+> eCode <+> label (eLab, eUsed) <+ CJMP ("nz", toCodeLab)]
+                esac 
+            esac
+        esac
+    | DoWhile (expr, cond) ->
+        case env.genLabels (3) of 
+          [condLab, loopLab, lb, env] -> 
+            case compile (condLab, env, expr) of 
+              [_, env, loopcode] -> 
+                case compile (lb, env, cond) of
+                  [used, env, condcode] -> [false, env, singletonBuffer (LABEL (loopLab)) <+> loopcode <+ LABEL (condLab) <+> condcode <+> label (lb, used) <+ CJMP ("nz", loopLab)]
+                esac
+            esac
+        esac
+    | If (cond, expr1, expr2) ->
+        case env.genLabels (3) of 
+          [lab1, lab2, lb, env] ->
+            case compile (lab1, env, expr1) of 
+              [used1, env, code1] ->
+                case compile (lab, env, expr2) of 
+                  [_, env, code2] -> 
+                    case compile(lb, env, cond) of
+                      [used, env, condcode] -> [true, env, condcode <+> label (lb, used) <+ CJMP ("z", lab2) <+> code1 <+> label(lab1, used1) <+ JMP (lab) <+ LABEL (lab2) <+> code2]
+                    esac
+                esac
+            esac
+        esac
     esac
   }
 
