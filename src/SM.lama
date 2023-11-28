@@ -124,7 +124,7 @@ fun eval (env, w, insns) {
   | ins : prog ->
       -- printf ("ins = %s, stack = %s, state = %s\n", ins.string, stack.string, state.string);
       case ins of
-        READ -> case readWorld (world) of [x, world] -> eval ([x : stack, cst, state, world], prog) esac
+        READ -> case world.readWorld of [x, world] -> eval ([x : stack, cst, state, world], prog) esac
       | WRITE -> case stack of x : stack -> eval ([stack, cst, state, writeWorld (x, world)], prog) esac
       | CONST (x) -> eval ([x : stack, cst, state, world], prog)
       | LD (name) -> eval ([lookup (state, name) : stack, cst, state, world], prog)
@@ -156,19 +156,28 @@ fun eval (env, w, insns) {
           then eval ([stack, cst, state, world], env.fromLabel (lab))
           else eval ([stack, cst, state, world], prog)
           fi esac
+      | CALL (fn, argCount) -> eval ([stack, [state, prog, stack.size] : cst, state, world], fromLabel (env, fn))
       | BEGIN (fn, argCount, localsCount) ->
           case take (stack, argCount) of [stack, args] ->
             eval(
                 [ stack
                 , cst
-                , [listArray (args), initArray (localsCount, fun (_) { 0 })]
+                , [args.listArray, initArray (localsCount, fun (_) { 0 })]
                 , world
                 ]
               , prog
             )
           esac
       | GLOBAL (name) -> eval (conf, prog)
-      | END -> eval (conf, prog) -- TODO
+      | END ->
+          case cst of
+            {} -> conf
+          | [state, prog, stackSize] : cst ->
+              if stackSize < stack.size
+              then eval ([stack, cst, state, world], prog)
+              else eval ([0 : stack, cst, state, world], prog)
+              fi
+          esac
       -- | DUP -> case stack of x : stack -> eval ([x : x : stack, cst, state, world], prog) esac
       | DROP -> case stack of x : stack -> eval ([stack, cst, state, world], prog) esac
       esac
@@ -420,6 +429,12 @@ public fun compileSM (stmt) {
     esac
   }
 
+  fun appendIns (env, expr, ins) {
+    case compileInner (env, expr) of [env, code] ->
+      [false, env, code <+ ins]
+    esac
+  }
+
   fun makeLoop (lab, env, cond, body, skipInit) {
     case env.genLabel of [bodyBegLab, env] ->
     case env.genLabel of [condLab, env] ->
@@ -438,7 +453,7 @@ public fun compileSM (stmt) {
       ]
     esac esac esac esac
   }
-  
+
   fun compile (lab, env, stmt) {
     -- printf ("N locals = %d, compiling %s\n", env.getLocals, stmt.string);
     case stmt of
@@ -446,10 +461,7 @@ public fun compileSM (stmt) {
     | Var    (x)        -> [false, env, singletonBuffer (LD (lookupVar (env, x)))]
     | Ref    (x)        -> [false, env, singletonBuffer (LDA (lookupVar (env, x)))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | Ignore (ex) ->
-        case compileInner (env, ex) of [env, exCode] ->
-          [ false, env, exCode <+ DROP ]
-        esac
+    | Ignore (ex) -> appendIns (env, ex, DROP)
     | Seq (lhs, rhs) ->
         case compileInner (env, lhs) of [env, lhsCode] ->
           case compile (lab, env, rhs) of [labUsed, env, rhsCode] ->
@@ -492,50 +504,87 @@ public fun compileSM (stmt) {
         }
 
         var traversed1 = foldl (fun ([code, env, funcs], def) {
-            case def of
-              Var (vars) ->
-                [ if isGlobal (env)
-                  then code <+> genGlobals (vars)
-                  else code
-                  fi
-                , addVars (env, vars)
-                , funcs
-                ]
-            | Fun (fn, args, body) ->
-                case genFunLabel (env, fn) of [lab, env] ->
-                  [code, addFun (env, fn, lab, size (args)), Fun (lab, args, body) : funcs]
-                esac
-            esac
-          }, [emptyBuffer (), beginScope (env), {}], defs);
+          case def of
+            Var (vars) ->
+              [ if env.isGlobal
+                then code <+> vars.genGlobals
+                else code
+                fi
+              , addVars (env, vars)
+              , funcs
+              ]
+          | Fun (fn, args, body) ->
+              case genFunLabel (env, fn) of [lab, env] ->
+                [code, addFun (env, fn, lab, args.size), Fun (lab, args, body) : funcs]
+              esac
+          esac
+        }, [emptyBuffer (), env.beginScope, {}], defs);
 
         case traversed1 of [defsCode, env, funcs] ->
         var traversed2 = foldl (fun (env, Fun (fn, args, body)) {
-            rememberFun (env, fn, args, body)
-          }, env, funcs);
+          rememberFun (env, fn, args, body)
+        }, env, funcs);
 
         case compile (lab, traversed2, expr) of [flag, env, code] ->
-          [flag, endScope (env), defsCode <+> code]
+          [flag, env.endScope, defsCode <+> code]
         esac esac
-    -- | Call (name, argExprs) -> failure ("Unimplemented")
+    | Call (fn, argExprs) ->
+        var argCompiled = foldl(fun ([env, code], expr) {
+          case env.genLabel of [lab, env] ->
+            case compile (lab, env, expr) of [used, env, newCode] ->
+              [env, code <+> newCode <+> label (lab, used)]
+            esac
+          esac
+        }, [env, emptyBuffer ()], argExprs);
+
+        case argCompiled of [env, code] ->
+        case lookupFun (env, fn) of Fun (label, argCount) ->
+          [false, env, code <+ CALL (label, argCount)]
+        esac esac
     | Read (name) -> [ false, env, singletonBuffer (READ) <+ ST (lookupVar (env, name)) <+ DROP ]
-    | Write (ex) ->
-        case compileInner (env, ex) of [env, exCode] ->
-          [false, env, exCode <+ WRITE]
-        esac
-    | _ -> failure ("Cannot compile %s\n", string(stmt))
-    | _                 ->  failure ("compileSM not implemented\n")
+    | Write (ex) -> appendIns (env, ex, WRITE)
+    | _ -> failure ("Cannot compile %s\n", stmt.string)
     esac
+  }
+
+  fun compileFuncs (env, start) {
+    fun traverse (env, funcs) {
+      -- printf ("funcs = %s\n\n\n", funcs.string);
+      case funcs of
+        {} ->
+          case env.getFuns of
+            [{}, env] -> emptyBuffer ()
+          | [funcs, env] -> traverse (env, funcs)
+          esac
+      | Fun (fn, args, expr, state) : funcs ->
+          var tmp1 = beginFun (env, state);
+          var tmp2 = addArgs (tmp1, args);
+          var tmp3 = compileInner (tmp2, expr);
+          case tmp3 of [env, code] ->
+            singletonBuffer (LABEL (fn))
+            <+ BEGIN (fn, args.size, env.getLocals)
+            <+> code
+            <+ END
+            <+> traverse (env, funcs)
+          esac
+      esac
+    }
+
+    var newCode = traverse (env, {});
+    start <+> newCode
   }
 
   case initCompEnv ().genLabel of
     [endLab, env] ->
       case compile (endLab, env, stmt) of [endLabUsed, env, code] ->
-        -- printf ("code = %s\n", code.string);
-        getBuffer $
-          singletonBuffer (LABEL ("main"))
-          <+ BEGIN ("main", 0, getLocals (env))
+        var result = getBuffer $ compileFuncs (env
+        , singletonBuffer (LABEL ("main"))
+          <+ BEGIN ("main", 0, env.getLocals)
           <+> code <+> label (endLab, endLabUsed)
           <+ END
+        );
+        -- printf ("%s\n", result.showSM);
+        result
       esac
   esac
 }
