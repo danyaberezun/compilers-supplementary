@@ -478,6 +478,131 @@ fun compile (env, code) {
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
                
+        | CONST (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (L (x), s)]
+            esac
+        | LD (name) ->
+            var lx = env.loc (name);
+            case env.allocate of
+              [s, env] -> [env, code <+> move (lx, s)]
+            esac
+        | ST (name) ->
+            var s = env.peek;
+            var lx = env.loc (name);
+            [env, code <+> move (s, lx)]
+        | LDA (name) ->
+            case env.allocate of [s, env] ->
+              var lx = env.loc (name);
+              [env, code <+ Lea (lx, eax) <+> move (eax, s)]
+            esac
+        | STI ->
+            case env.pop of [si, env] ->
+              var sx = env.peek;
+              [env, code <+> move (sx, I (0, si))]
+            esac
+        | DROP ->
+            case env.pop of [s, env] ->
+              [env, code]
+            esac
+        | BINOP (op) ->
+            case env.pop2 of [sy, sx, env] ->
+              case env.allocate of [sz, env] ->
+                fun basicArithm () {
+                  code
+                    <+> move (sx, eax)
+                    <+ Binop (op, sy, eax)
+                    <+> move (eax, sz)
+                }
+                fun comparison () {
+                  code
+                    <+> move (sx, edx)
+                    <+ Binop("^", eax, eax)
+                    <+ Binop("cmp", sy, edx)
+                    <+ Set (op.suffix, "%al")
+                    <+> move (eax, sz)
+                }
+                fun logical () {
+                  code
+                    <+ Binop("^", eax, eax)
+                    <+ Binop("cmp", L (0), sx)
+                    <+ Set ("!=".suffix, "%al")
+                    <+> move (eax, sz)
+                    <+ Binop("^", eax, eax)
+                    <+ Binop("cmp", L (0), sy)
+                    <+ Set ("!=".suffix, "%al")
+                    <+ Binop (op, eax, sz)
+                }
+                var newCode = case op of
+                  "+"  -> basicArithm ()
+                | "-"  -> basicArithm ()
+                | "*"  -> basicArithm ()
+                | "/"  -> code <+> move (sx, eax) <+ Cltd <+ IDiv (sy) <+> move (eax, sz)
+                | "%"  -> code <+> move (sx, eax) <+ Cltd <+ IDiv (sy) <+> move (edx, sz)
+                | "<"  -> comparison ()
+                | ">"  -> comparison ()
+                | "<=" -> comparison ()
+                | ">=" -> comparison ()
+                | "==" -> comparison ()
+                | "!=" -> comparison ()
+                | "&&" -> logical ()
+                | "!!" -> logical ()
+                esac;
+
+                [env, newCode]
+              esac
+            esac
+        | LABEL (lab) ->
+          [ if env.isBarrier
+            then env.retrieveStack (lab)
+            else env
+            fi
+          , code <+ Label (lab)
+          ]
+        | JMP (lab) -> [env.setStack (lab).setBarrier, code <+ Jmp (lab)]
+        | CJMP (mod, lab) -> case env.pop of [s, env] ->
+            [ env.setStack (lab), code
+              <+ Mov (s, eax)
+              <+ Binop ("cmp", L (0), eax)
+              <+ CJmp (mod, lab)
+            ]
+          esac
+
+        | CALL (fn, argCount) ->
+            var regs = liveRegisters (env, argCount);
+
+            var restoreCode = foldl (fun (code, reg) {
+              code <+ Pop (reg)
+            }, emptyBuffer (), regs);
+
+            code := foldl (fun (code, reg) {
+              code <+ Push (reg)
+            }, code, regs);
+
+            for var i; i := argCount, i > 0, i := i - 1 do
+              case env.pop of
+                [reg, env1] ->
+                  code := code <+ Push (reg);
+                  env := env1
+              esac
+            od;
+
+            case env.allocate of [top, env] ->
+              [ env, code
+                <+ Call (fn)
+                <+ Binop ("+", L (wordSize * argCount), esp)
+                <+> restoreCode
+                <+> move (eax, top)
+              ]
+            esac
+        | BEGIN (fn, argCount, localsCount) ->
+            [enterFunction (env, fn, localsCount), code <+> prologue (fn)]
+        | GLOBAL (name) -> [addGlobal (env, name), code]
+        | END ->
+            case epilogue (env) of [env, xcode] ->
+              [env, code <+> xcode]
+            esac
+
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
