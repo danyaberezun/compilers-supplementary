@@ -135,16 +135,16 @@ fun eval (env, w, insns) {
       }
 
       fun storeImpl ([head : tail, cst, state, w], name) {
-        state.assign (name, head);
+        assign (state, name, head);
         [[tail, cst, state, w], KeepLinear]
       }
 
-      fun stiImpl ([value : RefVal (name) : tail, cst, state, w]) {
+      fun stiImpl ([value : (RefVal (name)) : tail, cst, state, w]) {
         state.assign (name, value);
         [[value : tail, cst, state, w], KeepLinear]
       }
 
-      fun pushImpl ([stack, cst, state, w], value) {
+      fun constImpl ([stack, cst, state, w], value) {
         [[value : stack, cst, state, w], KeepLinear]
       }
 
@@ -156,16 +156,16 @@ fun eval (env, w, insns) {
         [[RefVal (name) : stack, cst, state, w], KeepLinear]
       }
 
-      fun dropImpl ([head : tail, cst, state, world]) {
+      fun dropImpl (c @ [head : tail, cst, state, world]) {
         [[tail, cst, state, world], KeepLinear]
       }
 
-      fun labelImpl (c, label) {
+      fun labelImpl (c, lab) {
         [c, KeepLinear]
       }
 
-      fun jmpImpl (c, label) {
-        case env.fromLabel (label) of
+      fun jmpImpl (c, lab) {
+        case env.fromLabel (lab) of
           code -> [c, ShouldJump (code)]
         esac
       }
@@ -193,8 +193,23 @@ fun eval (env, w, insns) {
         [[stack, [state, tail] : cst, state, w], ShouldJump (env.fromLabel (fn))]
       }
 
-      fun beginImpl (c @ [stack, cst, state, w], a, l) {
-        case stack.createLocal (a, l) of
+      fun beginImpl (c @ [stack, cst, state, w], n, l) {
+        fun addLocal (n, l) {
+          fun go (stt, n, args) {
+            case args of
+              head : tail -> assign (stt, Arg (n), head); go (stt, n + 1, tail)
+            | _           -> n
+            esac
+          }
+
+          case stack.take (n) of 
+            [tail, args] -> case makeState (n, l) of
+                              stt -> go (stt, 0, args); [tail, stt]
+                            esac
+          esac
+        }
+
+        case stack.addLocal (n, l) of
           [stack, state] -> [[stack, cst, state, w], KeepLinear]
         esac
       }
@@ -206,8 +221,8 @@ fun eval (env, w, insns) {
 
       fun endImpl (c @ [stack, cst, state, w]) {
         case cst of
-          {}                    -> c
-        | [state, insns] : rest -> [[stack, rest, state, w], ShouldJump (insns)] 
+          [state, insns] : rest -> [[stack, rest, state, w], ShouldJump (insns)] 
+        | _                     -> [c, KeepLinear]
         esac
       }
 
@@ -219,10 +234,10 @@ fun eval (env, w, insns) {
       | LDA   (name)       -> ldaImpl (c, name)
       | ST    (name)       -> storeImpl (c, name)
       | STI                -> stiImpl (c)
-      | CONST (value)      -> pushImpl (c, value)
+      | CONST (value)      -> constImpl (c, value)
       | LABEL (lab)        -> labelImpl (c, lab)
-      | JMP (label)        -> jmpImpl (c, label)
-      | CJMP (kind, label) -> cjmpImpl (c, kind, label)
+      | JMP (lab)          -> jmpImpl (c, lab)
+      | CJMP (kind, lab)   -> cjmpImpl (c, kind, lab)
       | CALL (fn, _)       -> callImpl (c, fn, tail)
       | BEGIN (_, a, l)    -> beginImpl (c, a, l)
       | GLOBAL (name)      -> globalImpl (c, name)
@@ -233,12 +248,11 @@ fun eval (env, w, insns) {
     }
 
     case insns of 
-      {}                         -> c
-    | instruction : instructions -> 
-        case evalStep (env, c, instruction, instructions) of 
-          [c, KeepLinear]        -> eval (env, c, instructions)
-        | [c, ShouldJump (code)] -> eval (env, c, code)
-        esac
+      instruction : tail -> case evalStep (env, c, instruction, tail) of 
+                              [c, KeepLinear]        -> eval (env, c, tail)
+                            | [c, ShouldJump (code)] -> eval (env, c, code)
+                            esac
+    | _                  -> c
     esac
   }
   (* End *)
@@ -498,7 +512,7 @@ public fun compileSM (stmt) {
       esac
     }
     
-    case env.beginScope () of
+    case env.beginScope of
       env -> env.addEach (emptyBuffer(), defList)
     esac
   }
@@ -538,11 +552,11 @@ public fun compileSM (stmt) {
                                   esac
                               esac
     | Write (expr)         -> case env.genLabel of
-                                [lab, env] -> case compile (lab, env, expr) of
-                                                [used, env, code] -> [false, env, code <+> label(lab, used) <+ WRITE]
-                                              esac
+                                [labexpr, env] -> case compile (labexpr, env, expr) of
+                                                    [used, env, code] -> [false, env, code <+> label (labexpr, used) <+ WRITE]
+                                                  esac
                               esac
-    | Assn (lhs, rhs)      -> case env.genLabels(2) of
+    | Assn (lhs, rhs)      -> case env.genLabels (2) of
                                 [lab2, lab1, env] ->
                                   case compile(lab2, env, rhs) of 
                                     [used2, env, code2] ->
@@ -560,14 +574,14 @@ public fun compileSM (stmt) {
                                                                         esac
                                                esac
                               esac
-    | While (e, s) ->
+    | While (cond, body) ->
         case env.genLabels (3) of 
-          [toCondLab, toCodeLab, eLab, env] -> 
-            case compile (toCondLab, env, s) of 
-              [_, env, sCode] -> 
-                case compile (eLab, env, e) of
-                  [eUsed, env, eCode] -> 
-                    [false, env, singletonBuffer (JMP (toCondLab)) <+ LABEL (toCodeLab) <+> sCode <+ LABEL (toCondLab) <+> eCode <+> label (eLab, eUsed) <+ CJMP ("nz", toCodeLab)]
+          [toCondLab, toBodyLab, eLab, env] -> 
+            case compile (toCondLab, env, body) of 
+              [_, env, bodyCode] -> 
+                case compile (eLab, env, cond) of
+                  [eUsed, env, condCode] -> 
+                    [false, env, singletonBuffer (JMP (toCondLab)) <+ LABEL (toBodyLab) <+> bodyCode <+ LABEL (toCondLab) <+> condCode <+> label (eLab, eUsed) <+ CJMP ("nz", toBodyLab)]
                 esac 
             esac
         esac
@@ -577,7 +591,8 @@ public fun compileSM (stmt) {
             case compile (condLab, env, expr) of 
               [_, env, loopcode] -> 
                 case compile (lb, env, cond) of
-                  [used, env, condcode] -> [false, env, singletonBuffer (LABEL (loopLab)) <+> loopcode <+ LABEL (condLab) <+> condcode <+> label (lb, used) <+ CJMP ("nz", loopLab)]
+                  [used, env, condcode] -> 
+                    [false, env, singletonBuffer (LABEL (loopLab)) <+> loopcode <+ LABEL (condLab) <+> condcode <+> label (lb, used) <+ CJMP ("nz", loopLab)]
                 esac
             esac
         esac
@@ -589,16 +604,17 @@ public fun compileSM (stmt) {
                 case compile (lab, env, expr2) of 
                   [_, env, code2] -> 
                     case compile(lb, env, cond) of
-                      [used, env, condcode] -> [true, env, condcode <+> label (lb, used) <+ CJMP ("z", lab2) <+> code1 <+> label(lab1, used1) <+ JMP (lab) <+ LABEL (lab2) <+> code2]
+                      [used, env, condcode] -> 
+                        [true, env, condcode <+> label (lb, used) <+ CJMP ("z", lab2) <+> code1 <+> label(lab1, used1) <+ JMP (lab) <+ LABEL (lab2) <+> code2]
                     esac
                 esac
             esac
         esac
-    | Call (fn, n)            -> case env.genLabel of
+    | Call (fn, bd)           -> case env.genLabel of
                                    [fnLab, env] -> 
                                     case env.lookupFun (fn) of
                                       Fun (f, arg) -> 
-                                        case compile (fnLab, env, foldr (fun (body, last) { Seq (last, body) }, Skip, n)) of
+                                        case compile (fnLab, env, foldr (fun (body, last) { Seq (last, body) }, Skip, bd)) of
                                           [fnUsed, env, code] -> [false, env, code <+> label (fnLab, fnUsed) <+ CALL (f, arg)]
                                         esac
                                     esac
@@ -624,12 +640,13 @@ public fun compileSM (stmt) {
         case fList of
           head : tail -> case head of
                            Fun (fn, args, e, s) ->
-                             case genLabel $ addArgs (env.beginFun (s), args) of
-                              [lab, env] -> 
+                             case addArgs (env.beginFun (s), args) of
+                              env -> case env.genLabel of [lab, env] ->
                                 case compile (lab, env, e) of 
                                   [used, env, eCode] -> 
                                     compileFnsRec (env.endScope, singletonBuffer (LABEL (fn)) <+ BEGIN (fn, size (args), env.getLocals) <+> eCode <+> label (lab, used) <+ END <+> code, tail)
                                 esac
+                              esac
                              esac
                          esac
         | _           -> [code, env]
