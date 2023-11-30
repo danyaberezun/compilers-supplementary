@@ -128,18 +128,30 @@ fun eval (env, w, insns) {
   | ins : prog ->
       -- printf ("ins = %s, stack = %s, state = %s\n", ins.string, stack.string, state.string);
       case ins of
-        CONST (x) -> eval ([x : stack, cst, state, world], prog)
+        DUP -> case stack of x : stack -> eval ([x : x : stack, cst, state, world], prog) esac
+      | DROP -> case stack of x : stack -> eval ([stack, cst, state, world], prog) esac
+      | CONST (x) -> eval ([x : stack, cst, state, world], prog)
+      | STRING (string) -> eval ([string : stack, cst, state, world], prog)
       | LD (name) -> eval ([lookup (state, name) : stack, cst, state, world], prog)
       | ST (name) ->
           case stack of x : stack ->
             assign (state, name, x);
-            eval ([x : stack, cst, state, world], prog)
+            eval ([stack, cst, state, world], prog)
           esac
       | LDA (name) -> eval ([name : stack, cst, state, world], prog)
       | STI ->
           case stack of name : x : stack ->
             assign (state, name, x);
-            eval ([x : stack, cst, state, world], prog)
+            eval ([stack, cst, state, world], prog)
+          esac
+      | ELEM ->
+          case stack of
+            arr : idx : stack -> eval ([arr[idx] : stack, cst, state, world], prog)
+          esac
+      | STA ->
+          case stack of arr : idx : x : stack ->
+            arr[idx] := x;
+            eval ([stack, cst, state, world], prog)
           esac
       | BINOP (op) ->
           case stack of y : x : stack ->
@@ -181,8 +193,6 @@ fun eval (env, w, insns) {
             {} -> conf
           | [state, prog] : cst -> eval ([stack, cst, state, world], prog)
           esac
-      -- | DUP -> case stack of x : stack -> eval ([x : x : stack, cst, state, world], prog) esac
-      | DROP -> case stack of x : stack -> eval ([stack, cst, state, world], prog) esac
       esac
   esac
   }
@@ -514,6 +524,15 @@ public fun compileSM (stmt) {
     esac esac esac esac
   }
 
+  fun compileMany (env, exprs) {
+      foldl(fun ([env, code], expr) {
+        case genLabel (env) of [lab, env] ->
+        case compile (lab, env, expr) of [used, env, newCode] ->
+          [env, code <+> newCode <+> label (lab, used)]
+        esac esac
+      }, [env, emptyBuffer ()], exprs)
+  }
+
   fun compile (lab, env, stmt) {
     -- printf ("N locals = %d, compiling %s\n", getLocals (env), string (stmt));
     case stmt of
@@ -529,17 +548,22 @@ public fun compileSM (stmt) {
         esac esac
     | Assn (Ref (x), rhs) ->
         case compileInner (env, rhs) of [env, rhsCode] ->
-          [ false, env, rhsCode <+ ST (lookupVar (env, x)) ]
+          [ false, env, rhsCode <+ DUP <+ ST (lookupVar (env, x)) ]
         esac
-    | Set (name, rhs) ->
+    | Assn (lhs@ElemRef (arr, idx), rhs) ->
         case compileInner (env, rhs) of [env, rhsCode] ->
-          [ false, env, rhsCode <+ ST (lookupVar (env, name)) ]
-        esac
+        case compileInner (env, lhs) of [env, lhsCode] ->
+          [false, env, rhsCode <+ DUP <+> lhsCode <+ STA]
+        esac esac
     | Assn (lhs, rhs) ->
         case compileInner (env, rhs) of [env, rhsCode] ->
         case compileInner (env, lhs) of [env, lhsCode] ->
-          [ false, env, rhsCode <+> lhsCode <+ STI ]
+          [false, env, rhsCode <+ DUP <+> lhsCode <+ STI]
         esac esac
+    | Set (name, rhs) ->
+        case compileInner (env, rhs) of [env, rhsCode] ->
+          [ false, env, rhsCode <+ DUP <+ ST (lookupVar (env, name)) ]
+        esac
     | Binop (op, lhs, rhs) ->
         case compileInner (env, lhs) of [env, lhsCode] ->
         case compileInner (env, rhs) of [env, rhsCode] ->
@@ -592,14 +616,7 @@ public fun compileSM (stmt) {
           [flag, endScope (env), defsCode <+> code]
         esac esac
     | Call (fn, argExprs) ->
-        var argCompiled = foldl(fun ([env, code], expr) {
-          case genLabel (env) of [lab, env] ->
-          case compile (lab, env, expr) of [used, env, newCode] ->
-            [env, code <+> newCode <+> label (lab, used)]
-          esac esac
-        }, [env, emptyBuffer ()], argExprs);
-
-        case argCompiled of [env, code] ->
+        case compileMany (env, argExprs) of [env, code] ->
         case lookupFun (env, fn) of Fun (label, argCount) ->
           [ false, env, code <+
             if label[0] == '$' -- compare (substring (label, 0, 1), "$") == 0
@@ -608,6 +625,20 @@ public fun compileSM (stmt) {
             fi
           ]
         esac esac
+    | String (string) -> [false, env, singletonBuffer (STRING (string))]
+    | Array (exprs) ->
+        case compileMany (env, exprs) of
+          [env, code] -> [false, env, code <+ ARRAY (size (exprs))]
+        esac
+    -- | Sexp (string, exprs) ->
+    | Elem (arr, idx) ->
+        case compileMany (env, {idx, arr}) of
+          [env, code] -> [false, env, code <+ ELEM]
+        esac
+    | ElemRef (arr, idx) ->
+        case compileMany (env, {idx, arr}) of
+          [env, code] -> [false, env, code]
+        esac
     | _ -> failure ("Cannot compile %s\n", string (stmt))
     esac
   }

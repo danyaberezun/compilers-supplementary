@@ -448,6 +448,32 @@ fun suffix (op) {
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {  
   fun compile (env, code) {
+    fun compileCall (env, code, lab, argCount) {
+      var regs = liveRegisters (env, argCount);
+      var restoreCode = foldl (fun (code, reg) {
+        code <+ Pop (reg)
+      }, emptyBuffer (), regs);
+
+      code := foldl (fun (code, reg) {
+        code <+ Push (reg)
+      }, code, regs);
+
+      for var i; i := 0, i < argCount, i := i + 1 do
+        case pop (env) of [reg, env1] ->
+          code := code <+ Push (reg);
+          env := env1
+        esac
+      od;
+      case allocate (env) of [top, env] ->
+        [ env, code
+          <+ Call (lab)
+          <+ Binop ("+", L (wordSize * argCount), esp)
+          <+> restoreCode
+          <+> move (eax, top)
+        ]
+      esac
+    }
+
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
@@ -469,33 +495,50 @@ fun compile (env, code) {
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
                
-          CONST (x) ->
+          DUP ->
+            var sx = peek (env);
+            case allocate (env) of
+              [sy, env] -> [env, code <+> move (sx, sy)]
+            esac
+        | DROP ->
+            case pop (env) of
+              [s, env] -> [env, code]
+            esac
+        | CONST (x) ->
             case allocate (env) of
               [s, env] -> [env, code <+> move (L (x), s)]
             esac
+        | STRING (string) ->
+            case addString (env, string) of [env, name] ->
+            case allocate (env) of [s, env] ->
+              var lx = M (name);
+              compileCall (env
+                , code
+                  <+ Lea (lx, eax)
+                  <+ Mov (eax, s)
+                , "Bstring", 1)
+            esac esac
         | LD (name) ->
             var lx = loc (env, name);
             case allocate (env) of
               [s, env] -> [env, code <+> move (lx, s)]
             esac
         | ST (name) ->
-            var s = peek (env);
-            var lx = loc (env, name);
-            [env, code <+> move (s, lx)]
+            case pop (env) of [s, env] ->
+              var lx = loc (env, name);
+              [env, code <+> move (s, lx)]
+            esac
         | LDA (name) ->
             case allocate (env) of [s, env] ->
               var lx = loc (env, name);
               [env, code <+ Lea (lx, eax) <+> move (eax, s)]
             esac
         | STI ->
-            case pop (env) of [si, env] ->
-              var sx = peek (env);
+            case pop2 (env) of [si, sx, env] ->
               [env, code <+> move (sx, I (0, si))]
             esac
-        | DROP ->
-            case pop (env) of
-              [s, env] -> [env, code]
-            esac
+        | ELEM -> compileCall (env, code, "Belem", 2)
+        | STA -> compileCall (env, code, "Bsta", 3)
         | BINOP (op) ->
             case pop2 (env) of [sy, sx, env] ->
             case allocate (env) of [sz, env] ->
@@ -558,60 +601,8 @@ fun compile (env, code) {
             ]
           esac
 
-        | CALL (fn, argCount) ->
-            var regs = liveRegisters (env, argCount);
-
-            var restoreCode = foldl (fun (code, reg) {
-              code <+ Pop (reg)
-            }, emptyBuffer (), regs);
-
-            code := foldl (fun (code, reg) {
-              code <+ Push (reg)
-            }, code, regs);
-
-            for var i; i := argCount, i > 0, i := i - 1 do
-              case pop (env) of [reg, env1] ->
-                code := code <+ Push (reg);
-                env := env1
-              esac
-            od;
-
-            case allocate (env) of [top, env] ->
-              [ env, code
-                <+ Call (fn)
-                <+ Binop ("+", L (wordSize * argCount), esp)
-                <+> restoreCode
-                <+> move (eax, top)
-              ]
-            esac
-
-        | BUILTIN (fn, argCount) ->
-            var regs = liveRegisters (env, argCount);
-
-            var restoreCode = foldl (fun (code, reg) {
-              code <+ Pop (reg)
-            }, emptyBuffer (), regs);
-
-            code := foldl (fun (code, reg) {
-              code <+ Push (reg)
-            }, code, regs);
-
-            for var i; i := argCount, i > 0, i := i - 1 do
-              case pop (env) of [reg, env1] ->
-                code := code <+ Push (reg);
-                env := env1
-              esac
-            od;
-
-            case allocate (env) of [top, env] ->
-              [ env, code
-                <+ Call ("L" ++ fn)
-                <+ Binop ("+", L (wordSize * argCount), esp)
-                <+> restoreCode
-                <+> move (eax, top)
-              ]
-            esac
-
+        | CALL (fn, argCount) -> compileCall (env, code, fn, argCount)
+        | BUILTIN (fn, argCount) -> compileCall (env, code, "L" ++ fn, argCount)
         | BEGIN (fn, argCount, localsCount) ->
             [enterFunction (env, fn, localsCount), code <+> prologue (fn)]
         | GLOBAL (name) -> [addGlobal (env, name), code]
