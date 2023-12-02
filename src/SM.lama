@@ -12,6 +12,25 @@ import Lexer;
 import Expr;
 import Buffer;
 
+-- fun logProgram(list){
+--   fun repr(value){
+--         case value of 
+--             head: tail -> foldr(fun (acc, value) { acc + repr(head) + "\n" + repr(tail)}, "", value)
+--             | value -> value.string
+--         esac
+--   }
+--   var fName = "a_log.txt";
+--   var file = fopen(fName, "w");
+--   fprintf(file, "%s", repr(list)); 
+--   fclose(file)
+-- }
+
+fun log (v) {
+  if (true) then    
+   printf("%s\n", v.string)
+  fi
+}
+
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
 public fun showSMInsn (i) {
@@ -47,41 +66,6 @@ public fun showSMInsn (i) {
 
 public fun showSM (prg) {
   map (fun (i) {showSMInsn (i) ++ "\n"}, prg).stringcat
-}
-
-fun evalOne(env, c@[stack, state, world], insn){
-  case insn of
-    READ -> case readWorld(world) of [n, w2] -> [n: stack, state, w2] esac
-    | WRITE  -> case stack of s:_ -> [stack, state, writeWorld(s, world)] esac
-    | BINOP (s) -> case stack of y:x:tail -> [evalOp(s, x, y): tail, state, world] esac
-    | LD    (x) -> case state(x) of v -> 
-                  [v : stack, state, world] 
-                  esac
-    | LDA (x) -> [Ref(x): stack, state, world]
-    | ST  (x) -> case stack of s:_ -> [stack, state <- [x, s], world] esac 
-    | STI     -> case stack of v:Ref(x):tail -> [v:tail, state <- [x, v], world] esac
-    | CONST (n) -> [n : stack, state, world]
-    | JMP (lab) -> [c, env[0](lab)]
-    | CJMP (cond, lab) -> 
-        case stack of result:tail ->
-            if result == 0 then 
-              case cond of 
-                  Z -> [[tail, state, world], env[0](lab)]  
-                  | NZ -> [tail, state, world]  
-              esac
-            else 
-              case cond of 
-                  Z -> [tail, state, world]  
-                  | NZ -> [[tail, state, world], env[0](lab)]  
-              esac
-            fi 
-        esac
-                          
-    | LABEL (lab) -> c
-    | DROP -> case stack of 
-        _:tail -> [tail, state, world] 
-        esac
-  esac
 }
 
 -- Stack machine interpreter. Takes  
@@ -135,7 +119,7 @@ fun eval (env, w, insns) {
   fun assign ([args, locs], loc, v) {
     case loc of
       Arg (i) -> args[i] := v
-    | Loc (i) -> locs[i] := v
+    | Loc (i) -> if i >= locs.length then failure("Locs overflow\n") fi; locs[i] := v
     | Glb (x) -> var g = deref (globalState);
                  globalState ::= fun (y) {if compare (x, y) == 0 then v else g (y) fi}
     esac
@@ -156,14 +140,57 @@ fun eval (env, w, insns) {
 
   -- Core interpreter: takes a configuration and a program, returns a configuration
   (* Assignment *)
-  fun eval (c@[st, cst, s, w], insns) {
+  fun eval (c@[stack, cstack, state, world], insns) {
     case insns of 
       {} -> c
       | i: insns -> 
-        case evalOne(env, c, i) of 
-            [c, new_insns] -> eval(env, c, new_insns)
-            | c -> eval(env, c, insns)
+        case evalOne(c, i) of 
+            [c@[stack, cstack, [a, l], world], new_insns] -> eval(c, new_insns)
+            | c@[stack, cstack, [a, l], world] -> eval(c, insns)
         esac 
+    esac
+  }
+
+  fun evalOne(c@[stack, cstack, state, world], insn){
+    log(insn);
+    case insn of
+      READ -> case readWorld(world) of [n, w2] -> [n: stack, cstack, state, w2] esac
+      | WRITE  -> case stack of s:_ -> [stack, cstack, state, writeWorld(s, world)] esac
+      | BINOP (s) -> case stack of y:x:tail -> [evalOp(s, x, y): tail, cstack, state, world] esac
+      | LD    (x) -> 
+            case lookup(state, x) of v -> 
+                    [v : stack, cstack, state, world] 
+                    esac 
+      | LDA (x) -> [Ref(x): stack, cstack, state, world]
+      | ST (loc) -> case stack of v:_ -> 
+                      assign(state, loc, v); 
+                      [stack, cstack, state, world]  
+                      esac 
+      | STI ->  case stack of v:Ref(x):tail -> 
+                  assign(state, x, v);
+                  [v:tail, cstack, state, world] 
+                esac
+      | CONST (n) -> [n : stack, cstack, state, world]
+      | JMP (lab) -> [c, env[0](lab)]
+      | CJMP (cond, lab) -> 
+          case stack of result:tail ->
+              if result == 0 then 
+                case cond of 
+                    Z -> [[tail, cstack, state, world], env[0](lab)]  
+                    | NZ -> [tail, cstack, state, world]  
+                esac
+              else 
+                case cond of 
+                    Z -> [tail, cstack, state, world]  
+                    | NZ -> [[tail, cstack, state, world], env[0](lab)]  
+                esac
+              fi 
+          esac
+                            
+      | LABEL (lab) -> c
+      | DROP -> case stack of 
+          _:tail -> [tail, cstack, state, world] 
+          esac
     esac
   }
   (* End *)
@@ -404,14 +431,15 @@ public fun compileSM (stmt) {
     fi
   }
 
+
   fun compile (lab, env, stmt) {
-    case stmt of
+    var byteCode = case stmt of
       Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
+    | Var    (name)        -> [false, env, singletonBuffer (LD (env.lookupVar(name)))]
     --- LDA(x) put Ref(x) on stack
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
+    | Ref    (name)        -> [false, env, singletonBuffer (LDA (lookupVar(env, name)))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | Read  (x)      -> [false, env, singletonBuffer (READ) <+ ST (x) <+ DROP]
+    | Read  (name)      -> [false, env, singletonBuffer (READ) <+ ST (env.lookupVar(name)) <+ DROP]
     | Write (e)      -> 
         case env.genLabel of [labExpr, env] ->
         case compile(labExpr, env, e) of [labUsed, env, code]  ->
@@ -459,9 +487,9 @@ public fun compileSM (stmt) {
         esac 
         esac
       | DoWhile(s, e) -> 
-        case env.genLabel of  [labS, env] -> 
-        case env.genLabel of  [labEStart, env] -> 
-        case env.genLabel of  [labEEnd, env] -> 
+        case env.genLabel of [labS, env] -> 
+        case env.genLabel of [labEStart, env] -> 
+        case env.genLabel of [labEEnd, env] -> 
         case compile(labEStart, env, s) of [labEStartUsed, env, sCode] -> 
         case compile(labEEnd, env, e) of [labEEndUsed, env, eCode] ->
                 [false, env, 
@@ -510,15 +538,49 @@ public fun compileSM (stmt) {
                           esac
                           esac
                           esac
-
+    | Scope (defs, expr) -> 
+        case env.beginScope of env ->
+        case env.addBindings(defs) of env -> 
+        case env.genLabel of [eLab, env] ->
+        case compile(eLab, env, expr) of [eLabUsed, env, eCode] ->
+          [false, env.endScope, eCode <+> label(eLab, eLabUsed)]
+        esac
+        esac 
+        esac
+        esac 
+    -- | Call (name, params) -> 
+    --     case 
+    --     --[_, env, singletonBuffer(CALL (name, params.length))] 
+    --     esac
     | _   -> failure ("compileSM not implemented for " ++ stmt.string ++"\n")
-    esac
+    esac;
+    log("FROM");
+    log(stmt);
+    log("TO");
+    log(byteCode[2]);
+    byteCode
+  }
+
+  fun addBindings(env, defs){
+    fun addDef(env, def){
+      case def of 
+        Var(namesList) -> addVars(env, namesList)
+        | Fun (name, params, body) -> 
+            case env.genLabel of [fLabel, env] -> 
+            case env.addFun(name, fLabel, params.length) of env ->
+              env.rememberFun(fLabel, params, body)
+            esac
+            esac
+      esac 
+    }
+
+    foldl(addDef, env, defs)
   }
 
   case initCompEnv ().genLabel of
     [endLab, env] ->
-       case compile (endLab, env, stmt) of
-         [endLabUsed, _, code] -> getBuffer $ code <+> label (endLab, endLabUsed)
+       case compile (endLab, env, stmt) of [endLabUsed, _, code] ->
+             getBuffer $ code <+> label (endLab, endLabUsed)
        esac
   esac
 }
