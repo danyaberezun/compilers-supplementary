@@ -409,22 +409,8 @@ fun suffix (op) {
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
-fun compile (env, code) {
-  fun compile (env, code) {
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        case i of
-          READ ->
-            case env.allocate of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
-            esac
-        (* Assignment *)
-        
+
+
          -- Some guidelines for generating function calls:
          --
          -- 1. generate instructions to save live registers on the X86 stack (use
@@ -440,13 +426,200 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-               
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        (* End *)
+
+fun compile (env, code) {
+  fun compile (env, code) {
+
+    fun isRegOpnd(opnd) {
+      case opnd of 
+          R(_) -> true
+        | _    -> false
+      esac
+    } 
+
+    fun testOnZero(opnd) {
+      -- set the EFLAGS (z flag specially) to show if opnd == 0
+      -- TODO: replace `cmp` with `test`
+      singletonBuffer(Binop("cmp", L(0), opnd))
+    }
+
+    fun divide(lhs, rhs) {
+      -- rhs should be R, S or M operand
+      move(lhs, eax) <+ Cltd <+ IDiv(rhs) 
+    } 
+
+    fun compare(op, lhs, rhs) {
+      singletonBuffer(Binop("^", eax, eax))
+      <+> move(lhs, edx) 
+      <+ Binop("cmp", rhs, edx) 
+      <+ Set(suffix(op), "%al")
+    }
+
+    fun trivialBinop(op, lhs, rhs, dest) {
+      -- as I remember at least one operand of `addl`, `subl` etc 
+      -- should be a register, so I move one of them to `eax`
+
+      if isRegOpnd(lhs) then 
+          if lhs == dest then 
+              singletonBuffer(Binop(op, rhs, lhs))
+          else
+              singletonBuffer(Binop(op, rhs, lhs)) <+ Mov(lhs, dest)
+          fi
+      else 
+          move(lhs, eax) <+ Binop(op, rhs, eax) <+ Mov(eax, dest)
+      fi
+    }
+
+    fun logicalBinop(op, lhs, rhs) {
+
+      fun castToBool(opnd, reg, regLowerName) {
+        -- TODO: replace `cmp` with `test`
+        singletonBuffer(Binop("^", reg, reg))
+        <+ Binop("cmp", L(0), opnd)
+        <+ Set(suffix("!="), regLowerName)
+      }
+
+      castToBool(lhs, eax, "%al")
+      <+> castToBool(rhs, edx, "%dl") 
+      <+ Binop(op, edx, eax)
+    }
+
+    fun binopImpl(op, lhs, rhs, dest) {
+      -- TODO: replace with `if/else` statement
+      case op of
+          "+"  -> trivialBinop(op, lhs, rhs, dest) 
+        | "-"  -> trivialBinop(op, lhs, rhs, dest) 
+        | "*"  -> trivialBinop(op, lhs, rhs, dest) 
+        | "/"  -> divide(lhs, rhs) <+ Mov(eax, dest)
+        | "%"  -> divide(lhs, rhs) <+ Mov(edx, dest)
+        | "==" -> compare(op, lhs, rhs) <+ Mov(eax, dest) 
+        | "!=" -> compare(op, lhs, rhs) <+ Mov(eax, dest)
+        | "<"  -> compare(op, lhs, rhs) <+ Mov(eax, dest)
+        | "<=" -> compare(op, lhs, rhs) <+ Mov(eax, dest)
+        | ">"  -> compare(op, lhs, rhs) <+ Mov(eax, dest)
+        | ">=" -> compare(op, lhs, rhs) <+ Mov(eax, dest)
+        | "&&" -> logicalBinop(op, lhs, rhs) <+ Mov(eax, dest)
+        | "!!" -> logicalBinop(op, lhs, rhs) <+ Mov(eax, dest)
+      esac
+    }
+
+    fun compileCall(env, fLabel, nArgs) {
+
+      var liveRegs = liveRegisters(env, nArgs);
+      var storeRegs = foldl(fun(code, reg) {code <+ Push(reg)}, emptyBuffer(), liveRegs);
+      var restoreRegs = foldl(fun(code, reg) {code <+ Pop(reg)}, emptyBuffer(), reverse(liveRegs));
+
+      -- this is not necessary in most cases, I probably shooulsd test is it needed by comparing
+      -- virtual stack depth with nRegs
+
+      fun moveFromVirtualToHardware(env, nArgs) {
+        if nArgs == 0 then 
+          [env, emptyBuffer()]
+        else
+          case pop(env) of 
+            [arg, env] ->
+              case moveFromVirtualToHardware(env, nArgs - 1) of
+                [env, code] -> [env, code <+ Push(arg)]
+              esac 
+          esac
+        fi
+      }
+
+--      printf("live regs are %s\n", liveRegs.string);
+--      printf("store are %s\n", getBuffer(storeRegs).string);
+--      printf("restore are %s\n", getBuffer(storeRegs).string);
+
+      case moveFromVirtualToHardware(env, nArgs) of
+        [env, moveCode] -> 
+          case allocate(env) of 
+            [retVal, env] -> [env, 
+              storeRegs 
+              <+> moveCode 
+              <+  Call(fLabel)
+              <+  Binop("+", L(wordSize * nArgs), esp)
+              <+> move(eax, retVal)
+              <+> restoreRegs
+            ]
+          esac
+      esac  
+    }
+
+    foldl (
+      fun ([env, scode], i) {
+        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+        --printf("process instruction %s\n", i.string);
+        case i of
+          READ ->
+            case allocate(env) of
+	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
+            esac             
+        | WRITE ->
+            case pop(env) of
+	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
+            esac
+        | LD(name) ->
+            case allocate(env) of
+              [s, env] -> [env, code <+> move(env.loc(name), s)]
+            esac
+        | LDA(name) -> 
+            case allocate(env) of 
+              [s, env] -> [env, code <+ Lea(env.loc(name), s)]
+            esac
+        | ST(name) ->
+            case env.peek of 
+              s -> [env, code <+> move(s, env.loc(name))]
+            esac
+        | STI -> 
+            case pop2(env) of 
+              [src, dest, env] -> 
+                case env.allocate of
+                  [s, env] -> [env, code <+> move(src, I(0, dest)) <+> move(src, s)]
+                esac
+            esac
+        | CONST(value) -> 
+            case env.allocate of 
+              [s, env] -> [env, code <+> move(L(value), s)]
+            esac
+        | BINOP(op) -> 
+            case pop2(env) of 
+              [rhs, lhs, env] -> case env.allocate of 
+                  [dest, env] -> [env, code <+> binopImpl(op, lhs, rhs, dest)]
+              esac 
+            esac
+        | LABEL(label) -> 
+            if isBarrier(env) then 
+              [env.retrieveStack(label), code <+ Label(label)]
+            else 
+              [env, code <+ Label(label)]
+            fi
+        | JMP(label) -> 
+            [env.setStack(label).setBarrier, code <+ Jmp(label)]
+        | CJMP(mode, label) -> 
+            case pop(env) of 
+              [s, env] -> [setStack(env, label), code <+> testOnZero(s) <+ CJmp(mode, label)]
+            esac
+        | DROP -> 
+            case pop(env) of 
+              [_, env] -> [env, code]
+            esac
+        | GLOBAL(name) -> [addGlobal(env, name), code]
+        | BEGIN(fLabel, nArgs, nLocals) -> [enterFunction(env, fLabel, nLocals), code <+> prologue(fLabel)]
+        | END -> 
+          case epilogue(env) of 
+            [env, epilogueCode] -> [env, code <+> epilogueCode]
+          esac
+        | CALL(fLabel, nArgs) -> 
+          case compileCall(env, fLabel, nArgs) of 
+            [env, callCode] -> (
+              printf("%s\n", callCode.string);
+              [env, code <+> callCode])
+          esac 
+        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)               
         esac
       }, [env, emptyBuffer ()], code)
   }
 
+  --printf("compiling code %s\n", code.showSM);
   compile (env, code) 
 }
 
