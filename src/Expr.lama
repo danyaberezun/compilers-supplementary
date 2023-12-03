@@ -40,31 +40,39 @@ public fun evalOp (op, l, r) {
 --
 -- A expression is represented by a data structure of the following shape:
 --
--- expr = Assn    (expr, expr)         |
---        Set     (string, expr)       |
---        Seq     (expr, expr)         |
---        Skip                         |
---        if      (expr, expr, expr)   |
---        While   (expr, expr)         |
---        DoWhile (expr, expr)         |
---        Var     (string)             |
---        Ref     (string)             |
---        Const   (int)                |
---        Binop   (string, expr, expr) |
---        Call    (string, expr list)  |
---        Ignore  (expr)               |
---        String  (string)             |
---        Array   (expr list)          |
---        Elem    (expr, expr)         |
---        ElemRef (expr, expr)         |
---        Builtin (string, expr list)
+-- expr = Assn    (expr, expr)
+--      | Set     (string, expr)
+--      | Seq     (expr, expr)
+--      | Skip
+--      | If      (expr, expr, expr)
+--      | While   (expr, expr)
+--      | DoWhile (expr, expr)
+--      | Var     (string)
+--      | Ref     (string)
+--      | Const   (int)
+--      | Binop   (string, expr, expr)
+--      | Scope   (def list, expr)
+--      | Call    (string, expr list)
+--      | Ignore  (expr)
+--      | String  (string)
+--      | Array   (expr list)
+--      | Sexp    (string, expr list)
+--      | Elem    (expr, expr)
+--      | ElemRef (expr, expr)
+--      | External
+--
+-- A definition is either a local variable definition or a function
+-- definition:
+--
+-- def = Var (string)
+--     | Fun (string, string list, expr)
 
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
 fun lookupVal (state, name) {
   case state.lookup (name) of
-    x@Val (_) -> x
-  | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
+    Val (x) -> x
+  | _       -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
   esac
 }
 
@@ -86,7 +94,7 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -101,8 +109,85 @@ fun evalList (c, exprs) {
   esac
 }
 
+fun void (c) { [c, Z] }
+
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Assn (v, x) -> case evalList (c, {v, x}) of
+      [[s, w], {v, x}] -> case v of
+        [xs, i] -> xs [i] := x; [[s, w], x]
+      | _ -> [[s <- [v, Val (x)], w], x]
+      esac
+    esac
+  | Set (v, x) -> case eval (c, x) of
+      [[s, w], x] -> void ([s <- [v, Val (x)], w])
+    esac
+  | Seq (l, r) -> case evalList (c, {l, r}) of
+      [c, {_, x}] -> [c, x]
+    esac
+  | Skip -> void (c)
+  | If (cond, t, f) -> case eval (c, cond) of
+      [c, cond] -> if cond then eval (c, t) else eval (c, f) fi
+    esac
+  | While (cond, b) -> case eval (c, cond) of
+      [c, cond] -> if cond then eval (eval (c, b) [0], expr) else void (c) fi
+    esac
+  | DoWhile (b, cond) -> case eval (eval (c, b) [0], cond) of
+      [c, cond] -> if cond then eval (c, expr) else void (c) fi
+    esac
+  | Var   (v) -> [c, s.lookupVal (v)]
+  | Ref   (v) -> s.lookupVal (v); [c, v]
+  | Const (x) -> [c, x]
+  | Binop (op, l, r) -> case evalList (c, {l, r}) of
+      [c, {l, r}] -> [c, evalOp (op, l, r)]
+    esac
+  | Scope (ds, e) ->
+      case foldl (fun (s, d) {
+        case d of
+          Var (x) -> s.addName (x, Val (0))
+        | Fun (f, xs, e) -> s.addFunction (f, xs, e)
+        esac
+      }, s.enterScope, ds) of
+        s -> case eval ([s, w], e) of
+          [[s, w], res] -> [[s.leaveScope, w], res]
+        esac
+      esac
+  | Call (f, es) -> case s.lookupFun (f) of
+      Fun (_, External) -> case evalList (c, es) of
+        [[s, w], vs] -> case evalBuiltin (f, vs, w) of
+          [x, w] -> [[s, w], x]
+        esac
+      esac
+    | Fun (xs, e) -> case evalList (c, es) of
+      [[s, w], vs] -> case foldl (fun (s, [x, v]) {
+          s.addName (x, Val (v))
+        }, s.enterFunction, zip (xs, vs)) of
+          sLocal -> case eval ([sLocal, w], e) of
+            [[sLocal, w], res] -> [[s.leaveFunction (sLocal.getGlobal), w], res]
+          esac
+        esac
+      esac
+    esac
+  | Ignore (x) -> case eval (c, x) of
+      [c, _] -> void (c)
+    esac
+  | String (s) -> [c, s.clone]
+  | Array (xs) -> case evalList (c, xs) of
+      [c, xs] -> [c, xs.listArray]
+    esac
+  | Sexp (s, xs) -> case evalList (c, xs) of
+      [c, xs] -> [c, Sexp (s, xs.listArray)]
+    esac
+  | Elem (xs, i) -> case evalList (c, {xs, i}) of
+      [c, {Sexp (_, xs), i}] -> [c, xs [i]]
+    | [c, {xs, i}] -> [c, xs [i]]
+    esac
+  | ElemRef (xs, i) -> case evalList (c, {xs, i}) of
+      [c, {Sexp (_, xs), i}] -> [c, [xs, i]]
+    | [c, {xs, i}] -> [c, [xs, i]]
+    esac
+  | _ -> failure (sprintf ("evalExpr not implemented: %s\n", expr.string))
+  esac
 }
 
 
