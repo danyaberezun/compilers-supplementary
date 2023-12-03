@@ -73,7 +73,7 @@ void* Barray (int n0, ...) {
 
   r->tag = ARRAY_TAG | (n << 3);
   
-  va_start(args, n);
+  va_start(args, n0);
   
   for (i = 0; i<n; i++) {
     ai = va_arg(args, int);
@@ -101,7 +101,7 @@ void* Belem (void *p, int i0) {
   data *a = TO_DATA(p);
   
   if (TAG(a->tag) == STRING_TAG) {
-    return (void*) BOX(a->contents[i]);
+    return (void*) (int) BOX(a->contents[i]);
   }
   
   return (void*) ((int*) a->contents)[i];
@@ -109,7 +109,7 @@ void* Belem (void *p, int i0) {
 
 void* Bsta (void *x, int i, void *v) {
   if (!UNBOXED(i)) {
-    if (TAG(TO_DATA(x)->tag) == STRING_TAG)((char*) x)[UNBOX(i)] = (char) UNBOX(v);
+    if (TAG(TO_DATA(x)->tag) == STRING_TAG)((char*) x)[UNBOX(i)] = (char) (int) UNBOX(v);
     else ((int*) x)[UNBOX(i)] = (int) v;
 
     return v;
