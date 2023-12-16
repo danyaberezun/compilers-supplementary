@@ -116,7 +116,7 @@ void* Barray (int n0, ...) {
 
   r->tag = ARRAY_TAG | (n << 3);
   
-  va_start(args, n);
+  va_start(args, n0);
   
   for (i = 0; i<n; i++) {
     ai = va_arg(args, int);
