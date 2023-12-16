@@ -53,6 +53,7 @@ public fun showSMInsn (i) {
   | BUILTIN (f, n)   -> sprintf ("BUILTIN %s, %d", f, n)
   | META (m)         -> sprintf ("META %s", m.string)
   | PATT (p)         -> sprintf ("PATT %s", p.string)
+  | MATCH_FAIL (f, l) -> sprintf ("MATCH_FAIL %s, %s", f, l.string)
   esac
 }
 
@@ -190,6 +191,22 @@ fun eval (env, w, insns) {
           [x, w] -> eval ([x:st, cst, s, w], insns)
         esac
       esac
+    | PATT (Array (n)):insns -> case st of
+        x:st -> case x of
+          #array -> eval ([length (x) == n:st, cst, s, w], insns)
+        | _ -> eval ([false:st, cst, s, w], insns)
+        esac
+      esac
+    | PATT (String (s_)):insns -> case st of
+        x:st -> eval ([compare (x, s_) == 0:st, cst, s, w], insns)
+      esac
+    | PATT (Tag (s_, n)):insns -> case st of
+        Sexp (l, xs):st -> eval ([compare (l, s_) == 0 && length (xs) == n:st, cst, s, w], insns)
+      | _:st -> eval ([false:st, cst, s, w], insns)
+      esac
+    | MATCH_FAIL (f, l):_ -> case st of
+        x:_ -> error (sprintf ("match failure (value %s)", string (x)), l)
+      esac
     | ins:_ -> failure ("SM interpreter is not implemented: %s\n", string (ins))
     esac
   }
@@ -203,66 +220,67 @@ public fun evalSM (input, insns) {
 }
 
 -- Compilation environment: generates labels
-fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
+fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions, currentFunction) {
   -- Generates a new label
   fun genLabel () {
-    [sprintf ("L%d", nLabels), makeCompEnv (nLabels+1, scopeDepth, state, nLocals, nArgs, functions)]
+    [sprintf ("L%d", nLabels), makeCompEnv (nLabels+1, scopeDepth, state, nLocals, nArgs, functions, currentFunction)]
   }
 
   -- Adds a new function
-  fun rememberFun (fLabel, args, body) {
+  fun rememberFun (fName, fLabel, args, body) {
     makeCompEnv (nLabels,
                  scopeDepth,
                  state,
                  nLocals,
                  nArgs,
-                 Fun (fLabel, args, body, state) : functions)
+                 Fun (fName, fLabel, args, body, state) : functions,
+                 currentFunction)
   }
 
   -- Enters a local scope
   fun beginScope () {
-    makeCompEnv (nLabels, scopeDepth+1, enterScope (state), nLocals, nArgs, functions)
+    makeCompEnv (nLabels, scopeDepth+1, enterScope (state), nLocals, nArgs, functions, currentFunction)
   }
 
   -- Leaves a local scope
   fun endScope () {
-    makeCompEnv (nLabels, scopeDepth-1, leaveScope (state), nLocals, nArgs, functions)
+    makeCompEnv (nLabels, scopeDepth-1, leaveScope (state), nLocals, nArgs, functions, currentFunction)
   }
 
   -- Adds an argument for the current function
   fun addArg (name) {
-    makeCompEnv (nLabels, scopeDepth, addName (state, name, Arg (nArgs)), nLocals, nArgs+1, functions)
+    makeCompEnv (nLabels, scopeDepth, addName (state, name, Arg (nArgs)), nLocals, nArgs+1, functions, currentFunction)
   }
 
   -- Adds a variable in the scope
   fun addVar (name) {
     if isGlobal ()
-    then makeCompEnv (nLabels, scopeDepth, addName (state, name, Glb (name, true)), nLocals, nArgs, functions)
-    else makeCompEnv (nLabels, scopeDepth, addName (state, name, Loc (nLocals, true)), nLocals+1, nArgs, functions)
+    then makeCompEnv (nLabels, scopeDepth, addName (state, name, Glb (name, true)), nLocals, nArgs, functions, currentFunction)
+    else makeCompEnv (nLabels, scopeDepth, addName (state, name, Loc (nLocals, true)), nLocals+1, nArgs, functions, currentFunction)
     fi
   }
 
   -- Adds a value in the scope
   fun addVal (name) {
     if isGlobal ()
-    then makeCompEnv (nLabels, scopeDepth, addName (state, name, Glb (name, false)), nLocals, nArgs, functions)
-    else makeCompEnv (nLabels, scopeDepth, addName (state, name, Loc (nLocals, false)), nLocals+1, nArgs, functions)
+    then makeCompEnv (nLabels, scopeDepth, addName (state, name, Glb (name, false)), nLocals, nArgs, functions, currentFunction)
+    else makeCompEnv (nLabels, scopeDepth, addName (state, name, Loc (nLocals, false)), nLocals+1, nArgs, functions, currentFunction)
     fi
   }
 
   -- Adds a binding for a function
   fun addFun (name, fLabel, nargs) {
-    makeCompEnv (nLabels, scopeDepth, addName (state, name, Fun (fLabel, nargs)), nLocals, nArgs, functions)
+    makeCompEnv (nLabels, scopeDepth, addName (state, name, Fun (fLabel, nargs)), nLocals, nArgs, functions, currentFunction)
   }
 
   -- Enters a function
-  fun beginFun (state) {
-    makeCompEnv (nLabels, 2, enterFunction (state), 0, 0, functions)
+  fun beginFun (fName, state) {
+    makeCompEnv (nLabels, 2, enterFunction (state), 0, 0, functions, fName)
   }
 
   -- Get functions and empty functions list
   fun getFuns () {
-    [functions, makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, {})]
+    [functions, makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, {}, currentFunction)]
   }
 
   -- Lookups variable
@@ -299,15 +317,19 @@ fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
 
   -- Generates an intrinsic function name
   fun genFunLabel (name) {
-     if isGlobal ()
-     then [sprintf ("L%s", name),             makeCompEnv (nLabels  , scopeDepth, state, nLocals, nArgs, functions)]
-     else [sprintf ("L%s_%d", name, nLabels), makeCompEnv (nLabels+1, scopeDepth, state, nLocals, nArgs, functions)]
-     fi
+    if isGlobal ()
+    then [sprintf ("L%s", name),             makeCompEnv (nLabels  , scopeDepth, state, nLocals, nArgs, functions, currentFunction)]
+    else [sprintf ("L%s_%d", name, nLabels), makeCompEnv (nLabels+1, scopeDepth, state, nLocals, nArgs, functions, currentFunction)]
+    fi
   }
 
   -- Checks if the current scope is a global
   fun isGlobal () {
     scopeDepth == 2
+  }
+
+  fun getCurrentFunction () {
+    currentFunction
   }
 
   [genLabel,
@@ -325,13 +347,14 @@ fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
    getLocals,
    genFunLabel,
    addFun,
-   isGlobal
+   isGlobal,
+   getCurrentFunction
   ]
 }
 
 -- Initialize a new compilation environment
 fun initCompEnv () {
-  makeCompEnv (0, 0, emptyState (), 0, 0, {})
+  makeCompEnv (0, 0, emptyState (), 0, 0, {}, "main")
 }
 
 -- Accessor functions
@@ -339,8 +362,8 @@ fun genLabel (env) {
   env [0] ()
 }
 
-fun rememberFun (env, name, args, body) {
-  env [1] (name, args, body)
+fun rememberFun (env, name, lab, args, body) {
+  env [1] (name, lab, args, body)
 }
 
 fun beginScope (env) {
@@ -363,8 +386,8 @@ fun addVal (env, name) {
   env [6] (name)
 }
 
-fun beginFun (env, state) {
-  env [7] (state)
+fun beginFun (env, fName, state) {
+  env [7] (fName, state)
 }
 
 fun getFuns (env) {
@@ -397,6 +420,10 @@ fun addFun (env, name, fLabel, nargs) {
 
 fun isGlobal (env) {
   env [15] ()
+}
+
+fun getCurrentFunction (env) {
+  env [16] ()
 }
 
 -- Helper function: generates n labels
@@ -463,6 +490,57 @@ public fun compileSM (expr) {
     matchSubString (fLabel, "$", 0)
   }
 
+  fun compilePattern (lab, env, pat, x) {
+    fun compilePath (env, path) {
+      foldr (fun (code, idx) {
+        code <+ CONST (idx) <+ ELEM
+      }, singletonBuffer (LD (env.lookupVal (x))), path)
+    }
+
+    fun compilePats (env, ps, path) {
+      case foldl (fun ([env, idx, code], p) {
+          case compilePat (env, p, idx:path) of
+            [env, pCode] -> [env, idx + 1, code <+> pCode]
+          esac
+        }, [env, 0, emptyBuffer ()], ps) of
+        [env, _, code] -> [env, code]
+      esac
+    }
+
+    fun compilePat (env, pat, path) {
+      case pat of
+        Array (ps) -> case compilePats (env, ps, path) of
+          [env, code] -> [env, compilePath (env, path)
+            <+ PATT (Array (size (ps)))
+            <+ CJMP ("z", lab)
+            <+> code]
+        esac
+      | String (s) -> [env, compilePath (env, path) <+ PATT (String (s)) <+ CJMP ("z", lab)]
+      | Const (n) -> [env, compilePath (env, path) <+ CONST (n) <+ BINOP ("==") <+ CJMP ("z", lab)]
+      | Sexp (s, ps) -> case compilePats (env, ps, path) of
+          [env, code] -> [env, compilePath (env, path)
+            <+ PATT (Tag (s, size (ps)))
+            <+ CJMP ("z", lab)
+            <+> code]
+        esac
+      | Named (_, p) -> compilePat (env, p, path)
+      | Wildcard -> [env, emptyBuffer ()]
+      esac
+    }
+
+    compilePat (env, pat, {})
+  }
+
+  fun hasWildcardPattern (bs) {
+    foldl (fun (res, [p, _]) {
+      case p of
+        Named (_, Wildcard) -> true
+      | Wildcard -> true
+      | _ -> res
+      esac
+    }, false, bs)
+  }
+
   fun compile (lab, env, expr) {
     case expr of
       Assn (Ref (x), e) -> case genLabel (env) of
@@ -493,7 +571,7 @@ public fun compileSM (expr) {
         [lab, env] -> case compile (lab, env, e) of
           [labUsed, env, code] -> [false, env, code
             <+> label (lab, labUsed)
-            <+ ST (lookupVar (env, x))]
+            <+ ST (lookupVal (env, x))]
         esac
       esac
     | Seq (s1, s2) -> case genLabel (env) of
@@ -600,12 +678,12 @@ public fun compileSM (expr) {
                    fi
           esac
         | Fun (f, xs, e) -> case genFunLabel (env, f) of
-          [fLabel, env] -> [addFun (env, f, fLabel, size (xs)), code, Fun (fLabel, xs, e) : funs]
-        esac
+            [fLabel, env] -> [addFun (env, f, fLabel, size (xs)), code, Fun (f, fLabel, xs, e) : funs]
+          esac
         esac
       }, [beginScope (env), emptyBuffer (), {}], ds) of
-        [env, code, funs] -> case foldl (fun (env, Fun (fLabel, xs, e)) {
-          rememberFun (env, fLabel, xs, e)
+        [env, code, funs] -> case foldl (fun (env, Fun (fName, fLabel, xs, e)) {
+          rememberFun (env, fName, fLabel, xs, e)
         }, env, funs) of
           env -> case compile (lab, env, e) of
             [labUsed, env, eCode] -> [labUsed, endScope (env), code <+> eCode]
@@ -686,6 +764,31 @@ public fun compileSM (expr) {
           esac
         esac
       esac
+    | Case (x, bs, returnValue) -> case genLabel (env) of
+        [failLab, env] -> case foldr (fun ([nextPatLab, env, nextPatCode], [p, br]) {
+            case genLabel (env) of
+              [patLab, env] -> case compilePattern (nextPatLab, env, p, x) of
+                [env, patCode] -> case compile (lab, env, br) of
+                  [_, env, brCode] -> [patLab, env, emptyBuffer ()
+                    <+ LABEL (patLab)
+                    <+> patCode
+                    <+> brCode
+                    <+ JMP (lab)
+                    <+> nextPatCode]
+                esac
+              esac
+            esac
+          }, [failLab, env, if hasWildcardPattern (bs)
+            then emptyBuffer ()
+            else emptyBuffer ()
+              <+ LABEL (failLab)
+              <+ LD (lookupVal (env, x))
+              <+ MATCH_FAIL (env.getCurrentFunction, getLoc (x))
+              <+> (if returnValue then emptyBuffer () else singletonBuffer (DROP) fi)
+            fi], bs) of
+          [_, env, code] -> [true, env, code]
+        esac
+      esac
     | _ -> failure ("compileSM not implemented: %s\n", string (expr))
     esac
   }
@@ -693,8 +796,8 @@ public fun compileSM (expr) {
   fun generateFuns (env, code) {
     case getFuns (env) of
       [{}, _] -> code
-    | [fs, env] -> case foldl (fun ([env, code], Fun (fLabel, args, body, state)) {
-        case addArgs (beginFun (env, state), args) of
+    | [fs, env] -> case foldl (fun ([env, code], Fun (fName, fLabel, args, body, state)) {
+        case addArgs (beginFun (env, fName, state), args) of
           env -> case genLabel (env) of
             [lab, env] -> case compile (lab, env, body) of
               [labUsed, env, bodyCode] -> [env, code
