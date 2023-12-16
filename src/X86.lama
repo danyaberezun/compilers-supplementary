@@ -43,7 +43,7 @@ var wordSize = 4;
 --   Binop (string, opnd, opnd) -- makes a binary operation; note, the first operand   
 --                                 designates x86 operator, not the source language one
 --   IDiv  (opnd)               -- x86 integer division, see instruction set reference 
---   Cltd                       -- see instruction set reference           
+--   Cltd                       -- converts signed long to signed double long       
 --   Set   (string, string)     -- sets a value from flags; the first operand is the   
 --                                 suffix, which determines the value being set, the
 --                                 the second --- (sub)register name
@@ -465,12 +465,15 @@ fun compileCall(env, code, fLabel, na) {
   var restoreRegsCode = foldl (fun (code, reg) { code <+ Pop (reg) }, emptyBuffer (), reverse(regs));
 
   case foldl(
-    fun ([env, accCode], reg) { 
+    fun ([env, accCode], _) { 
+      --replace from symbolic stack to X86
       case pop(env) of
         [reg, env] -> [env, accCode <+ Push (reg)]
       esac
     },
     [env, emptyBuffer()],
+    -- just counter 
+    --make pop here???
     if na > 0 then arrayList(initArray (na, fun (_) { 0 })) else {} fi
   ) of [env, saveArgsCode] ->
 
@@ -549,33 +552,57 @@ fun compile (env, code) {
         esac
         esac
     | BINOP (op) ->
-        case pop2(env) of
-          [r, l, env] ->
-            case allocate(env) of
-                [s, env] ->
-                    case op of
+        case pop2(env) of [r, l, env] ->
+        case allocate(env) of [s, env] ->
+        case op of
                     "/" -> [env, code 
-                                  <+> move(l, eax) 
+                                  <+ Mov(r, eax)
+                                  <+ Sar1(eax)
+                                  <+ Mov(eax, r)
+                                  <+ Mov(l, eax)
+                                  <+ Sar1(eax) 
                                   <+ Cltd 
                                   <+ IDiv(r) 
-                                  <+> move(eax, s)]
+                                  <+> toFixedNum(eax)
+                                  <+ Mov(eax, s)]
                     |"%" -> [env, code 
-                                  <+>  move(l, eax) 
+                                  <+ Mov(r, eax)
+                                  <+ Sar1(eax)
+                                  <+ Mov(eax, r)
+                                  <+ Mov(l, eax) 
+                                  <+ Sar1(eax)
                                   <+ Cltd 
                                   <+ IDiv(r) 
-                                  <+> move(edx, s)]
+                                  <+> toFixedNum(edx)
+                                  <+ Mov(edx, s)]
                     | "&&" -> [env, code <+> andOr(op, l, r, s)]
                     | "!!" -> [env, code <+> andOr(op, l, r, s)]
+                    -- | "+" ->  move(l, eax) 
+                    --           <+ Binop ("+", r, eax) 
+                    --           <+> Binop("-", L(1), eax)
+                    --           <+> move(eax, s)
+                    -- | "-" -> move(l, eax) 
+                    --           <+ Binop ("-", r, eax) 
+                    --           <+> Binop("+", L(1), eax)
+                    --           <+> move(eax, s)
+                    -- | "*" -> move(l, eax)
+                    --         <+> Sar1(eax)
+                    --         <+> move(r, edx)
+                    --         <+> Sar1(edx)
+                    --         <+> Binop("*", edx, eax)
+                    --         <+> toFixedNum(eax)
+                    --         <+> Mov(eax, s)
+                            
                     | _ ->  if isCmp(op)
                               then [env, code <+> set(op, s, binop("cmp", r, l))]
-                              else [env, code <+> binop(op, r, l) <+> move(l, s)]
+                              else [env, code <+> binopToPlace(op, r, l, s)]
                               fi
                     esac
             esac
         esac
     | CONST (x) ->
         case allocate(env) of
-          [s, env] -> [env, code <+> move(L(x), s)]
+          [s, env] -> [env, code <+ Mov(L(x), eax) <+> toFixedNum(eax) <+ Mov(eax, s)]
         esac
     | JMP (name) -> 
         case setStack(env, name) of env ->
@@ -656,6 +683,16 @@ fun binop(op, r, l){
     move(l, rg) <+ Binop (op, r, rg) <+> move(rg, l)
 }
 
+fun binopToPlace(op, r, l, s){
+    singletonBuffer(Mov(l, eax))
+    <+ Sar1(eax)
+    <+ Mov(r, edx)
+    <+ Sar1(edx)
+    <+ Binop (op, edx, eax) 
+    <+> toFixedNum(eax)
+    <+ Mov(eax, s)
+}
+
 fun set(op, s, comp){
     singletonBuffer(Binop("^", edx, edx))
     <+> comp 
@@ -666,11 +703,13 @@ fun set(op, s, comp){
 fun andOr(op, l, r, s){
   singletonBuffer(Binop("^", eax, eax))
         <+ Binop("^", edx, edx)
-        <+ Binop("cmp", L(0), l) 
+        --cast to zero or one 
+        <+ Binop("cmp", L(1), l) 
         <+ Set(suffix("!="), "%al")
-        <+ Binop("cmp", L(0), r) 
+        <+ Binop("cmp", L(1), r) 
         <+ Set(suffix("!="), "%dl")
         <+ Binop(op, edx, eax)
+        <+> toFixedNum(eax)
         <+> move(eax, s)
 }
 fun isCmp (op) {
