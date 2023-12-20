@@ -489,6 +489,32 @@ fun toFixedNum (r) {
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (args, env, code) {  
   fun compile (env, code) {
+    fun compileCall (env, code, lab, argCount) {
+      var regs = liveRegisters (env, argCount);
+      var restoreCode = foldr (fun (code, reg) {
+        code <+ Pop (reg)
+      }, emptyBuffer (), regs);
+
+      code := foldl (fun (code, reg) {
+        code <+ Push (reg)
+      }, code, regs);
+
+      for var i; i := 0, i < argCount, i := i + 1 do
+        case pop (env) of [reg, env1] ->
+          code := code <+ Push (reg);
+          env := env1
+        esac
+      od;
+      case allocate (env) of [top, env] ->
+        [ env, code
+          <+ Call (lab)
+          <+ Binop ("+", L (wordSize * argCount), esp)
+          <+> restoreCode
+          <+> move (eax, top)
+        ]
+      esac
+    }
+
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
@@ -534,7 +560,154 @@ fun compile (args, env, code) {
            --    env.enterFunction to create a proper environment;
            -- 2. generate epilogue for END instruction.
                
-          | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+          | DUP ->
+              var sx = peek (env);
+              case allocate (env) of
+                [sy, env] -> [env, code <+> move (sx, sy)]
+              esac
+          | DROP ->
+              case pop (env) of
+                [s, env] -> [env, code]
+              esac
+          | CONST (x) ->
+              var xv =
+                case x of
+                  V -> 0
+                | _ -> 2 * x + 1
+                esac;
+              case allocate (env) of
+                [s, env] -> [env, code <+> move (L (xv), s)]
+              esac
+          | STRING (string) ->
+              case addString (env, string) of [env, name] ->
+              case allocate (env) of [s, env] ->
+                var lx = M (name);
+                compileCall (env
+                  , code
+                    <+ Lea (lx, eax)
+                    <+ Mov (eax, s)
+                  , "Bstring", 1)
+              esac esac
+          | ARRAY (n) -> compileCall (env, code, "Barray", n + 1)
+          | SEXP (tag, n) -> compileCall (env, code, "Bsexp", n + 2)
+          | LD (name) ->
+              var lx = loc (env, name);
+              case allocate (env) of
+                [s, env] -> [env, code <+> move (lx, s)]
+              esac
+          | ST (name) ->
+              case pop (env) of [s, env] ->
+                var lx = loc (env, name);
+                [env, code <+> move (s, lx)]
+              esac
+          | LDA (name) ->
+              case allocate (env) of [s, env] ->
+                var lx = loc (env, name);
+                [env, code <+ Lea (lx, eax) <+> move (eax, s)]
+              esac
+          | STI ->
+              case pop2 (env) of [si, sx, env] ->
+                [env, code <+> move (sx, I (0, si))]
+              esac
+          | ELEM -> compileCall (env, code, "Belem", 2)
+          | STA -> compileCall (env, code, "Bsta", 3)
+          | BINOP (op) ->
+              case pop2 (env) of [sy, sx, env] ->
+              case allocate (env) of [sz, env] ->
+                fun basicArithm () {
+                  code
+                    <+ Mov (sx, eax)
+                    <+ Mov (sy, edx)
+                    <+ Sar1 (eax)
+                    <+ Sar1 (edx)
+                    <+ Binop (op, edx, eax)
+                    <+ Sal1 (eax)
+                    <+ Or1 (eax)
+                    <+> move (eax, sz)
+                }
+                fun divRem (endReg) {
+                  code
+                    <+> move (sx, eax)
+                    <+ Sar1 (eax)
+                    <+ Sar1 (sy)
+                    <+ Cltd
+                    <+ IDiv (sy)
+                    <+ Sal1 (endReg)
+                    <+ Or1 (endReg)
+                    <+> move (endReg, sz)
+                }
+                fun comparison () {
+                  code
+                    <+ Binop ("^", eax, eax)
+                    <+ Mov (sx, edx)
+                    <+ Sar1 (edx)
+                    <+ Sar1 (sy)
+                    <+ Binop ("cmp", sy, edx)
+                    <+ Set (suffix (op), "%al")
+                    <+ Sal1 (eax)
+                    <+ Or1 (eax)
+                    <+> move (eax, sz)
+                }
+                fun logical () {
+                  code
+                    <+ Binop("^", eax, eax)
+                    <+ Binop("^", edx, edx)
+                    <+ Binop("cmp", L (1), sx)
+                    <+ Set (suffix ("!="), "%al")
+                    <+ Binop("cmp", L (1), sy)
+                    <+ Set (suffix ("!="), "%dl")
+                    <+ Binop (op, edx, eax)
+                    <+ Sal1 (eax)
+                    <+ Or1 (eax)
+                    <+ Mov (eax, sz)
+                }
+                var newCode = case op of
+                  "+"  -> basicArithm ()
+                | "-"  -> basicArithm ()
+                | "*"  -> basicArithm ()
+                | "/"  -> divRem (eax)
+                | "%"  -> divRem (edx)
+                | "<"  -> comparison ()
+                | ">"  -> comparison ()
+                | "<=" -> comparison ()
+                | ">=" -> comparison ()
+                | "==" -> comparison ()
+                | "!=" -> comparison ()
+                | "&&" -> logical ()
+                | "!!" -> logical ()
+                esac;
+
+                [env, newCode]
+              esac esac
+          | LABEL (lab, _) ->
+            [ if isBarrier (env)
+              then retrieveStack (env, lab)
+              else env
+              fi
+            , code <+ Label (lab)
+            ]
+          | JMP (lab) -> [setBarrier (setStack (env, lab)), code <+ Jmp (lab)]
+          | CJMP (mod, lab) ->
+              case pop (env) of [s, env] ->
+                [ setStack (env, lab), code
+                  <+> move (s, eax)
+                  <+ Sar1 (eax)
+                  <+ Binop ("cmp", L (0), eax)
+                  <+ CJmp (mod, lab)
+                ]
+              esac
+
+          | CALL (fn, argCount) -> compileCall (env, code, fn, argCount)
+          | BUILTIN (fn, argCount) -> compileCall (env, code, "L" ++ fn, argCount)
+          | BEGIN (fn, argCount, localsCount) ->
+              [enterFunction (env, fn, localsCount), code <+> prologue (fn)]
+          | GLOBAL (name) -> [addGlobal (env, name), code]
+          | END ->
+              case epilogue (env) of
+                [env, xcode] -> [env, code <+> xcode]
+              esac
+
+          | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", string (i))
           esac
         fi
       }, [env, emptyBuffer ()], code)
