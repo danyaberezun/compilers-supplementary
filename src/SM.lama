@@ -53,6 +53,7 @@ public fun showSMInsn (i) {
   | BUILTIN (f, n)   -> sprintf ("BUILTIN %s, %d", f, n)
   | META (m)         -> sprintf ("META %s", m.string)
   | PATT (p)         -> sprintf ("PATT %s", p.string)
+  | MATCH_FAILURE (patterns) -> sprintf ("MATCH_FAILURE %s", patterns.string)
   esac
 }
 
@@ -179,6 +180,16 @@ fun eval (env, w, insns) {
           case stack of y : x : stack ->
             var z = evalOp (op, x, y);
             eval ([z : stack, cst, state, world], prog)
+          esac
+      | PATT (Tag (patTag, nPatArgs)) ->
+          case stack of x : stack ->
+            var matches = case x of
+              S (valTag, valArgs) ->
+                compare (patTag, valTag) == 0 &&
+                nPatArgs == length (valArgs)
+            | _ -> false
+            esac;
+            eval ([matches : stack, cst, state, world], prog)
           esac
       | LABEL (lab, fwd) -> eval (conf, prog)
       | JMP (lab) -> eval (conf, fromLabel (env, lab))
@@ -457,6 +468,17 @@ fun addVals (env, names) {
   foldl (fun (env, name) {addVal (env, name)}, env, names)
 }
 
+fun nthItem (xs, n) {
+  if n >= 0
+  then
+    case [xs, n] of
+      [x : xs, 0] -> x
+    | [x : xs, n] -> nthItem (xs, n - 1)
+    esac
+  else failure ("Negative index")
+  fi
+}
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
@@ -491,7 +513,7 @@ public fun compileSM (stmt) {
   fun compileInner (env, expr) {
     case genLabel (env) of [lab, env] ->
     case compile (lab, env, expr) of [labUsed, env, exprCode] ->
-      [ env, exprCode <+> label (lab, labUsed) ]
+      [env, exprCode <+> label (lab, labUsed)]
     esac esac
   }
 
@@ -529,22 +551,72 @@ public fun compileSM (stmt) {
       }, [env, emptyBuffer ()], exprs)
   }
 
+  fun compilePattern (env, exitLabs, stackLevel, pat) {
+    fun compileSubpat ([env, exitLabs, code, i], pat) {
+      case compilePattern (env, exitLabs, stackLevel + 1, pat) of [env, patCode, exitLabs] ->
+        [ env
+        , exitLabs
+        , if patCode == 0 then
+            code
+          else
+            code
+            <+ DUP
+            <+ CONST (i)
+            <+ ELEM
+            <+> patCode
+          fi
+        , i + 1
+        ]
+      esac
+    }
+
+    if stackLevel >= size (exitLabs) then
+      case genLabel (env) of
+        [newLab, env] -> compilePattern (env, newLab : exitLabs, stackLevel, pat)
+      esac
+    else
+      var thisExitLab = nthItem (exitLabs, size (exitLabs) - 1 - stackLevel);
+
+      case pat of
+        Wildcard -> [env, singletonBuffer (DROP), exitLabs]
+      | Named (_, pat) -> compilePattern (env, exitLabs, stackLevel, pat)
+      | Sexp (patTag, patArgs) ->
+          var subpats = foldl (
+            compileSubpat
+          , [ env
+            , exitLabs
+            , singletonBuffer (DUP)
+              <+ PATT (Tag (patTag, size (patArgs)))
+              <+ CJMP ("z", thisExitLab)
+            , 0
+            ]
+          , patArgs
+          );
+
+          case subpats of [env, exitLabs, code, _] ->
+            -- printf ("Pattern %s => %s\n", pat.string, code.getBuffer.string);
+            [env, code <+ DROP, exitLabs]
+          esac
+      esac
+    fi
+  }
+
   fun compile (lab, env, stmt) {
     -- printf ("N locals = %d, compiling %s\n", getLocals (env), string (stmt));
     case stmt of
       Skip -> [false, env, emptyBuffer ()]
-    | Var (name) -> [false, env, singletonBuffer (LD  (lookupVar (env, name)))]
+    | Var (name) -> [false, env, singletonBuffer (LD  (lookupVal (env, name)))]
     | Ref (name) -> [false, env, singletonBuffer (LDA (lookupVar (env, name))) <+ CONST (V)]
     | Const (x) -> [false, env, singletonBuffer (CONST (x))]
     | Ignore (expr) -> appendIns (env, expr, DROP)
     | Seq (lhs, rhs) ->
         case compileInner (env, lhs) of [env, lhsCode] ->
         case compile (lab, env, rhs) of [labUsed, env, rhsCode] ->
-          [ labUsed, env, lhsCode <+> rhsCode ]
+          [labUsed, env, lhsCode <+> rhsCode]
         esac esac
     | Assn (Ref (x), rhs) ->
         case compileInner (env, rhs) of [env, rhsCode] ->
-          [ false, env, rhsCode <+ DUP <+ ST (lookupVar (env, x)) ]
+          [false, env, rhsCode <+ DUP <+ ST (lookupVar (env, x))]
         esac
     | Assn (lhs, rhs) ->
         case compileMany (env, {lhs, rhs}) of
@@ -552,12 +624,12 @@ public fun compileSM (stmt) {
         esac
     | Set (name, rhs) ->
         case compileInner (env, rhs) of [env, rhsCode] ->
-          [ false, env, rhsCode <+ DUP <+ ST (lookupVar (env, name)) ]
+          [false, env, rhsCode <+ DUP <+ ST (lookupVal (env, name))]
         esac
     | Binop (op, lhs, rhs) ->
         case compileInner (env, lhs) of [env, lhsCode] ->
         case compileInner (env, rhs) of [env, rhsCode] ->
-          [ false, env, lhsCode <+> rhsCode <+ BINOP (op) ]
+          [false, env, lhsCode <+> rhsCode <+ BINOP (op)]
         esac esac
     | If (cond, bodyThen, bodyElse) ->
         case compileInner (env, cond) of [env, condCode] ->
@@ -588,6 +660,14 @@ public fun compileSM (stmt) {
                 else code
                 fi
               , addVars (env, vars)
+              , funcs
+              ]
+          | Val (vals) ->
+              [ if isGlobal (env)
+                then code <+> genGlobals (vals)
+                else code
+                fi
+              , addVals (env, vals)
               , funcs
               ]
           | Fun (fn, args, body) ->
@@ -642,6 +722,41 @@ public fun compileSM (stmt) {
     | ElemRef (arr, idx) ->
         case compileMany (env, {arr, idx}) of
           [env, code] -> [false, env, code]
+        esac
+    | Case (tmpName, branches) ->
+        var branchesEnvCode = foldl (fun ([env, code], [pat, br]) {
+          case genLabel (env) of [elseLab, env] ->
+          case compilePattern (env, {elseLab}, 0, pat) of [env, patCode, exitLabs] ->
+          case compile (lab, env, br) of [_, env, brCode] ->
+            var cleanupCode1 = foldr (fun (acc, lab) {
+              DROP : LABEL (lab, false) : acc
+            }, {}, exitLabs);
+            var cleanupCode2 = tl (cleanupCode1);
+            var cleanupCode3 = reverse (cleanupCode2);
+            var cleanupCode = listBuffer (cleanupCode3);
+
+            -- printf ("Pat code: %s\n", patCode.getBuffer.string);
+            -- printf ("BR code: %s\n", brCode.getBuffer.string);
+            -- printf ("Cleanup code: %s\n", cleanupCode.getBuffer.string);
+
+            [ env
+            , code
+              <+> patCode
+              <+> brCode
+              <+ JMP (lab)
+              <+> cleanupCode
+            ]
+          esac esac esac
+        }, [env, singletonBuffer (LD (lookupVal (env, tmpName)))], branches);
+
+        var patterns = map (fst, branches);
+
+        case branchesEnvCode of [env, code] ->
+          [ true
+          , env
+          , code
+            <+ MATCH_FAILURE (patterns)
+          ]
         esac
     | _ -> failure ("Cannot compile %s\n", string (stmt))
     esac
