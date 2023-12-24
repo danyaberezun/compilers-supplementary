@@ -34,7 +34,6 @@ public fun showSMInsn (i) {
   | LD     (x)       -> sprintf ("LD %s", showLoc (x))
   | LDA    (x)       -> sprintf ("LDA %s", showLoc (x))
   | ST     (x)       -> sprintf ("ST %s", showLoc (x))
-  | STI              -> "STI"
   | SEXP   (s, n)    -> sprintf ("SEXP ""%s"", %d", s, n)
   | CONST  (n)       -> sprintf ("CONST %d", n)
   | LABEL  (s)       -> sprintf ("LABEL %s", s)
@@ -152,7 +151,7 @@ fun eval (env, w, insns) {
       }
 
       fun ldaImpl (c @ [stack, cst, state, w], name) {
-        [[name : stack, cst, state, w], KeepLinear]
+        [[Ref (name) : stack, cst, state, w], KeepLinear]
       }
 
       fun dropImpl (c @ [head : tail, cst, state, world]) {
@@ -257,10 +256,14 @@ fun eval (env, w, insns) {
         [[actual[index] : rest, cst, state, w], KeepLinear]
       }
 
-      fun staImpl (c @ [value : index : arr : rest, cst, state, w]) {
-        var actual = extractArray (arr);
-        actual[index] := value;
-        [[actual[index] : rest, cst, state, w], KeepLinear]
+      fun staImpl (c @ [stack, cst, state, w]) {
+        case stack of
+          value : Ref (_) : Ref (x) : rest -> assign (state, x, value);
+                                              [[value : tail, cst, state, w], KeepLinear]
+        | value : index : arr : rest       -> var actual = extractArray (arr);
+                                              actual[index] := value;
+                                              [[actual[index] : rest, cst, state, w], KeepLinear]
+        esac
       }
 
       fun stringImpl (c @ [stack, cst, state, w], cstr) {
@@ -272,7 +275,6 @@ fun eval (env, w, insns) {
       | LD      (name)        -> loadImpl (c, name)
       | LDA     (name)        -> ldaImpl (c, name)
       | ST      (name)        -> storeImpl (c, name)
-      | STI                   -> stiImpl (c)
       | CONST   (value)       -> constImpl (c, value)
       | LABEL   (lab)         -> labelImpl (c, lab)
       | JMP     (lab)         -> jmpImpl (c, lab)
@@ -615,12 +617,8 @@ public fun compileSM (stmt) {
   fun compile (lab, env, stmt) {
     case stmt of
       Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-      Skip                 -> [false, env, emptyBuffer ()]
     | Var    (x)           -> [false, env, singletonBuffer (LD (lookupVal (env, x)))]
-    | Ref    (x)           -> [false, env, singletonBuffer (LDA (lookupVar (env, x)))]
+    | Ref    (x)           -> [false, env, singletonBuffer (LDA (lookupVar (env, x))) <+ LDA (lookupVal (env, name))]
     | Const  (n)           -> [false, env, singletonBuffer (CONST (n))]
     | Ignore (expr)        -> case compile (lab, env, expr) of 
                                 [used, env, code] -> [used, env, code <+ DROP]
@@ -635,15 +633,19 @@ public fun compileSM (stmt) {
                                       esac
                                   esac
                               esac
+    | Assn (Ref (l), rhs)  -> case genLabel (env) of 
+                                [lb, env] -> case compile (lb, env, rhs) of
+                                               [used, env, rCode] -> 
+                                                 [false, env, rCode <+> label (lb, used) <+ ST (lookupVal (env, lhs))]
+                                             esac
+                              esac
     | Assn (lhs, rhs)      -> case genLabels (env, 2) of
                                 [lab2, lab1, env] ->
                                   case compile(lab2, env, rhs) of 
                                     [used2, env, code2] ->
                                       case compile(lab1, env, lhs) of 
-                                        [used1, env, code1] -> case lhs of 
-                                                                 ElemRef (_, _) -> [false, env, code1 <+> label (lab1, used1) <+> code2 <+> label (lab2, used2) <+ STA]
-                                                               | _              -> [false, env, code1 <+> label (lab1, used1) <+> code2 <+> label (lab2, used2) <+ STI]
-                                                               esac
+                                        [used1, env, code1] -> 
+                                          [false, env, code1 <+> label (lab1, used1) <+> code2 <+> label (lab2, used2) <+ STA]
                                       esac
                                   esac
                               esac
@@ -720,14 +722,7 @@ public fun compileSM (stmt) {
                                               esac
                                      esac
                                  esac 
-    | Set (lhs, rhs)          -> case genLabel (env) of
-                                   [rlab, env] -> case compile (rlab, env, rhs) of
-                                                    [rUsed, env, rCode] -> 
-                                                      case lookupVal (env, lhs) of
-                                                        addr -> [false, env, rCode <+> label (rlab, rUsed) <+ DUP <+ ST (addr)]
-                                                      esac
-                                                  esac
-                                 esac
+    | Set (lhs, rhs)          -> compile (lab, env, Assn (Ref (lhs), rhs))
     | String (s)              -> [false, env, singletonBuffer (STRING (s))]
     | Elem (arr, idx)         -> case genLabel (env) of 
                                    [argslab, env] -> case compileStmts (argslab, env, {arr, idx}) of
