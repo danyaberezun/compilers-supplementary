@@ -5,6 +5,8 @@ import State;
 import World;
 import Lexer;
 import Parser;
+import Fun;
+import Utils;
 
 -- As association map which maps "\otimes" into "\oplus"
 var ops = {
@@ -58,58 +60,97 @@ public fun evalOp (op, l, r) {
 --
 -- def = Var (string list)                |
 --       Fun (string, string list, expr)
-
--- Helper function: checks that given name designates a regular variable in
--- a given state
-fun checkVar (state, name) {
-  case state.lookup (name) of
-    Var (_) -> skip
-  | _       -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
-  esac
-}
-
--- Helper function: checks that given name designates a function in
--- a given state
-fun checkFun (state, name) {
-  case state.lookup (name) of
-    Fun (_, _) -> skip
-  | _          -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
-  esac
-}
-
--- Helper function: adds a bunch of regular variables current scope
-fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Var (0))}, state, names)
-}
-
--- Helper function: adds a function in current scope
-fun addFunction (state, name, args, body) {
-  state.addName (name, Fun (args, body))
-}
                                         
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
-fun evalList (c, exprs) {
-  case foldl (fun ([c, vals], e) {
-                case eval (c, e) of
-                  [c, v] -> [c, v : vals]
-                esac
-              },
-              [c, {}],
-              exprs) of
-    [c, vals] -> [c, reverse (vals)]
-  esac
+
+fun evalDefs (c, ds) {
+  on (c, "state", foldr (
+    infix >>,
+    id,
+    map (
+      fun (d) {
+        case d of
+          Var (xs) -> [addVars, xs]
+        | Fun (n, as, b) -> [addFun, n, as, b]
+        esac
+      },
+      ds
+    )
+  ))
 }
 
-(* Assignment *)
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (c, expr) {
+  doM (c,
+    case expr of
+      Assn (r, v) ->
+        sequence ({[eval, r], [eval, v]}) >>
+        [under, "state", fun ({REF (x), v}) { [infix <-, [x, v]] }] >>
+        [fmap, fun ({_, v}) { v }]
+    | Seq (exp1, exp2) ->
+        [eval, exp1].void >>
+        [eval, exp2]
+    | Skip ->
+        [return, 0]
+    | Read (x) ->
+        [from, "world", readWorld] >>
+        [into, "state", fun (v) { [infix <-, [x, v]] }] >>
+        [return, 0]
+    | Write (exp) ->
+        [eval, exp] >>
+        [into, "world", writeWorld] >>
+        [return, 0]
+    | If (cond, tbr, ebr) ->
+        [eval, cond] >>= fun (v) {
+        [eval, bool (v != 0, tbr, ebr)] }
+    | While (cond, body) ->
+        [eval, cond] >>= fun (v) {
+        bool (v != 0,
+          [eval, body].void >>
+          [eval, expr],
+          [return, 0]
+        ) }
+    | DoWhile (body, cond) ->
+        [eval, body].void >>
+        [eval, cond] >>= fun (v) {
+        bool (v != 0,
+          [eval, expr],
+          [return, 0]
+        ) }
+    | Var (name) ->
+        [view, "state", [lookupVar, name]]
+    | Ref (name) ->
+        [return, REF (name)]
+    | Const (num) ->
+        [return, num]
+    | Binop (op, l, r) ->
+        sequence ({[eval, l], [eval, r]}) >>
+        [fmap, fun ({lv, rv}) { evalOp (op, lv, rv) }]
+    | Scope (defs, exp) ->
+        [on, "state", enterScope] >>
+        [evalDefs, defs] >>
+        [eval, exp] >>
+        [on, "state", leaveScope]
+    | Call (name, exps) ->
+        [view, "state", [lookupFun, name]] >>= fun ([args, body]) {
+        traverse (eval.ap, exps) >>
+        [fmap, zip . halfCurry (args)] >>= fun (args) {
+        [view, "state", id] >>= fun (savedState) {
+        [on, "state", enterFunction >> [addVars, args]] >>
+        [eval, body] >>= fun (result) {
+        [view, "state", getGlobal] >>
+        [on, "state", const (savedState)] >>
+        [into, "state", leaveFunction . curryFlip] >>
+        [return, result]
+        } } } }
+    | Ignore (exp) ->
+        [eval, exp].void >>
+        [return, 0]
+    esac
+  )
 }
-(* End *)
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
-  case eval ([emptyState (), createWorld (input)], expr) of
-    [c, _] -> c.snd.getOutput
-  esac
+  gets (eval (createData(["state", emptyState (), "world", createWorld (input)]), expr), "world", getOutput)
 }

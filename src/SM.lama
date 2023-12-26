@@ -4,6 +4,7 @@ import Ref;
 import Array;
 import List;
 import Fun;
+import Utils;
 import Collection;
 import World;
 import State;
@@ -21,6 +22,7 @@ public fun showSMInsn (i) {
       Arg (i) -> sprintf ("arg[%d]", i)
     | Loc (i) -> sprintf ("loc[%d]", i)
     | Glb (x) -> x
+    | x       -> sprintf ("???[%s]", x)
     esac
   }
 
@@ -33,15 +35,39 @@ public fun showSMInsn (i) {
   | ST     (x)       -> sprintf ("ST %s", showLoc (x))
   | STI              -> "STI"
   | CONST  (n)       -> sprintf ("CONST %d", n)
-  | LABEL  (s)       -> sprintf ("LABEL %s", s)
+  | LABEL  (l)       -> sprintf ("LABEL %s", l)
   | JMP    (l)       -> sprintf ("JMP %s", l)
-  | CJMP   (c, l)    -> sprintf ("CJMP %s, %s", c, l)
+  | CJMP   (Z, l)    -> sprintf ("CJMP_Z %s", l)
+  | CJMP   (NZ, l)   -> sprintf ("CJMP_MZ %s", l)
   | CALL   (f, n)    -> sprintf ("CALL %s, %d", f, n)
   | BEGIN  (f, a, l) -> sprintf ("BEGIN %s, %d, %d", f, a, l)
   | GLOBAL (x)       -> sprintf ("GLOBAL %s", x)
   | END              -> sprintf ("END")
   | DUP              -> "DUP"
   | DROP             -> "DROP"
+  esac
+}
+
+fun isSMInsn (i) {
+  case i of
+    READ             -> true
+  | WRITE            -> true
+  | BINOP  (_)       -> true
+  | LD     (_)       -> true
+  | LDA    (_)       -> true
+  | ST     (_)       -> true
+  | STI              -> true
+  | CONST  (_)       -> true
+  | LABEL  (_)       -> true
+  | JMP    (_)       -> true
+  | CJMP   (_, _)    -> true
+  | CALL   (_, _)    -> true
+  | BEGIN  (_, _, _) -> true
+  | GLOBAL (_)       -> true
+  | END              -> true
+  | DUP              -> true
+  | DROP             -> true
+  | _                -> false
   esac
 }
 
@@ -72,70 +98,159 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
--- Stack machine interpreter. Takes an environment, a world and a program,
--- returns a final output
-fun eval (env, w, insns) {
-  -- Global state maps names of global variables to values
-  var globalState = ref (fun (x) {error (sprintf ("name ""%s"" is undefined", x), getLoc (x))});
-
-  -- Make a fresh local state: a pair of arrays for arguments and local variables;
-  -- takes the numbers of arguments and local variables respectively
-  fun makeState (a, l) {
-    [initArray (a, fun (_) {0}), initArray (l, fun (_) {0})]
+-- Runs a stack machine for a given input and a given program, returns an output
+public fun evalSM (input, insns) {
+  fun makeState (a, l, gA, gM) {
+    [initArray (a, const (0)), initArray (l, const (0)), gA, gM]
   }
 
   -- Lookups a location in local/global states
-  fun lookup ([args, locs], loc) {
+  fun lookup ([args, locs, glbs, glbsMap], loc) {
     case loc of
       Arg (i) -> args[i]
     | Loc (i) -> locs[i]
-    | Glb (x) -> deref (globalState) (x)
+    | Glb (x) -> glbs[glbsMap . assoc (x) . fromMaybe (-1)]
     esac
   }
 
   -- Assigns a value to a location
-  fun assign ([args, locs], loc, v) {
+  fun assign ([args, locs, glbs, glbsMap], loc, v) {
     case loc of
       Arg (i) -> args[i] := v
     | Loc (i) -> locs[i] := v
-    | Glb (x) -> var g = deref (globalState);
-                 globalState ::= fun (y) {if compare (x, y) == 0 then v else g (y) fi}
+    | Glb (x) -> glbs[glbsMap . assoc (x) . fromMaybe (-1)] := v
     esac
   }
 
-  -- Takes n positions from the list, retursn a pair: the remaining list and the taken
-  -- sublist
-  fun take (list, n) {
-    fun inner (n, acc, list) {
-      if n == 0
-      then [list, acc]
-      else inner (n-1, list.hd : acc, list.tl)
-      fi
-    }
+  fun createLocal (env, a, l) {
+    doM (env,
+      [from, "v_stack", [splitN, a]] >>
+      [fmap,
+        reverse >>
+        listArray >>
+        [with, initArray (l, const (0))]]
+    )
+  }
 
-    inner (n, {}, list)
+  fun getLocal ([args, locs, _, _]) {
+    [args, locs]
+  }
+
+  fun setLocal ([_, _, glbs, glbsMap], args, locs) {
+    [args, locs, glbs, glbsMap]
+  }
+
+  fun evalInsn (env, insn) {
+    doM (env,
+      case insn of
+        READ ->
+          [from, "world", readWorld] >>
+          [into, "v_stack", cons]
+      | WRITE ->
+          [from, "v_stack", split1] >>
+          [into, "world", writeWorld]
+      | BINOP (op) ->
+          [from, "v_stack", split2] >>
+          [fmap, fun ([y, x]) { evalOp (op, x, y) }] >>
+          [into, "v_stack", cons]
+      | LD (l) ->
+          [view, "state", [lookup, l]] >>
+          [into, "v_stack", cons]
+      | LDA (l) ->
+          [on, "v_stack", cons (l)]
+      | ST (l) ->
+          [from, "v_stack", split1] >>= fun (v) {
+          [just, "state", [assign, l, v]] }
+      | STI ->
+          [from, "v_stack", split2] >>= fun ([v, l]) {
+          [just, "state", [assign, l, v]] >>
+          [on, "v_stack", cons (v)] }
+      | CONST (n) ->
+          [on, "v_stack", cons (n)]
+      | LABEL (_) ->
+          id
+      | JMP (l) ->
+          [view, "subprogs", [fromLabel, l]] >>
+          [into, "cont", const]
+      | CJMP (Z, l) ->
+          [from, "v_stack", split1] >>
+          [fmap, fun (z) { z == 0 }] >>=
+          [bool,
+            [view, "subprogs", [fromLabel, l]] >>
+            [into, "cont", const],
+            id
+          ]
+      | CJMP (NZ, l) ->
+          [from, "v_stack", split1] >>
+          [fmap, fun (z) { z != 0 }] >>=
+          [bool,
+            [view, "subprogs", [fromLabel, l]] >>
+            [into, "cont", const],
+            id
+          ]
+      | CALL (l, _) ->
+          [view, "state", getLocal] >>= fun ([args, locs]) {
+          [view, "cont", id] >>= fun (cont) {
+          [on, "c_stack", cons ([args, locs, cont])] >>
+          [view, "subprogs", [fromLabel, l]] >>
+          [into, "cont", const] } }
+      | BEGIN (_, a, l) ->
+          [createLocal, a, l] >>= fun ([args, locs]) {
+          [on, "state", [setLocal, args, locs]] }
+      | END ->
+          [view, "c_stack", size] >>=
+          [bool,
+            [from, "c_stack", split1] >>= fun ([args, locs, cont]) {
+            [on, "state", [setLocal, args, locs]] >>
+            [on, "cont", const (cont)] },
+            [on, "cont", const ({})]]
+      | DUP ->
+          [view, "v_stack", hd] >>
+          [into, "v_stack", cons]
+      | DROP ->
+          [on, "v_stack", tl]
+      esac
+    )
   }
 
   -- Core interpreter: takes a configuration and a program, returns a configuration
-  (* Assignment *)
-  fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+  fun eval (env) {
+    doM (env,
+      [view, "cont", size] >>=
+      [bool,
+        [from, "cont", split1] >>
+        [into, "all", evalInsn . ap] >>
+        eval,
+        id]
+    )
   }
-  (* End *)
 
-  eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
-}
-
--- Runs a stack machine for a given input and a given program, returns an output
-public fun evalSM (input, insns) {
-  eval (initEvalEnv (insns), createWorld (input), insns)
+  case
+    insns . splitWhileSome (
+      fun (insn) {
+        case insn of
+          GLOBAL (name) -> Some (name)
+        | _ -> None
+        esac
+      }) of [insns, glbs] ->
+    case
+      createData([
+        "v_stack",  {},
+        "c_stack",  {},
+        "state",    makeState (0, 0, initArray (glbs.size, const (0)), glbs . enumerate),
+        "world",    createWorld (input),
+        "subprogs", initEvalEnv (insns),
+        "cont",     insns]) of env ->
+      gets (eval (env), "world", getOutput)
+    esac
+  esac
 }
 
 -- Compilation environment: generates labels
 fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
   -- Generates a new label
   fun genLabel () {
-    [sprintf ("L%d", nLabels), makeCompEnv (nLabels+1, scopeDepth, state, nLocals, nArgs, functions)]
+    [makeCompEnv (nLabels+1, scopeDepth, state, nLocals, nArgs, functions), sprintf ("L%d", nLabels)]
   }
 
   -- Adds a new function
@@ -183,7 +298,7 @@ fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
 
   -- Get functions and empty functions list
   fun getFuns () {
-    [functions, makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, {})]
+    [makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, {}), functions]
   }
 
   -- Lookups a name of a variable
@@ -210,8 +325,8 @@ fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
   -- Generates an intrinsic function name
   fun genFunLabel (name) {
      if scopeDepth == 1
-     then [sprintf ("L%s", name),             makeCompEnv (nLabels  , scopeDepth, state, nLocals, nArgs, functions)]
-     else [sprintf ("L%s_%d", name, nLabels), makeCompEnv (nLabels+1, scopeDepth, state, nLocals, nArgs, functions)]
+     then [makeCompEnv (nLabels  , scopeDepth, state, nLocals, nArgs, functions), bool (compare (name, "__main__") == 0, sprintf ("main"), sprintf ("L%s", name))]
+     else [makeCompEnv (nLabels+1, scopeDepth, state, nLocals, nArgs, functions), sprintf ("L%s_%d", name, nLabels)]
      fi
   }
 
@@ -327,8 +442,6 @@ fun addVars (env, names) {
 -- Takes an expression, returns a list of stack machine
 -- instructions.
 
-(* Assignment *)
-
 -- Some guidelines for compiling functions and scopes.
 --
 -- 1. use env.beginScope/env.endScope properly;
@@ -352,28 +465,188 @@ fun addVars (env, names) {
 -- Takes an expression, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  fun label (lab, labUsed) {
-    if labUsed
-    then singletonBuffer (LABEL (lab))
-    else emptyBuffer ()
-    fi
+  fun addCode (env, code) {
+    doM (env,
+      [on, "codeBuf", [bool (isSMInsn (code), infix <+, infix <+>), code]]
+    )
   }
 
-  fun compile (lab, env, stmt) {
+  fun genNewLabel (env) {
+    doM (env,
+      [from, "compEnv", genLabel] >>
+      [fmap, [with, false]] >>
+      [into, "labels", cons]
+    )
+  }
+
+  fun getLastLabel (env) {
+    doM (env,
+      [on, ["labels","head","snd"], const (true)] >>
+      [view, ["labels","head","fst"], id]
+    )
+  }
+
+  fun setLastLabel (env) {
+    doM (env,
+      [from, "labels", split1] >>
+      [into, "codeBuf", fun ([lbl, lblU]) { bool (lblU, [infix <+, LABEL (lbl)], id) }]
+    )
+  }
+
+  fun withNewLabel (env, fdf) {
+    doM (env,
+      [from, "compEnv", genLabel] >>=
+      fdf
+    )
+  }
+
+  fun withLabel (env, lbl, df) {
+    doM (env,
+      [on, "labels", cons ([lbl, true])] >>
+      df >>
+      [on, "labels", tl]
+    )
+  }
+
+  fun compile (env, expr) {
+    doM (env,
+      genNewLabel >>
+      [genCode, expr] >>
+      setLastLabel
+    )
+  }
+
+  fun genCode (env, expr) {
+    doM (env,
+      case expr of
+        Assn (r, v) ->
+          [compile, r] >>
+          [compile, v] >>
+          [addCode, STI]
+      | Seq (exp1, exp2) ->
+          [compile, exp1] >>
+          [genCode, exp2]
+      | Skip ->
+          id
+      | Read (x) ->
+          [addCode, READ] >>
+          [view, "compEnv", [lookupVar, x]] >>= fun (v) {
+          [addCode, ST (v)] }
+      | Write (exp) ->
+          [compile, exp] >>
+          [addCode, WRITE]
+      | If (cond, tbr, ebr) ->
+          [withNewLabel, fun (lbl) {
+            [compile, cond] >>
+            [addCode, CJMP (Z, lbl)] >>
+            [genCode, tbr] >>
+            ((fun (lbl2) { [addCode, JMP (lbl2)] }) =<< getLastLabel) >>
+            [addCode, LABEL (lbl)] >>
+            [genCode, ebr]
+          }]
+      | While (cond, body) ->
+          [withNewLabel, fun (lbl) {
+            [addCode, LABEL (lbl)] >>
+            [compile, cond] >>
+            ((fun (lbl2) { [addCode, CJMP (Z, lbl2)] }) =<< getLastLabel) >>
+            [withLabel, lbl, [genCode, body]] >>
+            [addCode, JMP (lbl)]
+          }]
+      | DoWhile (body, cond) ->
+          [withNewLabel, fun (lbl) {
+            [addCode, LABEL (lbl)] >>
+            [compile, body] >>
+            [compile, cond] >>
+            [addCode, CJMP (NZ, lbl)]
+          }]
+      | Var (x) ->
+          [view, "compEnv", [lookupVar, x]] >>= fun (v) {
+          [addCode, LD (v)] }
+      | Ref (x) ->
+          [view, "compEnv", [lookupVar, x]] >>= fun (r) {
+          [addCode, LDA (r)] }
+      | Const (num) ->
+          [addCode, CONST (num)]
+      | Binop (op, l, r) ->
+          [compile, l] >>
+          [compile, r] >>
+          [addCode, BINOP (op)]
+      | Scope (defs, exp) ->
+          [from, "compEnv",
+            beginScope >>
+            traverse (
+              fun (def) {
+                case def of
+                  Var (names) ->
+                    [addVars, names] >>
+                    [view, "all", isGlobal] >>=
+                    [bool,
+                      traverse (
+                        fun (name) { [return, [addCode, GLOBAL (name)]] },
+                        names),
+                      [return, {}]]
+                | Fun (name, args, body) ->
+                    [genFunLabel, name] >>= fun (lbl) {
+                    [addFun, name, lbl, args.size] >>
+                    [return, {[on, "compEnv", [rememberFun, lbl, args, body]]}] }
+                esac
+              },
+              defs)] >>
+          [fmap, flatten] >>= fun (init) {
+          foldl (infix >>, id, init) >>
+          [compile, exp] >>
+          [view, "compEnv", isGlobal] >>
+          [into, "all", [bool,
+            [addCode, END],
+            id]] >>
+          [from, "compEnv", getFuns] >>= fun (fs) {
+          traverse_ (
+            fun (Fun (lbl, args, body, state)) {
+              [from, "codeBuf", fun (buf) { [emptyBuffer (), buf] }] >>= fun (savedCodeBuf) {
+              [on, "compEnv", [beginFun, state]] >>
+              [on, "compEnv", [addArgs, args]] >>
+              [compile, body] >>
+              [view, "compEnv", getLocals] >>= fun (locsAmt) {
+              [from, "codeBuf", fun (buf) { [savedCodeBuf, buf] }] >>= fun (funCodeBuf) {
+              [addCode, LABEL (lbl)] >>
+              [addCode, BEGIN (lbl, args.size, locsAmt)] >>
+              [addCode, funCodeBuf] >>
+              [addCode, END]
+              } } }
+            },
+            fs) >>
+          [on, "compEnv",
+            endScope
+          ] } }
+      | Call (name, exps) ->
+          traverse_ (compile . ap, exps) >>
+          [view, "compEnv", [lookupFun, name]] >>= fun (Fun (lbl, nargs)) {
+          if nargs == exps.size
+          then [addCode, CALL (lbl, nargs)]
+          else const (error (sprintf ("amount of arguments of function %s mismatch (expected: %d, actual: %d)", name.string, nargs, exps.size), getLoc (name)))
+          fi }
+      | Ignore (exp) ->
+          [compile, exp] >>
+          [addCode, DROP]
+      esac
+    )
+  }
+
+  fun mainization (stmt) {
     case stmt of
-      Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 ->  failure ("compileSM not implemented\n")
+      Scope (defs, expr) -> Scope (Fun ("__main__", {}, expr) : defs, Call ("__main__", {}))
+    | _ -> Scope ({Fun ("__main__", {}, stmt)}, Call ("__main__", {}))
     esac
   }
 
-  case initCompEnv ().genLabel of
-    [endLab, env] ->
-       case compile (endLab, env, stmt) of
-         [endLabUsed, _, code] -> getBuffer $ code <+> label (endLab, endLabUsed)
-       esac
-  esac
+  gets (
+    compile (
+      createData ([
+        "compEnv", initCompEnv (),
+        "labels", {},
+        "codeBuf", emptyBuffer ()
+      ]),
+      mainization (stmt)),
+    "codeBuf",
+    getBuffer)
 }
-

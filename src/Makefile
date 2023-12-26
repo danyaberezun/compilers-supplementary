@@ -13,11 +13,11 @@ Parser.o: Lexer.o
 
 State.o: Lexer.o Parser.o
 
-Expr.o: State.o 
+Expr.o: State.o Utils.o 
 
-SM.o: State.o World.o Expr.o Parser.o Lexer.o
+SM.o: State.o World.o Expr.o Parser.o Lexer.o Utils.o
 
-X86.o: SM.o Manifest.o
+X86.o: SM.o Manifest.o Utils.o
 
 %.o: %.lama
 	$(LAMAC) -I . -c $<
