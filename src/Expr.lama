@@ -2,12 +2,15 @@
 
 import List;
 import Array;
+import Collection;
 import State;
 import World;
 import Lexer;
 import Parser;
 import Fun;
+import Utils;
 import Builtins;
+import Memory;
 
 -- As association map which maps "\otimes" into "\oplus"
 var ops = {
@@ -44,74 +47,157 @@ public fun evalOp (op, l, r) {
 --        Set     (string, expr)       |
 --        Seq     (expr, expr)         |
 --        Skip                         |
---        if      (expr, expr, expr)   |
+--        If      (expr, expr, expr)   |
 --        While   (expr, expr)         |
 --        DoWhile (expr, expr)         |
 --        Var     (string)             |
 --        Ref     (string)             |
 --        Const   (int)                |
 --        Binop   (string, expr, expr) |
+--        Scope   (def list, expr)     |
 --        Call    (string, expr list)  |
 --        Ignore  (expr)               |
 --        String  (string)             |
 --        Array   (expr list)          |
 --        Sexp    (string, expr list)  |
 --        Elem    (expr, expr)         |
---        ElemRef (expr, expr)         |
---        Builtin (string, expr list)
+--        ElemRef (expr, expr)
+--
+-- def = Var (string list)               |
+--       Val (string list)               |
+--       Fun (string, string list, expr)
 
--- Helper function: checks that given name designates a regular variable in
--- a given state
-fun lookupVal (state, name) {
-  case state.lookup (name) of
-    x@Val (_) -> x
-  | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
-  esac
-}
-
--- Helper function: checks that given name designates a function in
--- a given state
-fun lookupFun (state, name) {
-  case state.lookup (name) of
-    x@Fun (_, _) -> x
-  | _            -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
-  esac
-}
-
--- Helper function: adds a bunch of regular variables current scope
-fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
-}
-
--- Helper function: adds a function in current scope
-fun addFunction (state, name, args, body) {
-  state.addName (name, Fun (args, body))
-}
-                                        
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
-fun evalList (c, exprs) {
-  case foldl (fun ([c, vals], e) {
-                case eval (c, e) of
-                  [c, v] -> [c, v : vals]
-                esac
-              },
-              [c, {}],
-              exprs) of
-    [c, vals] -> [c, reverse (vals)]
-  esac
-}
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
-}
+fun eval (c, expr) {
+  fun gcCheckAndRun () {
+    gcCheckMemory () >>= fun (okMemory) {
+    if okMemory
+    then id
+    else getAllValues () >>= fun (scopesLocs) {
+         gcRun (scopesLocs) >>
+         gcUpdateBorder (fun (border) { border + 10 })}
+    fi }
+  }
 
+  doM (c,
+    gcCheckAndRun () >>
+    case expr of
+      Assn (r, v) ->
+        traverse (eval.ap, {r, v}) >>= fun ({rl, vv}) {
+        set (rl, vv) >>
+        return (vv) }
+    | Set (x, v) ->
+        [eval, v] >>= fun (vv) {
+        allocate (vv) >>= fun (vl) {
+        (x <- vl) >>
+        return (vv) } }
+    | Seq (exp1, exp2) ->
+        [eval, exp1].void >>
+        [eval, exp2]
+    | Skip ->
+        return (0)
+    | If (cond, tbr, ebr) ->
+        [eval, cond] >>= fun (v) {
+        if v != 0
+        then [eval, tbr]
+        else [eval, ebr]
+        fi }
+    | While (cond, body) ->
+        [eval, cond] >>= fun (v) {
+        if v != 0
+        then [eval, body].void >>
+             [eval, expr]
+        else return (0)
+        fi }
+    | DoWhile (body, cond) ->
+        [eval, body].void >>
+        [eval, cond] >>= fun (v) {
+        if v != 0
+        then [eval, expr]
+        else return (0)
+        fi }
+    | Var (name) ->
+        lookupVal (name) >>= fun (l) {
+        get (l) }
+    | Ref (name) ->
+        lookupVar (name)
+    | Const (num) ->
+        return (num)
+    | Binop (op, l, r) ->
+        traverse (eval.ap, {l, r}) >>= fun ({lv, rv}) {
+        return (evalOp (op, lv, rv)) }
+    | Scope (defs, exp) ->
+        enterScope () >>
+        traverse_ (
+          fun (def) {
+            case def of
+              Var (names) ->
+                replicateM (names.size, allocate ()) >>= fun (locs) {
+                addVars (zip (names, locs)) }
+            | Val (names) ->
+                addVals (zip (names, replicate (names.size, -1)))
+            | Fun (n, as, b) ->
+                addFun (n, as, b)
+            esac
+          },
+          defs) >>
+        [eval, exp] >>
+        leaveScope ()
+    | Call (name, exps) ->
+        lookupFun (name) >>= fun ([args, body]) {
+        traverse (eval.ap, exps) >>= fun (params) {
+        case body of
+          External ->
+            traverse (getDeep, params) >>= fun (params_) {
+            evalBuiltin (name, params_) }
+        | _ ->
+            getState () >>= fun (savedState) {
+            enterFunction () >>
+            traverse (allocate, params) >>= fun (paramLocs) {
+            addVals (zip (args, paramLocs)) >>
+            getAllValues () >>= fun (avs) {
+            [eval, body] >>= fun (res) {
+            getGlobal () >>= fun (glbl) {
+            setState (savedState) >>
+            leaveFunction (glbl) >>
+            return (res) } } } } }
+        esac
+        } }
+    | Ignore (exp) ->
+        [eval, exp].void >>
+        return (0)
+    | String (s) ->
+        traverse (allocate, init (s.length, fun (i) { s [i] })) >>
+        [fmap, createArray]
+    | Array (exps) ->
+        traverse (fun (exp) { [eval, exp] >>= allocate }, exps) >>
+        [fmap, createArray]
+    | Sexp (name, exps) ->
+        traverse (fun (exp) { [eval, exp] >>= allocate }, exps) >>
+        [fmap, fun (elemLocs) { createSexp (name, elemLocs) }]
+    | Elem (arr, idx) ->
+        traverse (eval.ap, {arr, idx}) >>= fun ({a, i}) {
+        getElemLoc (a, i) >>=
+        get }
+    | ElemRef (arr, idx) ->
+        traverse (eval.ap, {arr, idx}) >>= fun ({a, i}) {
+        getElemLoc (a, i) }
+    esac
+  )
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
-  case eval ([emptyState ().enterScope.addName ("read",   Fun ({}, External))
-                                      .addName ("write",  Fun ({"a"}, External))
-                                      .addName ("length", Fun ({"a"}, External)), createWorld (input)], expr) of
-    [c, _] -> c.snd.getOutput
-  esac
+  getOutput (
+    eval (
+      createData ([
+        "state", emptyState ().enterScopePure
+                              .addNamePure ("read",   Fun ({}, External))
+                              .addNamePure ("write",  Fun ({"a"}, External))
+                              .addNamePure ("length", Fun ({"a"}, External)),
+        "memory", emptyMemory (50),
+        "world", createWorld (input)]),
+      expr))
 }
