@@ -13,15 +13,17 @@ World.o: Utils.o
 
 Memory.o: Utils.o
 
+Cache.o: Utils.o
+
 Parser.o: Lexer.o
 
 Builtins.o: World.o Utils.o
 
 State.o: Lexer.o Parser.o Utils.o
 
-Expr.o: State.o Memory.o Builtins.o Utils.o
+Expr.o: State.o Memory.o Cache.o Builtins.o Utils.o
 
-SM.o: State.o Memory.o World.o Expr.o Parser.o Lexer.o Builtins.o Utils.o
+SM.o: State.o Memory.o Cache.o World.o Expr.o Parser.o Lexer.o Builtins.o Utils.o
 
 X86.o: SM.o Manifest.o Utils.o
 
