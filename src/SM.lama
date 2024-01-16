@@ -9,6 +9,7 @@ import Collection;
 import World;
 import State;
 import Memory;
+import Cache;
 import Parser;
 import Lexer;
 import Expr;
@@ -40,8 +41,10 @@ public fun showSMInsn (i) {
   | CJMP   (NZ, l)   -> sprintf ("CJMP_MZ %s", l)
   | CALL   (f, n)    -> sprintf ("CALL %s, %d", f, n)
   | BEGIN  (f, a, l) -> sprintf ("BEGIN %s, %d, %d", f, a, l)
+  | PBEGIN (f, a, l) -> sprintf ("PBEGIN %s, %d, %d", f, a, l)
   | GLOBAL (x)       -> sprintf ("GLOBAL %s", x)
   | END              -> sprintf ("END")
+  | PEND   (f)       -> sprintf ("PEND %s", f)
   | DUP              -> "DUP"
   | DROP             -> "DROP"
   | STRING (s)       -> sprintf ("STRING ""%s""", s)
@@ -65,8 +68,10 @@ fun isSMInsn (i) {
   | CJMP   (_, _)    -> true
   | CALL   (_, _)    -> true
   | BEGIN  (_, _, _) -> true
+  | PBEGIN (_, _, _) -> true
   | GLOBAL (_)       -> true
   | END              -> true
+  | PEND   (_)       -> true
   | DUP              -> true
   | DROP             -> true
   | STRING (_)       -> true
@@ -240,6 +245,19 @@ fun eval (env, world, insns) {
           createLocal (a, l) >>= fun ([args, locs]) {
           setState (args, locs) >>
           return (insns) }
+      | PBEGIN (n, a, l) ->
+          createLocal (a, l) >>= fun ([args, locs]) {
+          traverse (get, arrayList (args)) >>= fun (params) {
+          getCache (n : params) >>= fun (foundRes) {
+          case foundRes of
+            None ->
+              setState (args, locs) >>
+              return (insns)
+          | Some (res) ->
+              [on, "v_stack", cons (res)] >>
+              [from, "c_stack", split1] >>= fun ([_, _, insns]) {
+              return (insns) }
+          esac } } }
       | END ->
           [view, "c_stack", size] >>=
           [bool,
@@ -247,6 +265,14 @@ fun eval (env, world, insns) {
             setState (args, locs) >>
             return (insns) },
             return ({}) ]
+      | PEND (n) ->
+          getState () >>
+          [intoAll, fun ([args, _]) { traverse (get, arrayList (args)) }] >>= fun (params) {
+          [from, "c_stack", split1] >>= fun ([args, locs, insns]) {
+          setState (args, locs) >>
+          [view, "v_stack", hd] >>
+          [intoAll, fun (res) { setCache (n : params, res) }] >>
+          return (insns) } }
       | DUP ->
           [view, "v_stack", hd] >>
           [into, "v_stack", cons] >>
@@ -308,7 +334,7 @@ fun eval (env, world, insns) {
         esac
       })
     of [insns, glbs] ->
-      var memory = fullMemory (glbs.size, 50);
+      var memory = fullMemory (glbs.size, 50), cache = emptyCache ();
       globalMap := listMap (glbs.enumerate, compare);
       globalMapSize := glbs.size;
       getOutput (eval (
@@ -317,6 +343,7 @@ fun eval (env, world, insns) {
           "c_stack", {},
           "state",   [[], []],
           "memory",  memory,
+          "cache",   cache,
           "world",   world
         ]), insns))
   esac
@@ -593,6 +620,13 @@ public fun compileSM (stmt) {
     [on, "labels", tl]
   }
 
+  fun depure (body) {
+    case body of
+      Pure (body)   -> [body, true]
+    | Impure (body) -> [body, false]
+    esac
+  }
+
   fun compile (env, expr) {
     doM (env,
       genNewLabel () >>
@@ -693,6 +727,7 @@ public fun compileSM (stmt) {
           getFuns () >>= fun (fs) {
           traverse_ (
             fun (Fun (lbl, args, body, state)) {
+              case depure (body) of [body, isPure] ->
               changeCode (emptyCode ()) >>= fun (savedCode) {
               beginFun (state) >>
               addArgs (args) >>
@@ -700,9 +735,9 @@ public fun compileSM (stmt) {
               getLocals () >>= fun (locsAmt) {
               changeCode (savedCode) >>= fun (funCode) {
               addCode (LABEL (lbl)) >>
-              addCode (BEGIN (lbl, args.size, locsAmt)) >>
+              addCode (if isPure then PBEGIN (lbl, args.size, locsAmt) else BEGIN (lbl, args.size, locsAmt) fi) >>
               addCode (funCode) >>
-              addCode (END) } } }
+              addCode (if isPure then PEND (lbl) else END fi) } } } esac
             },
             fs) >>
           endScope () } }
@@ -735,8 +770,8 @@ public fun compileSM (stmt) {
 
   fun mainization (stmt) {
     case stmt of
-      Scope (defs, expr) -> Scope (Fun ("__main__", {}, expr) : defs, Call ("__main__", {}))
-    | _ -> Scope ({Fun ("__main__", {}, stmt)}, Call ("__main__", {}))
+      Scope (defs, expr) -> Scope (Fun ("__main__", {}, Impure (expr)) : defs, Call ("__main__", {}))
+    | _ -> Scope ({Fun ("__main__", {}, Impure (stmt))}, Call ("__main__", {}))
     esac
   }
 

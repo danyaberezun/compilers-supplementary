@@ -10,9 +10,9 @@ check: $(TESTS) expr_tests
 
 $(TESTS): %: %.lama
 	@echo $@
-	@ulimit -s -S 32768; cat $@.input | $(LAMAC) $@.lama -i > $@.log && diff $@.log orig/$@.log || echo ERROR in parser or interpreter
-	@ulimit -s -S 32768; cat $@.input | $(LAMAC) $@.lama -ds -s > $@.log && diff $@.log orig/$@.log || echo ERROR in SM-compiler or SM-interpreter
-	@$(LAMAC) $@.lama 2> /dev/null && cat $@.input | ./$@ > $@.log && diff $@.log orig/$@.log || echo ERROR in X86-compiler
+	@ulimit -s -S 32768; cat $@.input | $(LAMAC) $@.lama -i > $@.log && diff $@.log orig/$@.log
+	@ulimit -s -S 32768; cat $@.input | $(LAMAC) $@.lama -ds -s > $@.log && diff $@.log orig/$@.log
+	@$(LAMAC) $@.lama 2> /dev/null && cat $@.input | ./$@ > $@.log && diff $@.log orig/$@.log
 
 expr_tests:
 	make -C expressions
