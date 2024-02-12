@@ -1,11 +1,13 @@
 # Assignment 3: Parser
 
+
 **Repo structure**:
 * [`regression`](regression/) --- tests
 * [`src`](src/) contains sources of your compiler
 * [`runtime`](runtime/) contains your compiler runtime; for now, it contains just two builtin functions [`Lread`](runtime/runtime.c#L7) and [`Lwrite`](runtime/runtime.c#L3)
 
 Now our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
+
 * [old] (`-i` option) direct interpretation of `.lama` files
 * [old] (`-s` option) compilation to SM and SM program interpretation
 * [new] (`-o` option) compilation to X86 (via SM)
