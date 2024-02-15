@@ -1,8 +1,8 @@
-FROM ocaml/opam:ubuntu-lts-ocaml-4.07
+FROM ocaml/opam:ubuntu-lts-ocaml-4.14
 COPY test.sh /test.sh
 USER root
-RUN apt-get update
 RUN dpkg --add-architecture i386
+RUN apt-get update
 RUN apt-get install -y software-properties-common gcc-multilib make m4
 RUN apt-get update --fix-missing -y
 RUN rm -rf /var/lib/apt/lists/*
