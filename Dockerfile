@@ -8,8 +8,7 @@ RUN apt-get update --fix-missing -y
 RUN rm -rf /var/lib/apt/lists/*
 USER opam
 RUN opam init --disable-sandboxing -y
-RUN opam --version
 RUN eval $(opam env)
-RUN opam pin add -y ostap https://github.com/dboulytchev/ostap.git\#memoCPS
+RUN opam pin add -y ostap.0.5
 RUN opam pin add -y lama https://github.com/JetBrains-Research/Lama.git
 RUN eval $(opam env)
