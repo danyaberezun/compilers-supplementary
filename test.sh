@@ -1,3 +1,3 @@
 #!/bin/bash
 
-cd Lama && make
+cd Lama && eval `opam config env` && make
