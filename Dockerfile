@@ -9,6 +9,6 @@ RUN rm -rf /var/lib/apt/lists/*
 USER opam
 RUN opam init --disable-sandboxing -y
 RUN eval $(opam env)
-RUN opam pin add -y ostap.0.5
+RUN opam pin add -y ostap 0.5
 RUN opam pin add -y lama https://github.com/JetBrains-Research/Lama.git
 RUN eval $(opam env)
