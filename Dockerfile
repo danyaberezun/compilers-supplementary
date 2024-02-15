@@ -10,5 +10,5 @@ USER opam
 RUN opam init --disable-sandboxing -y
 RUN eval $(opam env)
 RUN opam pin add -y ostap 0.5
-RUN opam pin add -y lama https://github.com/JetBrains-Research/Lama.git
+RUN opam pin add -y Lama https://github.com/JetBrains-Research/Lama.git\#1.10
 RUN eval $(opam env)
