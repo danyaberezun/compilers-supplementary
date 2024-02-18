@@ -8,9 +8,9 @@ check: $(TESTS)
 
 $(TESTS): %: %.lama
 	@echo $@
-	@LAMA_RUNTIME=../../runtime $(LAMAC) $< && cat $@.input | ./$@ > $@.log && diff $@.log orig/$@.log; true
-	@cat $@.input | $(LAMAC) -i $< > $@.log && diff $@.log orig/$@.log; true
-	@cat $@.input | $(LAMAC) -s $< > $@.log && diff $@.log orig/$@.log; true
+	@LAMA_RUNTIME=../../runtime $(LAMAC) $< && cat $@.input | ./$@ > $@.log && diff $@.log orig/$@.log
+	@cat $@.input | $(LAMAC) -i $< > $@.log && diff $@.log orig/$@.log
+	@cat $@.input | $(LAMAC) -s $< > $@.log && diff $@.log orig/$@.log
 
 clean:
 	rm -f *.log *.s *~
