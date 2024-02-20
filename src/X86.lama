@@ -62,6 +62,7 @@ fun insnString (insn) {
     | "&&"  -> "andl"
     | "!!"  -> "orl" 
     | "^"   -> "xorl"
+    | "test" -> "testl"
     | "cmp" -> "cmpl"
     esac
   }
@@ -285,6 +286,7 @@ fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      -- printf("Compiling instruction: %s\n", i.string);
       case i of
         READ ->
           case env.allocate of
@@ -294,9 +296,115 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
+
+      | ST (x) ->
+          case env.addGlobal(x).pop of
+	          [s, env] -> [env, code <+> move (s, env.loc (x))]
+	        esac
+
+      | LD (x) ->
+          case env.addGlobal(x).allocate of
+	          [s, env] -> [env, code <+> move (env.loc (x), s)]
+	        esac
+
+      | CONST (n) -> 
+          case allocate(env) of 
+            [s, env] -> [env, code <+> move(L(n), s)]
+          esac
+      
+      | LABEL (label) -> [env, code <+ Label(label)]
+      | JMP (label)   -> [env, code <+ Jmp(label)]
+      | CJMP (NZ, label) -> 
+          case env.pop of
+            [s, env] -> [env, code <+ cmpWithZeroInsn(s) <+ CJmp("ne", label)]
+          esac
+
+      | BINOP (op) -> compileBinop([env, code], op)
+      
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
-    }, [env, emptyBuffer ()], code)}
+    }, [env, emptyBuffer ()], code)
+}
+
+
+fun compileBinop([env, code], op) {
+  -- printf("Compiling binop: %s. env: %s. code: %s", s.string, env.string, code.string);
+  case pop2(env) of [b, a, env] -> [push(env, a),
+    case op of 
+      "+" -> code <+> compilePm(op, b, a)
+    | "-" -> code <+> compilePm(op, b, a)
+
+    | "*" -> code <+ Mov(a, eax) <+ Binop(op, b, eax) <+ Mov(eax, a)
+
+    | "/" -> code <+> compileDivMod(op, b, a)
+    | "%" -> code <+> compileDivMod(op, b, a)
+
+    | "!!" -> code <+> compileOr(b, a)
+    | "&&" -> code <+> compileAnd(b, a)
+
+    | "<"  -> code <+> compileCompare(op, b, a)
+    | ">"  -> code <+> compileCompare(op, b, a)
+    | "<=" -> code <+> compileCompare(op, b, a)
+    | ">=" -> code <+> compileCompare(op, b, a)
+    | "==" -> code <+> compileCompare(op, b, a)
+    | "!=" -> code <+> compileCompare(op, b, a)
+    | _ -> failure("codegeneration for BINOP %s is not yet implemented\n", op.string)
+    esac
+    ]
+  esac 
+}
+
+fun cmpWithZeroInsn(loc){
+  if isRegister(loc) then
+    Binop("test", loc, loc)
+  else 
+    Binop("cmp", L(0), loc)
+  fi
+}
+
+fun isRegister(loc){
+  case loc of
+    R(_) -> true
+  | _ -> false
+  esac
+}
+
+fun compileDivMod(op, b, a){
+  var code = emptyBuffer() <+ Mov(a, eax) <+ Cltd <+ IDiv(b);
+  case op of
+    "/" -> code <+ Mov(eax, a)
+  | "%" -> code <+ Mov(edx, a)
+  esac
+}
+
+fun compileOr(b, a){
+  if isRegister(a) !! isRegister(b) then 
+    emptyBuffer() <+ Binop("^", eax, eax) <+ Binop("!!", b, a) <+ Set("ne", "%al") <+ Mov(eax, a)
+  else
+    emptyBuffer() <+ Mov(a, eax) <+ Binop("!!",  b, eax) <+ Set("ne", "%al") <+ Binop("&&", L(1), eax) <+ Mov(eax, a)
+  fi
+}
+
+fun compileAnd(b, a){
+  emptyBuffer() <+ Binop("^", eax, eax) <+ cmpWithZeroInsn(a) <+ Set("ne", "%al") 
+        <+ cmpWithZeroInsn(b) <+ Set("ne", "%dl") <+ Binop("&&", edx, eax) <+ Mov(eax, a)
+}
+
+fun compilePm(op, b, a){
+  if isRegister(a) !! isRegister(b) then 
+    emptyBuffer() <+ Binop(op, b, a)
+  else
+    emptyBuffer() <+ Mov(a, eax) <+ Binop(op, b, eax) <+ Mov(eax, a)
+  fi
+}
+
+fun compileCompare(op, b, a) {
+  if isRegister(a) !! isRegister(b) then
+    emptyBuffer() <+ Binop("^", eax, eax) <+ Binop("cmp", b, a) <+ Set(suffix(op), "%al") <+ Mov(eax, a)
+  else
+    emptyBuffer() <+ Mov(a, eax) <+ Binop("cmp", b, eax) <+ Set(suffix(op), "%al") <+ Binop("&&", L(1), eax) <+ Mov(eax, a) 
+  fi
+}
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
