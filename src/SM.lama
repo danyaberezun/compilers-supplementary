@@ -52,31 +52,63 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+-- Returns either new configuration for program or new configuration and new program instructions that are left to execute
+-- Returns: c | [c, insns]
+fun evalSingleInsn (env, c@[stack, st, w], ins) {
+  -- printf("evalSingleInsn(): ins=%s, stack=%s\n", ins.string, stack.string);
+
+  case ins of
+    READ ->
+      case readWorld (w) of
+        [v, wld] -> [v : stack, st, wld]
+      esac
+  | WRITE -> [tl (stack), st, writeWorld (hd (stack), w)]
+  | BINOP (op) ->
+    case stack of 
+      y : x : rest -> [evalBinop (op, x, y) : rest, st, w]
+    | _ -> failure ("Stack does not have enough elements. Required >=2 for BINOP.")
+    esac
+  | LD (x) -> [st (x) : stack, st, w]
+  | ST (x) -> [tl (stack), st <- [x, hd (stack)], w]
+  | CONST (n) -> [n : stack, st, w]
+  | LABEL (s) -> c
+  | JMP (l) -> [c, fromLabel (env, l)]
+  | CJMP (cond, l) ->
+    case [cond, hd (stack)] of 
+      ["nz", 0] -> [tl (stack), st, w]
+    | ["z",  0] -> [[tl (stack), st, w], fromLabel (env, l)]
+    | ["nz", _] -> [[tl (stack), st, w], fromLabel (env, l)]
+    | ["z",  _] -> [tl (stack), st, w]
+    esac
+  esac
+}
+
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  foldl(fun (conf@[stack, st, w], ins) {
-    case ins of
-      READ ->
-        case readWorld(w) of
-          [v, wld] -> [v : stack, st, wld]
-        esac
-    | WRITE -> [tl(stack), st, writeWorld(hd(stack), w)]
-    | BINOP (op) ->
-      case stack of 
-        y : x : rest -> [evalBinop(op, x, y) : rest, st, w]
-      | _ -> failure("Stack does not have enough elements. Required >=2 for BINOP.")
+  -- printf("eval(): c=%s, insns=%s\n", c.string, insns.string);
+  -- fun getLength (arr) {
+  --   case arr of
+  --     a : rest -> (1 + getLength (rest))
+  --   | _ -> 0 
+  --   esac
+  -- }
+  -- printf("eval(): insnsLen=%s\n", insns.string);
+  
+  case insns of 
+    {} -> c
+  | ins : rest ->
+      case evalSingleInsn (env, c, ins) of
+        [c, prog] -> eval (env, c, prog)
+      | c         -> eval (env, c, rest)
       esac
-    | LD (x) -> [st(x) : stack, st, w]
-    | ST (x) -> [tl(stack), st <- [x, hd(stack)], w]
-    | CONST (n) -> [n : stack, st, w]
-    esac
-  }, c, insns)
-  -- failure ("SM eval not implemented\n")
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM (input, insns) {
+  -- printf("evalSM(): %s\n", insns.string);
+  
   eval (initEvalEnv (insns), [{}, emptyState, createWorld (input)], insns)[2].getOutput
 }
 
@@ -136,7 +168,7 @@ public fun compileSM (stmt) {
   }
 
   -- Generates SM code for a given statement
-  --    lab  --- a label th go to after the statement is executed
+  --    lab  --- a label to go to after the statement is executed
   --    env  --- compilation environment
   --    stmt --- a statement to generate SM code for
   -- Returns a triple:
@@ -152,14 +184,41 @@ public fun compileSM (stmt) {
     | Seq   (s1, s2) ->
         case env.genLabel of
           [s2Lab, env] ->
-             case compile (s2Lab, env, s1) of
-               [s2LabUsed, env, s1Code] ->
+              case compile (s2Lab, env, s1) of
+                [s2LabUsed, env, s1Code] ->
                   case compile (lab, env, s2) of
                     [labUsed, env, s2Code] -> [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
                   esac
-             esac
+              esac
         esac
-    | _              -> failure ("compileSM not implemented\n")
+    | If (e, s1, s2) -> 
+        case env.genLabel of
+          [conditionFalseLabel, env] ->
+            case compile (lab, env, s1) of
+              [_, env, trueBranchCode] ->
+                case compile (lab, env, s2) of
+                  [_, env, falseBranchCode] ->
+                    [true, env, compileExpr (e) <+ CJMP ("z", conditionFalseLabel) <+> trueBranchCode <+ JMP (lab) <+ LABEL (conditionFalseLabel) <+> falseBranchCode]
+                esac
+            esac
+        esac
+    | While (e, s) ->
+        case env.genLabels(2) of
+          [conditionLabel, bodyLabel, env] ->
+            case compile (conditionLabel, env, s) of
+              [_, env, bodyCode] ->
+                [false, env, singletonBuffer (JMP (conditionLabel)) <+ LABEL (bodyLabel) <+> bodyCode <+ LABEL (conditionLabel) <+> compileExpr (e) <+ CJMP ("nz", bodyLabel) ]
+            esac
+        esac
+    | DoWhile (s, e) ->
+        case env.genLabels(2) of
+          [bodyLabel, conditionLabel, env] -> 
+            case compile (conditionLabel, env, s) of
+              [_, env, bodyCode] ->
+                [false, env, singletonBuffer (LABEL (bodyLabel)) <+> bodyCode <+ LABEL (conditionLabel) <+> compileExpr (e) <+ CJMP ("nz", bodyLabel)]
+            esac
+        esac
+    | _ -> failure ("compileSM not implemented\n")
     esac
   }  
 
