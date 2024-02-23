@@ -59,12 +59,62 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, icfg, iinsns) {
+  -- returns next cfg and insns
+  fun next(cfg@[stack, state, world], insns) {
+    -- printf("stack: %s, world: %s, insns: %s\n", stack.string, world.string, insns.string);
+    case insns of
+      {} -> [cfg, insns]
+    | instr:insns -> fun evalNext(cfg){[cfg, insns]}
+          case instr of
+            READ -> case readWorld(world) of [n, world] -> evalNext([n:stack, state, world]) esac
+
+          | WRITE -> case stack of n:stack -> evalNext([stack, state, writeWorld(n, world)]) esac
+
+          -- arguments in binop taken  VVVVV  in reverse order 
+          | BINOP (s) -> case stack of 
+                b:a:stack -> evalNext([evalOp(s, a, b):stack, state, world])
+              | _ -> failure("No 2 vaues on stack for binop") esac
+
+          | LD (x) -> evalNext([state(x):stack, state, world])
+          | LDA(x) -> evalNext([x:stack, state, world])
+
+          | ST (x) -> case stack of 
+              a:stack -> evalNext([stack, state <- [x, a], world])
+            | _ -> failure("Empty stack, but trying load") esac
+          | STI -> case stack of 
+              v:x:stack -> evalNext([stack, state <- [x, v], world]) 
+            esac
+          | DROP -> case stack of n:stack -> evalNext([stack, state, world]) esac
+          | DUP ->  case stack of n:stack -> evalNext([n:n:stack, state, world]) esac
+
+          | CONST (n) -> evalNext([n:stack, state, world])
+
+          | JMP (lable) -> [cfg, fromLabel(env, lable)] 
+
+          | CJMP (NZ, lable) -> case stack of n:stack -> 
+                  if n != 0 then [[stack, state, world], fromLabel(env, lable)] 
+                            else evalNext([stack, state, world]) 
+                  fi
+              | _ -> failure("Empty stack, but trying to cjump")
+            esac
+
+          | LABEL (label) -> evalNext(cfg)
+          | _ -> failure("Unexpected stack machine instruction: %s", instr.string)
+        esac esac
+  }
+  var cfg = icfg;
+  var insns = iinsns;
+  while insns != {} do
+    case next(cfg, insns) of [newCfg, newInsns] -> 
+      cfg := newCfg; insns := newInsns esac
+  od;
+  cfg
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM (input, insns) {
+  -- printf("Running stack machine:\n%s\n", showSM(insns));
   eval (initEvalEnv (insns), [{}, emptyState, createWorld (input)], insns)[2].getOutput
 }
 
@@ -115,10 +165,40 @@ public fun compileSM (stmt) {
     | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
     | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 ->  failure ("compileSM not implemented\n")
+    | Ignore (s)        -> case compile (Nolab, env, s) of [_, env, sCode] -> 
+          [false, env, sCode <+ DROP]
+        esac
+    | Seq   (s1, s2) ->
+        case env.genLabel of
+          [s2Lab, env] ->
+             case compile (s2Lab, env, s1) of
+               [s2LabUsed, env, s1Code] ->
+                  case compile (lab, env, s2) of
+                    [labUsed, env, s2Code] -> [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
+                  esac
+             esac
+        esac
+    | Read   (x)        -> case compile(Nolab, env, x) of [_, env, xCode] -> 
+            [false, env, xCode <+ READ <+ STI]
+          esac
+    | Write  (n)        -> case compile(Nolab, env, n) of [_, env, nCode] -> 
+            [false, env, nCode <+ WRITE]
+          esac
+    | Assn   (x, e)     -> case compile(Nolab, env, x) of [_, env, xCode] -> 
+            case compile(Nolab, env, e) of [_, env, eCode] -> 
+              [false, env, xCode <+ DUP <+> eCode <+ STI ]
+            esac
+          esac
+    | Binop  (op, l, r) -> case compile(Nolab, env, l) of [_, env, lCode] -> 
+            case compile(Nolab, env, r) of [_, env, rCode] -> 
+              [false, env, lCode <+> rCode <+ BINOP (op)]
+            esac
+          esac
+    | exp                 ->  failure ("compileSM not implemented for expr: %s\n", exp.string)
     esac
   }
 
+  -- printf("Compiling stack machine code for:\n%s\n", stmt.string);
   case initCompEnv ().genLabel of
     [endLab, env] ->
        case compile (endLab, env, stmt) of
