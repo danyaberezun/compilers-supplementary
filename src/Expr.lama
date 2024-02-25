@@ -34,9 +34,22 @@ public fun evalOp (op, l, r) {
   esac
 }
 
+-- Evaluates a list of expressions, properly threading a configurations.
+-- Returns the final configuration and the list of values
+fun evalList (c, exprs) {
+  case foldl (fun ([c, vals], e) {
+                case eval (c, e) of
+                  [c, v] -> [c, v : vals]
+                esac
+              },
+              [c, {}],
+              exprs) of
+    [c, vals] -> [c, reverse (vals)]
+  esac
+}
 -- Evaluates an expression "expr" in a configuration "c".
 -- A configuration is a pair of a state "s" and a world "w".
--- Returns a final configuration (if any)
+-- Returns a final configuration (if any) and value fo expression
 --
 -- A expression is represented by a data structure of the following shape:
 --
@@ -59,50 +72,111 @@ public fun evalOp (op, l, r) {
 --        ElemRef (expr, expr)         |
 --        Builtin (string, expr list)
 
--- Helper function: checks that given name designates a regular variable in
--- a given state
-fun lookupVal (state, name) {
-  case state.lookup (name) of
-    x@Val (_) -> x
-  | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
-  esac
-}
-
--- Helper function: checks that given name designates a function in
--- a given state
-fun lookupFun (state, name) {
-  case state.lookup (name) of
-    x@Fun (_, _) -> x
-  | _            -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
-  esac
-}
-
 -- Helper function: adds a bunch of regular variables current scope
 fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
+  foldl (fun (s, name) {s.addName (name, Var (0))}, state, names)
 }
 
 -- Helper function: adds a function in current scope
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
--- Evaluates a list of expressions, properly threading a configurations.
--- Returns the final configuration and the list of values
-fun evalList (c, exprs) {
-  case foldl (fun ([c, vals], e) {
-                case eval (c, e) of
-                  [c, vl] -> [c, vl : vals]
-                esac
-              },
-              [c, {}],
-              exprs) of
-    [c, vals] -> [c, reverse (vals)]
-  esac
+
+public fun valDecls (decls) {
+  -- TODO: process Val correctly
+  flatten (map (fun (x) { case x of Fun (x, _, _) -> {} | Var (x) -> x esac }, decls))
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun addFunctions (st, decl) {
+  foldl (fun (st, el) { case el of Fun (name, args, body) -> addFunction (st, name, args, body) | Var (x) -> st esac }, st, decl)
+}
+
+fun eval (c@[st, w], expr) {
+  -- print (expr. toString)
+  case expr of
+    Assn (dest, src) ->
+    case evalList (c, {dest, src}) of
+      [[st, w], {Kref (dest), src}] -> [[st <- [dest, src], w], src]
+    | [[st, w], {Kref (arr, pos), src}] ->
+        arr[pos] := src;
+        [[st, w], src]
+    esac
+  | Set (dest, expr) ->
+    case eval (c, expr) of
+      [[st, w], v] -> [[st <- [dest, v], w], v]
+    esac
+  | Seq (stmt1, stmt2) ->
+    case evalList (c, {stmt1, stmt2}) of
+      [c, {_, v}] -> [c, v]
+    esac
+  | Skip -> [c, Kbot]
+  | If (p, pb, nb) ->
+    case eval (c, p) of
+      [c, v] -> eval (c, if v == 0 then nb else pb fi)
+    esac
+  | While (p, b) ->
+    case eval (c, p) of
+      [c, 0] -> [c, Kbot]
+    | [c, _] ->
+        case eval (c, b) of
+          [c, _] -> eval (c, While (p, b))
+        esac
+    esac
+  | DoWhile (b, p) -> eval (c, Seq (b, While (p, b)))
+  | Var (s) -> [[st, w], lookup (st, s)]
+  | Ref (x) -> [c, Kref (x)]
+  | Const (x) -> [c, x]
+  | String (s) -> [c, s]
+  | Elem (arr, pos) ->
+    case evalList (c, {arr, pos}) of
+      [c, {Ksexp (stag, args), pos}] -> [c, args[pos]]
+    | [c, {arr, pos}] -> [c, arr[pos]]
+    esac
+  | ElemRef (arr, pos) ->
+    case evalList (c, {arr, pos}) of
+      [c, {arr, pos}] -> [c, Kref (arr, pos)]
+    esac
+  | Array (arr) ->
+    case evalList (c, arr) of
+      [c, arr] -> [c, listArray (arr)]
+    esac
+  | Sexp (stag, args) ->
+    case evalList (c, args) of
+      [c, args] -> [c, Ksexp (stag, listArray (args))]
+    esac
+  | Binop (op, e1, e2) ->
+    case evalList (c, {e1, e2}) of
+      [c, {v1, v2}] -> [c, evalOp (op, v1, v2)]
+    esac
+  | Ignore (e) ->
+    case eval (c, e) of
+      [c, _] -> [c, Kbot]
+    esac
+  | Scope (decl, body) ->
+    case addFunctions (addNames (enterScope (st), valDecls (decl)), decl) of
+      st ->
+        case eval ([st, w], body) of
+          [[st, w], v] -> [[leaveScope (st), w], v]
+        esac
+    esac
+  | Call (fname, args) ->
+    case evalList (c, args) of
+      [[st, w], args] ->
+        case lookup (st, fname) of
+          Fun (arg_names, External) ->
+            case evalBuiltin (fname, args, w) of
+              [v, w] -> [[st, w], v]
+            esac
+        | Fun (arg_names, body) ->
+            case foldl (fun (acc, [name, v]) { addName (acc, name, v) }, enterFunction (st), zip (arg_names, args)) of
+              f_st ->
+                case eval ([f_st, w], body) of
+                  [[f_st, w], v] -> [[leaveFunction (st, getGlobal (f_st)), w], v]
+                esac
+            esac
+        esac
+    esac
+  esac
 }
 
 
