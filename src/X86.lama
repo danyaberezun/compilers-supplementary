@@ -24,6 +24,8 @@ var ebx = R (0),
     ebp = R (6),
     esp = R (7);
 
+  var dl = "%dl";
+
 -- We need to know the word size to calculate offsets correctly
 var wordSize = 4;
 
@@ -321,6 +323,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -347,6 +350,68 @@ fun suffix (op) {
   esac
 }
 
+
+fun compileArithOp([op, x, y, env, code]) {
+  if (stackOpnd(x)) then 
+    [env.push(x), code <+ Mov (x, eax) <+ Binop (op, y, eax) <+ Mov(eax, x)]
+  else 
+    [env.push(x), code <+ Binop (op, y, x)]
+  fi 
+}
+
+
+fun compileDivOp([op, x, y, env, code]) {
+  var rreg = case op of 
+                "/" -> eax
+              | "%" -> edx
+             esac;
+  [env.push(y), code <+ Mov(x, eax) <+ Cltd <+ IDiv(y) <+ Mov(rreg, y)]
+}
+
+
+fun compileCmpOp([op, x, y, env, code]) {
+  if (stackOpnd(x) && stackOpnd(y)) then 
+    [env.push(y), code <+ Binop("^", edx, edx) <+ Mov(x, eax) <+ Binop("cmp", y, eax) <+ Set(suffix(op), dl) <+ Mov(edx, y)]
+  else 
+    [env.push(y), code <+ Binop("^", edx, edx) <+ Binop("cmp", y, x) <+ Set(suffix(op), dl) <+ Mov(edx, y)]
+  fi
+}
+
+
+fun compileLogicalOp([op, x, y, env, code]) {
+  case compileIntToBool(x, env, code) of 
+    [env, code] -> case compileIntToBool(y, env, code) of 
+                    [env, code] -> case env.pop2 of 
+                                    [by, bx, env] -> compileArithOp([op, bx, by, env, code])
+                                   esac
+                   esac 
+  esac
+}
+
+
+fun compileIntToBool(int, env, code) {
+  [env.push(int), code <+ Binop("^", edx, edx) <+ Binop("cmp", L(0), int) <+ Set(suffix("!="), dl) <+ Mov(edx, int)]
+}
+
+
+fun compileBinop(args) {
+  case args[0] of 
+      "+"  -> compileArithOp(args)
+    | "-"  -> compileArithOp(args)
+    | "*"  -> compileArithOp(args)
+    | "!!" -> compileLogicalOp(args)
+    | "&&" -> compileLogicalOp(args)
+    | "/"  -> compileDivOp(args)
+    | "%"  -> compileDivOp(args)
+    | "<"  -> compileCmpOp(args)
+    | "<=" -> compileCmpOp(args)
+    | "==" -> compileCmpOp(args)
+    | "!=" -> compileCmpOp(args)
+    | ">=" -> compileCmpOp(args)
+    | ">"  -> compileCmpOp(args)
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -356,12 +421,50 @@ fun compile (env, code) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
         case i of
           READ ->
-            case env.allocate of
+            case allocate(env) of
               [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
             esac             
         | WRITE ->
-            case env.pop of
+            case pop(env) of
               [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+            esac
+        | LD (x) ->
+            case allocate(addGlobal(env, x)) of
+              [s, env] -> [env, code <+> move (loc (env, x), s)]
+            esac
+        | ST (x) ->
+            case pop(addGlobal (env, x)) of
+              [s, env] -> [env, code <+> move (s, loc (env, x))]
+            esac
+        | BINOP (op) -> 
+            case pop2(env) of 
+              [y, x, env] -> compileBinop([op, x, y, env, code])
+            esac
+        | CONST (x) -> 
+            case allocate(env) of 
+              [s, env] -> [env, code <+> move(L(x), s)]
+            esac
+        | LABEL (l) -> [if isBarrier(env) then retrieveStack(env, l) else env fi, code <+ Label(l)]
+        | JMP (l) -> [setBarrier(setStack(env, l)), code <+ Jmp(l)]
+        | CJMP (c, l) -> 
+            case pop(env) of 
+              [s, env] -> [setBarrier(setStack(env, l)), code <+ Binop("cmp", L(0), s) <+ CJmp(c, l)]
+            esac
+        | LDA (x) -> 
+            case allocate(addGlobal(env, x)) of 
+              [s, env] -> [env, code <+ Lea (loc(env, x), eax) <+ Mov(eax, s)]
+            esac
+        | STI -> 
+            case pop2(env) of 
+              [v, x, env] -> [push(env, v), code <+> move(v, I(0, x))] 
+            esac
+        | DROP -> [pop(env)[1], code]
+        | DUP -> 
+            case peek(env) of 
+              v -> 
+                case allocate(env) of 
+                  [s, env] -> [env, code <+> move(v, s)]
+                esac
             esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
