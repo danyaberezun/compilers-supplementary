@@ -6,14 +6,11 @@ import List;
 import Buffer;
 import Fun;
 
--- Assembler language interface
--- The registers: 
+var wordSizeBytes = 4;
+
+-- x86 registers 
 var regs = ["%ebx", "%ecx", "%esi", "%edi", "%eax", "%edx", "%ebp", "%esp"];
-
--- We can not freely operate with all register; only with 4 by now
-var nRegs = regs.length - 5;
-
--- For convenience we define the following synonyms for the registers: 
+-- Named synonyms for x86 registers
 var ebx = R (0),
     ecx = R (1),
     esi = R (2),
@@ -23,8 +20,8 @@ var ebx = R (0),
     ebp = R (6),
     esp = R (7);
 
--- We need to know the word size to calculate offsets correctly
-var wordSize = 4;
+-- We can freely operate with only this many registers
+var nRegs = 4;
 
 -- We need to distinguish the following operand types: 
 --    R (int)    -- hard register                    
@@ -47,7 +44,6 @@ var wordSize = 4;
 --   Ret                        -- returns from a function
 --   Meta  (string)             -- metainformation (declarations, etc.)
                                                                
--- Machine instruction printer
 fun insnString (insn) {
   
   fun binopString (op) {
@@ -59,13 +55,14 @@ fun insnString (insn) {
     | "!!"  -> "orl" 
     | "^"   -> "xorl"
     | "cmp" -> "cmpl"
+    | "test" -> "testl"
     esac
   }
 
   fun opndString (opnd) {
     case opnd of
       R (i) -> regs [i]
-    | S (i) -> sprintf ("-%d(%%ebp)", (i+1) * wordSize)
+    | S (i) -> sprintf ("-%d(%%ebp)", (i+1) * wordSizeBytes)
     | M (x) -> x
     | L (i) -> sprintf ("$%d", i)
     esac
@@ -85,8 +82,8 @@ fun insnString (insn) {
   esac
 }
 
--- Environment for symbolic interpreter
--- An environment holds
+-- Environment for symbolic interpreter.
+-- An environment holds:
 --    a symbolic stack
 --    a maximal stack depth reached so far
 --    a set of global variable names
@@ -108,10 +105,10 @@ fun makeEnv (stack, stackSlots, globals) {
   fun allocate () {
     case 
       case stack of
-        {}        -> [ebx, 0]
+        {}        -> [R (0), 0]
+      | R (n) : _ -> if n+1 < nRegs then [R (n+1), stackSlots] else [S (0), 1] fi
       | S (n) : _ -> [S (n+1), n+2]
-      | R (n) : _ -> if n < nRegs then [R (n+1), stackSlots] else [S (0), 1] fi
-      | _         -> [S (0), 1]
+      | _         -> failure ("Invalid stack value!")
       esac
     of [x, n] -> [x, makeEnv (x : stack, if n > stackSlots then n else stackSlots fi, globals)]esac
   }
@@ -199,7 +196,8 @@ fun getStackSize (env) {
 
 -- Creates an initial environment
 fun initEnv () {
-  makeEnv (0, 0, emptySet (compare))
+  -- printf("DEBUG X86.initEnv\n");
+  makeEnv ({}, 0, emptySet (compare))
 }
 
 -- Codegeneration helper functions
@@ -222,7 +220,7 @@ fun dataDef (name) {
 fun prologue (size) {
   singletonBuffer (Push (ebp)) <+
   Mov   (esp, ebp) <+
-  Binop ("-", L (wordSize*size), esp)
+  Binop ("-", L (wordSizeBytes*size), esp)
 }
 
 -- Generates function epilogue
@@ -275,27 +273,171 @@ fun suffix (op) {
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  foldl (
+  foldr (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of
         READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+          -- printf("DEBUG X86.compile READ\n");
+          case env.allocate of [s, env] ->
+            [env, code <+ Call ("Lread") <+ Mov (eax, s)]
           esac             
       | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+          -- printf("DEBUG X86.compile WRITE env=%s\n", string (env));
+          case env.pop of [s, env] -> 
+            -- printf("DEBUG X86.compile WRITE case!\n");
+            [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+          esac
+      | BINOP (op) ->
+          -- printf("DEBUG X86.compile BINOP\n");
+          case env.pop2 of [rhs, lhs, env] ->
+            case env.allocate of [res, env] ->
+              var newCode = case op of
+                "+" ->
+                  -- printf("DEBUG X86.compile BINOP +\n");
+                  code <+ 
+                  Mov (lhs, eax) <+
+                  Binop ("+", rhs, eax) <+
+                  Mov (eax, res)
+              | "-" ->
+                  -- printf("DEBUG X86.compile BINOP -\n");
+                  code <+ 
+                  Mov (lhs, eax) <+
+                  Binop ("-", rhs, eax) <+
+                  Mov (eax, res)
+              | "*" ->
+                  -- printf("DEBUG X86.compile BINOP *\n");
+                  code <+ 
+                  Mov (rhs, eax) <+
+                  Binop ("*", lhs, eax) <+
+                  Mov (eax, res)
+              | "/" ->
+                  code <+
+                  Push (edx) <+
+                  Mov (lhs, eax) <+
+                  Mov (L (0), edx) <+
+                  IDiv (rhs) <+
+                  Mov (eax, res) <+
+                  Pop (edx)
+              | "%" ->
+                  code <+
+                  Push (edx) <+
+                  Mov (lhs, eax) <+
+                  Mov (L (0), edx) <+
+                  IDiv (rhs) <+
+                  Mov (edx, res) <+
+                  Pop (edx)
+              | "==" ->
+                  code <+
+                  Binop ("cmp", rhs, lhs) <+
+                  Mov (L (0), eax) <+
+                  Set ("e", "%al") <+
+                  Mov (eax, res)
+              | "!=" ->
+                  code <+
+                  Binop ("cmp", rhs, lhs) <+
+                  Mov (L (0), eax) <+
+                  Set ("ne", "%al") <+
+                  Mov (eax, res)
+              | "<" ->
+                  code <+
+                  Binop ("cmp", rhs, lhs) <+
+                  Mov (L (0), eax) <+
+                  Set ("l", "%al") <+
+                  Mov (eax, res)
+              | "<=" ->
+                  code <+
+                  Binop ("cmp", rhs, lhs) <+
+                  Mov (L (0), eax) <+
+                  Set ("le", "%al") <+
+                  Mov (eax, res)
+              | ">" ->
+                  code <+
+                  Binop ("cmp", rhs, lhs) <+
+                  Mov (L (0), eax) <+
+                  Set ("g", "%al") <+
+                  Mov (eax, res)
+              | ">=" ->
+                  code <+
+                  Binop ("cmp", rhs, lhs) <+
+                  Mov (L (0), eax) <+
+                  Set ("ge", "%al") <+
+                  Mov (eax, res)
+              | "&&" -> case lhs of
+                  L (0) ->
+                    code <+
+                    Mov (L (0), res)
+                | L (n) -> case rhs of
+                    L (0) -> code <+ Mov (L(0), res)
+                  | L (n) -> code <+ Mov (L(1), res)
+                  | _ ->
+                    code <+ 
+                    Binop ("test", rhs, rhs) <+
+                    Mov (L (0), eax) <+
+                    Set ("ne", "%al") <+
+                    Mov (eax, res)
+                  esac
+                | _ -> 
+                  code <+
+                  Binop ("test", lhs, lhs) <+
+                  Mov (L (0), eax) <+
+                  Set ("ne", "%al") <+
+                  Push (eax) <+
+                  Binop ("test", rhs, rhs) <+
+                  Mov (L (0), eax) <+
+                  Set ("ne", "%al") <+
+                  Mov (eax, res) <+
+                  Pop (eax) <+
+                  Binop ("&&", eax, res)
+                esac
+              | "!!" -> case lhs of 
+                  L (0) -> case rhs of
+                    L (0) -> code <+ Mov (L (0), res)
+                  | L (n) -> code <+ Mov (L (1), res)
+                  | _ ->
+                    code <+
+                    Binop ("test", rhs, rhs) <+
+                    Mov (L (0), eax) <+
+                    Set ("ne", "%al") <+
+                    Mov (eax, res)
+                  esac
+                | L (n) ->
+                    code <+ 
+                    Mov (L (1), res)
+                | _ -> 
+                  code <+
+                  Binop ("test", lhs, lhs) <+
+                  Mov (L (0), eax) <+
+                  Set ("ne", "%al") <+
+                  Push (eax) <+
+                  Binop ("test", rhs, rhs) <+
+                  Mov (L (0), eax) <+
+                  Set ("ne", "%al") <+
+                  Mov (eax, res) <+
+                  Pop (eax) <+
+                  Binop ("!!", eax, res)
+                esac
+              | _ -> failure("Invalid binop")
+              esac;
+              [env, newCode]
+            esac
           esac
       | LD (x) ->
-          case env.addGlobal (x).allocate of
-	    [s, env] -> [env, code <+> move (env.loc (x), s)]
-	  esac
+          -- printf("DEBUG X86.compile LD\n");
+          case env.addGlobal (x).allocate of [s, env] -> 
+            [env, code <+> move (env.loc (x), s)]
+          esac
       | ST (x) ->
-          case env.addGlobal (x).pop of
-	    [s, env] -> [env, code <+> move (s, env.loc (x))]
-	  esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+          -- printf("DEBUG X86.compile ST\n");
+          case env.addGlobal (x).pop of [s, env] ->
+            [env, code <+> move (s, env.loc (x))]
+          esac
+      | CONST (n) ->
+          -- printf("DEBUG X86.compile CONST\n");
+          case env.push (L (n)) of env ->
+            [env, code]
+          esac
+      | _ -> failure ("Invalid SM instruction %s\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
 }
@@ -303,6 +445,8 @@ fun compile (env, code) {
 -- A top-level codegeneration function. Takes a stack machine program
 -- and returns x86 listing as a string
 public fun compileX86 (code) {
+  -- printf("DEBUG: X86.compileX86\n");
+  -- printf("Code = %s\n", string (code));
   case compile (initEnv (), code) of
     [env, code] ->
        map (insnString, 
