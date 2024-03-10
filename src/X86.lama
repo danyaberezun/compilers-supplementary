@@ -44,7 +44,8 @@ var nRegs = 4;
 --   Ret                        -- returns from a function
 --   Meta  (string)             -- metainformation (declarations, etc.)
                                                                
-fun insnString (insn) {
+-- Renders an x86 instruction to a string in assembly syntax.
+fun instructionToString (insn) {
   
   fun binopString (op) {
     case op of
@@ -82,6 +83,11 @@ fun insnString (insn) {
   esac
 }
 
+fun setZero (reg) {
+  -- Binop ("^", reg, reg)
+  Mov (L (0), reg)
+}
+
 -- Environment for symbolic interpreter.
 -- An environment holds:
 --    a symbolic stack
@@ -96,7 +102,7 @@ fun makeEnv (stack, stackSlots, globals) {
 
   -- Returns a string representation of the environment
   fun envString () {
-    sprintf ("Stack     : %s\nStackSlots: %d\nGlobals   : %s\n", stack.string, stackSlots, elements (globals).string)
+    sprintf ("Stack     : %s\nStackSlots: %d\nGlobals   : %s\n", string (stack), stackSlots, string (elements (globals)))
   }
   
   -- Allocates a new position on the symbolic stack;
@@ -144,9 +150,9 @@ fun makeEnv (stack, stackSlots, globals) {
     M (globalName (name))
   }
   
-  -- Gets a list of global variables from the environment
+  -- Return the list of global variables from the environment
   fun getGlobals () {
-    globals.elements
+    elements (globals)
   }
 
   -- Gets a maximal stack size from the environment
@@ -196,23 +202,13 @@ fun getStackSize (env) {
 
 -- Creates an initial environment
 fun initEnv () {
-  -- printf("DEBUG X86.initEnv\n");
   makeEnv ({}, 0, emptySet (compare))
 }
 
 -- Codegeneration helper functions
--- Generates code section
-fun codeSection (text) {
-  singletonBuffer (Meta ("\t.text\n")) <+> text
-}
-
--- Generates data section
-fun dataSection (text) {
-  singletonBuffer (Meta ("\t.data\n")) <+> text
-}
 
 -- Generates data definition
-fun dataDef (name) {
+fun globalIntDefinition (name) {
   Meta (sprintf ("%s:\t.int\t0\n", name))
 }
 
@@ -227,7 +223,7 @@ fun prologue (size) {
 fun epilogue () {
   singletonBuffer (Mov (ebp, esp)) <+
   Pop   (ebp) <+
-  Binop ("^", eax, eax) <+
+  setZero (eax) <+
   Ret
 }
 
@@ -249,7 +245,7 @@ fun memOpnd (opnd) {
 }
 
 -- Generates a move between locations, using
--- intermediate register if needed
+-- intermediate register, if needed.
 fun move (from, to) {
   if memOpnd (from) && memOpnd (to)
   then singletonBuffer (Mov (from, eax)) <+ Mov (eax, to)
@@ -257,208 +253,293 @@ fun move (from, to) {
   fi
 }
 
--- Gets a suffix for Set instruction from
--- source language comparison operator
-fun suffix (op) {
-  case op of
-    "<"  -> "l"
-  | "<=" -> "le"
-  | "==" -> "e"
+fun makeCompilerState (env, code) {
+  fun csAddX86Instruction (x86Instruction) {
+    makeCompilerState (env, code <+ x86Instruction)
+  }
+
+  fun csAllocate () {
+    case allocate (env) of [location, env] ->
+      [location, makeCompilerState (env, code)]
+    esac
+  }
+
+  fun csPush (y) {
+    makeCompilerState (push (env, y), code)
+  }
+
+  fun csPop () {
+    case pop (env) of [operand, env] ->
+    [operand, makeCompilerState (env, code)]
+    esac
+  }
+
+  fun csPop2 () {
+    case pop2 (env) of [rightOperand, leftOperand, env] ->
+    [rightOperand, leftOperand, makeCompilerState (env, code)]
+    esac
+  }
+
+  fun csGlobalVariable (variableIdentifier) {
+    var newEnv = addGlobal (env, variableIdentifier);
+    [loc (newEnv, variableIdentifier), makeCompilerState (newEnv, code)]
+  }
+
+  fun csAddX86Instructions (x86Instructions) {
+    makeCompilerState (env, code <+> x86Instructions)
+  }
+
+  [csAddX86Instruction, csAllocate, csPush, csPop, csPop2, csGlobalVariable, env, code, csAddX86Instructions]
+}
+
+fun csAddX86Instruction (compilerState, x86Instruction) {
+  compilerState [0] (x86Instruction)
+}
+
+fun csAllocate (compilerState) {
+  compilerState [1] ()
+}
+
+fun csPush (compilerState, y) {
+  compilerState [2] (y)
+}
+
+fun csPop (compilerState) {
+  compilerState [3] ()
+}
+
+fun csPop2 (compilerState) {
+  compilerState [4] ()
+}
+
+fun csGlobalVariable (compilerState, variableIdentifier) {
+  compilerState [5] (variableIdentifier)
+}
+
+fun csEnv (compilerState) {
+  compilerState [6]
+}
+
+fun csCode (compilerState) {
+  compilerState [7]
+}
+
+fun csAddX86Instructions (compilerState, x86Instructions) {
+  compilerState [8] (x86Instructions)
+}
+
+fun isSimpleBinopSMInstruction (binopSign) {
+  case binopSign of
+    "+" -> true
+  | "-" -> true
+  | "*" -> true
+  | _ -> false
+  esac
+}
+
+fun isIDivBinopSMInstruction (binopSign) {
+  case binopSign of
+    "/" -> true
+  | "%" -> true
+  | _ -> false
+  esac
+}
+
+fun isCmpBinopSMInstruction (binopSign) {
+  case binopSign of
+    "==" -> true
+  | "!=" -> true
+  | "<" -> true
+  | "<=" -> true
+  | ">" -> true
+  | ">=" -> true
+  | _ -> false
+  esac
+}
+
+fun getFlagsSuffix (binopSign) {
+  case binopSign of
+    "==" -> "e"
   | "!=" -> "ne"
+  | "<" -> "l"
+  | "<=" -> "le"
+  | ">" -> "g"
   | ">=" -> "ge"
-  | ">"  -> "g"
+  esac
+}
+
+fun evalBinop(binopSign, lhs, rhs) {
+  case binopSign of
+    "+" -> lhs + rhs
+  | "-" -> lhs - rhs
+  | "*" -> lhs * rhs
+  | "/" -> lhs / rhs
+  | "%" -> lhs % rhs
+  | "==" -> lhs == rhs
+  | "!=" -> lhs != rhs
+  | "<" -> lhs < rhs
+  | "<=" -> lhs <= rhs
+  | ">" -> lhs > rhs
+  | ">=" -> lhs >= rhs
+  | "&&" -> lhs && rhs
+  | "!!" -> lhs !! rhs
+  esac
+}
+
+fun compileLogicalBinopWithOneImmediate (compilerState, binopSign, operand, immediate) {
+  case binopSign of
+    "&&" ->
+      if immediate == 0 then
+        csPush (compilerState, L (0))
+      else
+        csPush (compilerState, operand)
+      fi
+  | "!!" ->
+      if immediate == 0 then
+        csPush (compilerState, operand)
+      else
+        csPush (compilerState, L (1))
+      fi
+  esac
+}
+
+fun compileBinopSMInstruction (compilerState, binopSign) {
+  case csPop2 (compilerState) of [rightOperand, leftOperand, compilerState] ->
+  if isIDivBinopSMInstruction (binopSign) then
+    var resultSource = case binopSign of
+      "/" -> eax
+    | "%" -> edx
+    esac;
+    compilerState := csAddX86Instruction (compilerState, Push (edx));
+    compilerState := csAddX86Instruction (compilerState, setZero (edx));
+    compilerState := csAddX86Instruction (compilerState, Mov (leftOperand, eax));
+    compilerState := csAddX86Instruction (compilerState, IDiv (rightOperand));
+    case csAllocate (compilerState) of [resultOperand, compilerState] ->
+      compilerState := csAddX86Instruction (compilerState, Mov (resultSource, resultOperand));
+      csAddX86Instruction (compilerState, Pop (edx))
+    esac
+  elif isCmpBinopSMInstruction (binopSign) then
+    compilerState := csAddX86Instruction (compilerState, Binop ("cmp", rightOperand, leftOperand));
+    compilerState := csAddX86Instruction (compilerState, setZero (eax));
+    compilerState := csAddX86Instruction (compilerState, Set (getFlagsSuffix (binopSign), "%al"));
+    case csAllocate (compilerState) of [resultOperand, compilerState] ->
+      csAddX86Instruction (compilerState, Mov (eax, resultOperand))
+    esac
+  else
+  case [leftOperand, rightOperand] of
+    [L (leftImm), L (rightImm)] -> 
+      csPush (compilerState, L (evalBinop (binopSign, leftImm, rightImm)))
+  | [L (leftImm), rightOperand] ->
+      if isSimpleBinopSMInstruction (binopSign) then
+        case binopSign of
+          "-" ->
+            compilerState := csAddX86Instruction (compilerState, Mov (L (leftImm), eax));
+            compilerState := csAddX86Instruction (compilerState, Binop ("-", rightOperand, eax));
+            compilerState := csAddX86Instruction (compilerState, Mov (eax, rightOperand));
+            csPush (compilerState, rightOperand)
+        | _ ->
+            compilerState := csAddX86Instruction (compilerState, Binop (binopSign, L (leftImm), rightOperand));
+            csPush (compilerState, rightOperand)
+        esac
+      else
+        compileLogicalBinopWithOneImmediate (compilerState, binopSign, rightOperand, leftImm)
+      fi
+  | [leftOperand, L (rightImm)] ->
+      if isSimpleBinopSMInstruction (binopSign) then
+        compilerState := csAddX86Instruction (compilerState, Binop (binopSign, L (rightImm), leftOperand));
+        csPush (compilerState, leftOperand)
+      else
+        compileLogicalBinopWithOneImmediate (compilerState, binopSign, leftOperand, rightImm)
+      fi
+  | [leftOperand, rightOperand] ->
+      case csAllocate (compilerState) of [resultOperand, compilerState] ->
+      if isSimpleBinopSMInstruction (binopSign) then
+        compilerState := csAddX86Instruction (compilerState, Mov (leftOperand, eax));
+        compilerState := csAddX86Instruction (compilerState, Binop (binopSign, rightOperand, eax));
+        csAddX86Instruction (compilerState, Mov (eax, resultOperand))
+      else
+        compilerState := csAddX86Instruction (compilerState, Binop ("test", leftOperand, leftOperand));
+        compilerState := csAddX86Instruction (compilerState, setZero (eax));
+        compilerState := csAddX86Instruction (compilerState, Set ("ne", "%al"));
+        compilerState := csAddX86Instruction (compilerState, Push (eax));
+        compilerState := csAddX86Instruction (compilerState, Binop ("test", rightOperand, rightOperand));
+        compilerState := csAddX86Instruction (compilerState, setZero (eax));
+        compilerState := csAddX86Instruction (compilerState, Set ("ne", "%al"));
+        compilerState := csAddX86Instruction (compilerState, Mov (eax, resultOperand));
+        compilerState := csAddX86Instruction (compilerState, Pop (eax));
+        csAddX86Instruction (compilerState, Binop (binopSign, eax, resultOperand))
+      fi
+      esac
+  esac
+  fi
+  esac
+}
+
+fun compileReadInstruction (compilerState) {
+  case csAllocate (compilerState) of [stackTop, compilerState] ->
+    compilerState := csAddX86Instruction (compilerState, Call ("Lread"));
+    csAddX86Instruction (compilerState, Mov (eax, stackTop))
+  esac
+}
+
+fun compileWriteInstruction (compilerState) {
+  case csPop (compilerState) of [operand, compilerState] ->
+    compilerState := csAddX86Instruction (compilerState, Push (operand));
+    compilerState := csAddX86Instruction (compilerState, Call ("Lwrite"));
+    csAddX86Instruction (compilerState, Pop (eax))
+  esac
+}
+
+fun compileLdInstruction (compilerState, variableIdentifier) {
+  case csGlobalVariable (compilerState, variableIdentifier) of [variable, compilerState] ->
+    case csAllocate (compilerState) of [stackTop, compilerState] ->
+      csAddX86Instructions (compilerState, move (variable, stackTop))
+    esac
+  esac
+}
+
+fun compileStInstruction (compilerState, variableIdentifier) {
+  case csGlobalVariable (compilerState, variableIdentifier) of [variable, compilerState] ->
+    case csPop (compilerState) of [operand, compilerState] ->
+      csAddX86Instructions (compilerState, move (operand, variable))
+    esac
+  esac
+}
+
+fun compileSMInstruction (compilerState, smInstruction) {
+  compilerState := csAddX86Instruction (compilerState, Meta ("# " ++ showSMInsn (smInstruction) ++ "\n"));
+  case smInstruction of
+    READ -> compileReadInstruction (compilerState)
+  | WRITE -> compileWriteInstruction (compilerState)
+  | BINOP (binopSign) -> compileBinopSMInstruction(compilerState, binopSign)
+  | LD (variableIdentifier) -> compileLdInstruction (compilerState, variableIdentifier)
+  | ST (variableIdentifier) -> compileStInstruction (compilerState, variableIdentifier)
+  | CONST (number) -> csPush (compilerState, L (number))
+  | _ -> failure ("Invalid SM instruction")
   esac
 }
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
-fun compile (env, code) {
-  foldr (
-    fun ([env, scode], i) {
-      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-      case i of
-        READ ->
-          -- printf("DEBUG X86.compile READ\n");
-          case env.allocate of [s, env] ->
-            [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
-      | WRITE ->
-          -- printf("DEBUG X86.compile WRITE env=%s\n", string (env));
-          case env.pop of [s, env] -> 
-            -- printf("DEBUG X86.compile WRITE case!\n");
-            [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-          esac
-      | BINOP (op) ->
-          -- printf("DEBUG X86.compile BINOP\n");
-          case env.pop2 of [rhs, lhs, env] ->
-            case env.allocate of [res, env] ->
-              var newCode = case op of
-                "+" ->
-                  -- printf("DEBUG X86.compile BINOP +\n");
-                  code <+ 
-                  Mov (lhs, eax) <+
-                  Binop ("+", rhs, eax) <+
-                  Mov (eax, res)
-              | "-" ->
-                  -- printf("DEBUG X86.compile BINOP -\n");
-                  code <+ 
-                  Mov (lhs, eax) <+
-                  Binop ("-", rhs, eax) <+
-                  Mov (eax, res)
-              | "*" ->
-                  -- printf("DEBUG X86.compile BINOP *\n");
-                  code <+ 
-                  Mov (rhs, eax) <+
-                  Binop ("*", lhs, eax) <+
-                  Mov (eax, res)
-              | "/" ->
-                  code <+
-                  Push (edx) <+
-                  Mov (lhs, eax) <+
-                  Mov (L (0), edx) <+
-                  IDiv (rhs) <+
-                  Mov (eax, res) <+
-                  Pop (edx)
-              | "%" ->
-                  code <+
-                  Push (edx) <+
-                  Mov (lhs, eax) <+
-                  Mov (L (0), edx) <+
-                  IDiv (rhs) <+
-                  Mov (edx, res) <+
-                  Pop (edx)
-              | "==" ->
-                  code <+
-                  Binop ("cmp", rhs, lhs) <+
-                  Mov (L (0), eax) <+
-                  Set ("e", "%al") <+
-                  Mov (eax, res)
-              | "!=" ->
-                  code <+
-                  Binop ("cmp", rhs, lhs) <+
-                  Mov (L (0), eax) <+
-                  Set ("ne", "%al") <+
-                  Mov (eax, res)
-              | "<" ->
-                  code <+
-                  Binop ("cmp", rhs, lhs) <+
-                  Mov (L (0), eax) <+
-                  Set ("l", "%al") <+
-                  Mov (eax, res)
-              | "<=" ->
-                  code <+
-                  Binop ("cmp", rhs, lhs) <+
-                  Mov (L (0), eax) <+
-                  Set ("le", "%al") <+
-                  Mov (eax, res)
-              | ">" ->
-                  code <+
-                  Binop ("cmp", rhs, lhs) <+
-                  Mov (L (0), eax) <+
-                  Set ("g", "%al") <+
-                  Mov (eax, res)
-              | ">=" ->
-                  code <+
-                  Binop ("cmp", rhs, lhs) <+
-                  Mov (L (0), eax) <+
-                  Set ("ge", "%al") <+
-                  Mov (eax, res)
-              | "&&" -> case lhs of
-                  L (0) ->
-                    code <+
-                    Mov (L (0), res)
-                | L (n) -> case rhs of
-                    L (0) -> code <+ Mov (L(0), res)
-                  | L (n) -> code <+ Mov (L(1), res)
-                  | _ ->
-                    code <+ 
-                    Binop ("test", rhs, rhs) <+
-                    Mov (L (0), eax) <+
-                    Set ("ne", "%al") <+
-                    Mov (eax, res)
-                  esac
-                | _ -> 
-                  code <+
-                  Binop ("test", lhs, lhs) <+
-                  Mov (L (0), eax) <+
-                  Set ("ne", "%al") <+
-                  Push (eax) <+
-                  Binop ("test", rhs, rhs) <+
-                  Mov (L (0), eax) <+
-                  Set ("ne", "%al") <+
-                  Mov (eax, res) <+
-                  Pop (eax) <+
-                  Binop ("&&", eax, res)
-                esac
-              | "!!" -> case lhs of 
-                  L (0) -> case rhs of
-                    L (0) -> code <+ Mov (L (0), res)
-                  | L (n) -> code <+ Mov (L (1), res)
-                  | _ ->
-                    code <+
-                    Binop ("test", rhs, rhs) <+
-                    Mov (L (0), eax) <+
-                    Set ("ne", "%al") <+
-                    Mov (eax, res)
-                  esac
-                | L (n) ->
-                    code <+ 
-                    Mov (L (1), res)
-                | _ -> 
-                  code <+
-                  Binop ("test", lhs, lhs) <+
-                  Mov (L (0), eax) <+
-                  Set ("ne", "%al") <+
-                  Push (eax) <+
-                  Binop ("test", rhs, rhs) <+
-                  Mov (L (0), eax) <+
-                  Set ("ne", "%al") <+
-                  Mov (eax, res) <+
-                  Pop (eax) <+
-                  Binop ("!!", eax, res)
-                esac
-              | _ -> failure("Invalid binop")
-              esac;
-              [env, newCode]
-            esac
-          esac
-      | LD (x) ->
-          -- printf("DEBUG X86.compile LD\n");
-          case env.addGlobal (x).allocate of [s, env] -> 
-            [env, code <+> move (env.loc (x), s)]
-          esac
-      | ST (x) ->
-          -- printf("DEBUG X86.compile ST\n");
-          case env.addGlobal (x).pop of [s, env] ->
-            [env, code <+> move (s, env.loc (x))]
-          esac
-      | CONST (n) ->
-          -- printf("DEBUG X86.compile CONST\n");
-          case env.push (L (n)) of env ->
-            [env, code]
-          esac
-      | _ -> failure ("Invalid SM instruction %s\n", i.string)
-      esac
-    }, [env, emptyBuffer ()], code)
+fun compile (env, smProgram) {
+  foldr (compileSMInstruction, makeCompilerState (env, emptyBuffer ()), smProgram)
 }
 
 -- A top-level codegeneration function. Takes a stack machine program
 -- and returns x86 listing as a string
+-- \param code List of stack machine instructions, head is the last instruction.
 public fun compileX86 (code) {
-  -- printf("DEBUG: X86.compileX86\n");
-  -- printf("Code = %s\n", string (code));
-  case compile (initEnv (), code) of
-    [env, code] ->
-       map (insnString, 
-            getBuffer $
-              singletonBuffer (Meta ("\t.global\tmain\n")) <+>
-              dataSection (listBuffer $ map (dataDef, getGlobals (env))) <+>
-              codeSection (
-                singletonBuffer (Meta ("main:\n")) <+>
-                prologue (getStackSize (env)) <+>
-                code <+>
-                epilogue ()
-              )
-           ).stringcat
-  esac
+  var finalState = compile (initEnv (), code);
+  var env = csEnv (finalState);
+  var compiledSMProgram = csCode (finalState);
+  var globalIntDefinitions = map (globalIntDefinition, getGlobals (env));
+  var wholeProgram = singletonBuffer (Meta ("\t.global\tmain\n")) <+>
+    singletonBuffer (Meta ("\t.data\n")) <+>
+    listBuffer (globalIntDefinitions) <+>
+    singletonBuffer (Meta ("\t.text\n")) <+>
+    singletonBuffer (Meta ("main:\n")) <+>
+    prologue (getStackSize (env)) <+>
+    compiledSMProgram <+>
+    epilogue ();
+  stringcat (map (instructionToString, getBuffer (wholeProgram)))
 }
