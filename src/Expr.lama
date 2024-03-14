@@ -49,22 +49,15 @@ public fun evalOp (op, l, r) {
 --        Ref     (string)             |
 --        Const   (int)                |
 --        Binop   (string, expr, expr) |
---        Scope   (def list, expr)     |
 --        Call    (string, expr list)  |
 --        Ignore  (expr)
---
--- A definition is either a local variable definition or a function
--- definition:
---
--- def = Var (string list)                |
---       Fun (string, string list, expr)
 
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
 fun checkVar (state, name) {
   case state.lookup (name) of
     Var (_) -> skip
-  | _       -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
+  | a       -> error (sprintf ("the name ""%s"" does not designate a variable. Got: %s\n", name, a.string), getLoc (name))
   esac
 }
 
@@ -79,6 +72,7 @@ fun checkFun (state, name) {
 
 -- Helper function: adds a bunch of regular variables current scope
 fun addNames (state, names) {
+  -- printf("in addNames. Adding: %s\n", names.string);
   foldl (fun (s, name) {s.addName (name, Var (0))}, state, names)
 }
 
@@ -101,9 +95,89 @@ fun evalList (c, exprs) {
   esac
 }
 
+fun setupForCall(state, args, names){
+  var newState;
+  -- printf("setupForCall. args: %s; names: %s\n", args.string, names.string); 
+  newState := addNames(enterScope(enterFunction(state)), names);
+  newState := foldl(
+      fun(state, [x, v]){state <- [x, Var(v)]}, 
+      newState, 
+      zip(names, args)
+  );
+  newState
+}
 (* Assignment *)
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (cfg@[state, world], expr) {
+  -- printf("In eval, expr: %s, world: %s\n", expr.string, world.string);
+  case expr of
+    Read (x) -> case eval(cfg, x) of [[state, world], x] -> case readWorld(world) of [res, world] -> 
+                -- printf("In read got: %s\n", res.string);
+                [[state <-[x, Var(res)], world], Unit]
+      esac esac
+  | Write (x) -> case eval(cfg, x) of [[state, world], x] -> 
+        -- printf("In write got %s\n", x.string);
+        [[state, writeWorld(x, world)], Unit]
+      esac
+  | Seq (left, right) -> case evalList(cfg, {left, right}) of [cfg, {_, r}] ->
+        [cfg, r]
+      esac
+  | Ref (x) -> checkVar(state, x); [cfg, x]
+  | Var (x) -> checkVar(state, x); case lookup(state, x) of 
+        Var(v) -> [cfg, v]
+      esac
+  | Ignore (e) -> case eval(cfg, e) of [cfg, _] -> [cfg, Unit] esac
+  | Assn (x, e) -> case eval(cfg, x) of [cfg, x] -> 
+        case eval(cfg, e) of [[state, world], v] -> 
+          [[state <- [x, Var(v)], world], v]
+      esac esac
+  | Const (n) -> [cfg, n]
+  | Binop (op, l, r) -> case evalList(cfg, {l, r}) of [cfg, {l, r}] -> 
+        [cfg, evalOp(op, l, r)]
+      esac
+  | While (e, s) -> case eval(cfg, e) of [cfg, v] -> 
+        if v then 
+          case eval(cfg, s) of [cfg, _] -> eval(cfg, expr) esac
+        else
+          [cfg, Unit]
+        fi
+      esac
+  | DoWhile(e, s) -> case evalList(cfg, {s, While(e, s)}) of [cfg, _] ->
+        [cfg, Unit]
+      esac
+  | If (e, s1, s2) -> case eval(cfg, e) of [cfg, v] -> 
+        if v then 
+          eval(cfg, s1)
+        else 
+          eval(cfg, s2)
+        fi
+      esac
+  | Skip -> [cfg, Unit]
+
+  | Call (name, args) -> checkFun(state, name); 
+            case lookup(state, name) of Fun (names, body) -> 
+              case evalList(cfg, args) of [[state, world], args] -> 
+                case setupForCall(state, args, names) of callState ->
+                  case eval([callState, world], body) of [[callState, world], res] -> 
+                    case getGlobal(callState) of globalState ->
+                      [[leaveFunction(state, globalState), world], res]
+                    esac 
+                  esac 
+                esac 
+              esac 
+           esac
+
+  | Scope (defs, body) -> case foldl(fun(s, def) { 
+          case def of 
+              Var (vars) -> addNames(s, vars)
+            | Fun (name, args, body)    -> addFunction(s, name, args, body)
+          esac
+          }, enterScope(state), defs) of 
+            state -> case eval([state, world], body) of 
+                [[state, world], res] -> [[leaveScope(state), world], res]
+            esac esac
+    
+  | expr -> failure ("evalExpr is unimplemented for %s\n", expr.string)
+  esac
 }
 (* End *)
 
