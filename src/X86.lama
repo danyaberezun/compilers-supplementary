@@ -36,6 +36,7 @@ var nRegs = 4;
 --                                 designates x86 operator, not the source language one
 --   IDiv  (opnd)               -- x86 integer division, see instruction set reference 
 --   Cltd                       -- see instruction set reference           
+--   Cdq
 --   Set   (string, string)     -- sets a value from flags; the first operand is the   
 --                                 suffix, which determines the value being set, the
 --                                 the second --- (sub)register name 
@@ -72,6 +73,7 @@ fun instructionToString (insn) {
   
   case insn of
     Cltd               -> "\tcltd\n"
+  | Cdq                -> "\tcdq\n"
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
   | IDiv  (s1)         -> sprintf ("\tidivl\t%s\n", opndString (s1))
   | Binop (op, s1, s2) -> sprintf ("\t%s\t%s,\t%s\n", binopString (op), opndString (s1), opndString (s2))
@@ -95,11 +97,19 @@ fun setZero (reg) {
 --    a maximal stack depth reached so far
 --    a set of global variable names
 
-fun isCostingStackEntry (entry) {
+-- Checks if an operand resides in memory
+fun memOpnd (opnd) {
+  case opnd of
+    S (_) -> true
+  | M (_) -> true
+  | _     -> false
+  esac
+}
+
+fun isNotImmediate (entry) {
   case entry of
-    R (_) -> true
-  | S (_) -> true
-  | _ -> false
+    L (_) -> false
+  | _ -> true
   esac
 }
 
@@ -119,11 +129,11 @@ fun makeEnv (stack, stackSlots, globals) {
   -- an updated environment
   fun allocate () {
     case 
-      case filter (isCostingStackEntry, stack) of
+      case filter (isNotImmediate, stack) of
         {}        -> [R (0), 0]
-      | R (n) : _ -> if n+1 < nRegs then [R (n+1), stackSlots] else [S (0), 1] fi
+      | R (n) : _ -> if n+1 < nRegs then [R (n+1), 0] else [S (0), 1] fi
       | S (n) : _ -> [S (n+1), n+2]
-      | other         -> failure ("Unreachable " ++ string (other))
+      | other     -> failure ("Unreachable " ++ string (other))
       esac
     of [x, n] -> [x, makeEnv (x : stack, if n > stackSlots then n else stackSlots fi, globals)]
     esac
@@ -243,15 +253,6 @@ fun stackOpnd (opnd) {
     S (_) -> true
   | _     -> false
   esac      
-}
-
--- Checks if an operand resides in memory
-fun memOpnd (opnd) {
-  case opnd of
-    S (_) -> true
-  | M (_) -> true
-  | _     -> false
-  esac
 }
 
 -- Generates a move between locations, using
@@ -378,6 +379,17 @@ fun getFlagsSuffix (binopSign) {
   esac
 }
 
+fun getFlagsSuffixFlipped (binopSign) {
+  case binopSign of
+    "==" -> "e"
+  | "!=" -> "ne"
+  | "<" -> "g"
+  | "<=" -> "ge"
+  | ">" -> "l"
+  | ">=" -> "le"
+  esac
+}
+
 fun evalBinop(binopSign, lhs, rhs) {
   case binopSign of
     "+" -> lhs + rhs
@@ -393,6 +405,16 @@ fun evalBinop(binopSign, lhs, rhs) {
   | ">=" -> lhs >= rhs
   | "&&" -> lhs && rhs
   | "!!" -> lhs !! rhs
+  esac
+}
+
+-- \pre left operand is not an immediate
+fun compileCmpSMInstruction (compilerState, suffix, leftOperand, rightOperand) {
+  compilerState := csAddX86Instruction (compilerState, Binop ("cmp", rightOperand, leftOperand));
+  compilerState := csAddX86Instruction (compilerState, setZero (eax));
+  compilerState := csAddX86Instruction (compilerState, Set (suffix, "%al"));
+  case csAllocate (compilerState) of [resultOperand, compilerState] ->
+    csAddX86Instruction (compilerState, Mov (eax, resultOperand))
   esac
 }
 
@@ -415,80 +437,92 @@ fun compileLogicalBinopWithOneImmediate (compilerState, binopSign, operand, imme
 
 fun compileBinopSMInstruction (compilerState, binopSign) {
   case csPop2 (compilerState) of [rightOperand, leftOperand, compilerState] ->
-  if isIDivBinopSMInstruction (binopSign) then
-    var resultSource = case binopSign of
-      "/" -> eax
-    | "%" -> edx
-    esac;
-    compilerState := csAddX86Instruction (compilerState, Push (edx));
-    compilerState := csAddX86Instruction (compilerState, setZero (edx));
-    compilerState := csAddX86Instruction (compilerState, Mov (leftOperand, eax));
-    compilerState := case rightOperand of
-      L (_) -> 
-        compilerState := csAddX86Instruction (compilerState, Push (ebx));
-        compilerState := csAddX86Instruction (compilerState, Mov (rightOperand, ebx));
-        compilerState := csAddX86Instruction (compilerState, IDiv (ebx));
-        csAddX86Instruction (compilerState, Pop (ebx))
-    | _ -> csAddX86Instruction (compilerState, IDiv (rightOperand))
-    esac;
-    case csAllocate (compilerState) of [resultOperand, compilerState] ->
-      compilerState := csAddX86Instruction (compilerState, Mov (resultSource, resultOperand));
-      csAddX86Instruction (compilerState, Pop (edx))
-    esac
-  elif isCmpBinopSMInstruction (binopSign) then
-    compilerState := csAddX86Instruction (compilerState, Binop ("cmp", rightOperand, leftOperand));
-    compilerState := csAddX86Instruction (compilerState, setZero (eax));
-    compilerState := csAddX86Instruction (compilerState, Set (getFlagsSuffix (binopSign), "%al"));
-    case csAllocate (compilerState) of [resultOperand, compilerState] ->
-      csAddX86Instruction (compilerState, Mov (eax, resultOperand))
-    esac
-  else
-  case [leftOperand, rightOperand] of
-    [L (leftImm), L (rightImm)] -> 
-      csPush (compilerState, L (evalBinop (binopSign, leftImm, rightImm)))
-  | [L (leftImm), rightOperand] ->
-      if isSimpleBinopSMInstruction (binopSign) then
-        case binopSign of
-          "-" ->
-            compilerState := csAddX86Instruction (compilerState, Mov (L (leftImm), eax));
-            compilerState := csAddX86Instruction (compilerState, Binop ("-", rightOperand, eax));
-            compilerState := csAddX86Instruction (compilerState, Mov (eax, rightOperand));
-            csPush (compilerState, rightOperand)
-        | _ ->
-            compilerState := csAddX86Instruction (compilerState, Binop (binopSign, L (leftImm), rightOperand));
-            csPush (compilerState, rightOperand)
-        esac
-      else
-        compileLogicalBinopWithOneImmediate (compilerState, binopSign, rightOperand, leftImm)
-      fi
-  | [leftOperand, L (rightImm)] ->
-      if isSimpleBinopSMInstruction (binopSign) then
-        compilerState := csAddX86Instruction (compilerState, Binop (binopSign, L (rightImm), leftOperand));
-        csPush (compilerState, leftOperand)
-      else
-        compileLogicalBinopWithOneImmediate (compilerState, binopSign, leftOperand, rightImm)
-      fi
-  | [leftOperand, rightOperand] ->
+
+    fun compileIDiv () {
+      var resultReg = case binopSign of
+        "/" -> eax
+      | "%" -> edx
+      esac;
+      compilerState := csAddX86Instruction (compilerState, Mov (leftOperand, eax));
+      compilerState := csAddX86Instruction (compilerState, Cdq);
+      compilerState := case rightOperand of
+        L (_) -> 
+          case csAllocate (compilerState) of [holder, compilerState] ->
+            compilerState := csAddX86Instruction (compilerState, Mov (rightOperand, holder));
+            compilerState := csAddX86Instruction (compilerState, IDiv (holder));
+            case csPop (compilerState) of [_, compilerState] ->
+              compilerState
+            esac
+          esac
+      | _ -> csAddX86Instruction (compilerState, IDiv (rightOperand))
+      esac;
       case csAllocate (compilerState) of [resultOperand, compilerState] ->
-      if isSimpleBinopSMInstruction (binopSign) then
-        compilerState := csAddX86Instruction (compilerState, Mov (leftOperand, eax));
-        compilerState := csAddX86Instruction (compilerState, Binop (binopSign, rightOperand, eax));
-        csAddX86Instruction (compilerState, Mov (eax, resultOperand))
-      else
-        compilerState := csAddX86Instruction (compilerState, Binop ("test", leftOperand, leftOperand));
-        compilerState := csAddX86Instruction (compilerState, setZero (eax));
-        compilerState := csAddX86Instruction (compilerState, Set ("ne", "%al"));
-        compilerState := csAddX86Instruction (compilerState, Push (eax));
-        compilerState := csAddX86Instruction (compilerState, Binop ("test", rightOperand, rightOperand));
-        compilerState := csAddX86Instruction (compilerState, setZero (eax));
-        compilerState := csAddX86Instruction (compilerState, Set ("ne", "%al"));
-        compilerState := csAddX86Instruction (compilerState, Mov (eax, resultOperand));
-        compilerState := csAddX86Instruction (compilerState, Pop (eax));
-        csAddX86Instruction (compilerState, Binop (binopSign, eax, resultOperand))
-      fi
+        csAddX86Instruction (compilerState, Mov (resultReg, resultOperand))
       esac
-  esac
-  fi
+    }
+
+    fun nonConstant() {
+      if isIDivBinopSMInstruction (binopSign) then
+        compileIDiv()
+      else
+        case [leftOperand, rightOperand] of 
+          [L (leftImm), rightOperand] ->
+            if isSimpleBinopSMInstruction (binopSign) then
+              case binopSign of
+                "-" ->
+                  compilerState := csAddX86Instruction (compilerState, Mov (L (leftImm), eax));
+                  compilerState := csAddX86Instruction (compilerState, Binop ("-", rightOperand, eax));
+                  compilerState := csAddX86Instruction (compilerState, Mov (eax, rightOperand));
+                  csPush (compilerState, rightOperand)
+              | _ ->
+                  compilerState := csAddX86Instruction (compilerState, Binop (binopSign, L (leftImm), rightOperand));
+                  csPush (compilerState, rightOperand)
+              esac
+            elif isCmpBinopSMInstruction (binopSign) then
+              compileCmpSMInstruction (compilerState, getFlagsSuffixFlipped (binopSign), rightOperand, leftOperand)
+            else
+              compileLogicalBinopWithOneImmediate (compilerState, binopSign, rightOperand, leftImm)
+            fi
+        | [leftOperand, L (rightImm)] ->
+            if isSimpleBinopSMInstruction (binopSign) then
+              compilerState := csAddX86Instruction (compilerState, Binop (binopSign, L (rightImm), leftOperand));
+              csPush (compilerState, leftOperand)
+            elif isCmpBinopSMInstruction (binopSign) then
+              compileCmpSMInstruction (compilerState, getFlagsSuffix (binopSign), leftOperand, rightOperand)
+            else
+              compileLogicalBinopWithOneImmediate (compilerState, binopSign, leftOperand, rightImm)
+            fi
+        | [leftOperand, rightOperand] ->
+            case csAllocate (compilerState) of [resultOperand, compilerState] ->
+            if isSimpleBinopSMInstruction (binopSign) then
+              compilerState := csAddX86Instruction (compilerState, Mov (leftOperand, eax));
+              compilerState := csAddX86Instruction (compilerState, Binop (binopSign, rightOperand, eax));
+              csAddX86Instruction (compilerState, Mov (eax, resultOperand))
+            elif isCmpBinopSMInstruction (binopSign) then
+              compileCmpSMInstruction (compilerState, getFlagsSuffix (binopSign), leftOperand, rightOperand)
+            else
+              compilerState := csAddX86Instruction (compilerState, Binop ("test", leftOperand, leftOperand));
+              compilerState := csAddX86Instruction (compilerState, setZero (eax));
+              compilerState := csAddX86Instruction (compilerState, Set ("ne", "%al"));
+              compilerState := csAddX86Instruction (compilerState, Push (eax));
+              compilerState := csAddX86Instruction (compilerState, Binop ("test", rightOperand, rightOperand));
+              compilerState := csAddX86Instruction (compilerState, setZero (eax));
+              compilerState := csAddX86Instruction (compilerState, Set ("ne", "%al"));
+              compilerState := csAddX86Instruction (compilerState, Mov (eax, resultOperand));
+              compilerState := csAddX86Instruction (compilerState, Pop (eax));
+              csAddX86Instruction (compilerState, Binop (binopSign, eax, resultOperand))
+            fi
+            esac
+        esac
+      fi
+    }
+
+    case [leftOperand, rightOperand] of
+      [L (leftImm), L (rightImm)] -> 
+        csPush (compilerState, L (evalBinop (binopSign, leftImm, rightImm)))
+    | _ ->
+        nonConstant()
+    esac
   esac
 }
 
