@@ -407,6 +407,93 @@ fun suffix (op) {
   esac
 }
 
+fun lower(reg) {
+  case reg of 
+      R (0) -> "%bl"
+    | R (1) -> "%cl"
+    | R (4) -> "%al"
+    | R (5) -> "%dl"
+    | _ -> failure("wrong location for set\n")  
+  esac
+}
+
+fun isCompraisonOp(op) {
+  case op of 
+     ">" -> true
+   | "<" -> true
+   | ">=" -> true
+   | "<=" -> true
+   | "==" -> true
+   | "!=" -> true
+   | _ -> false
+  esac
+}
+
+fun isLogicalOp(op) {
+  case op of 
+      "&&" -> true
+    | "!!" -> true
+    | _ -> false
+  esac
+}
+
+fun divisionOp(op) {
+  case op of 
+    "/" -> [true, eax]
+  | "%" -> [true, edx]
+  | _ -> false
+  esac
+}
+
+fun intToBit(v) {
+  if memOpnd(v)
+  then singletonBuffer(Mov(v, edx)) <+ Binop("&&", edx, edx)
+  else singletonBuffer(Binop("&&", v, v)) 
+  fi <+ Mov (L(0), edx) <+ Set("nz", lower(edx)) <+ Mov(edx, v)
+}
+
+fun operation(op, l, r) {
+  if isCompraisonOp(op)
+    then singletonBuffer(Binop ("cmp", r, l)) <+ Mov(L(0), edx) <+ Set(suffix(op), lower(edx)) <+ Mov(edx, l)
+  elif isLogicalOp(op) 
+    then
+      case intToBit(r) of 
+        rCode -> 
+          case intToBit(l) of 
+            lCode -> rCode <+> lCode <+ Binop(op, r, l)
+          esac
+      esac
+  else case divisionOp(op) of
+    [true, reg] -> singletonBuffer(Mov(l, eax)) <+ Cltd <+ IDiv (r) <+ Mov (reg, l)
+    | _ -> singletonBuffer(Binop(op, r, l))
+    esac
+  fi
+}
+
+fun binop (env, op, l, r) {
+  [if memOpnd (l) && memOpnd(r)
+  then singletonBuffer(Mov (l, eax)) <+> operation(op, eax, r) <+ Mov (eax, l)
+  else operation(op, l, r)
+  fi, env.push(l)]
+}
+
+fun pushArgs (env, code, a) {
+  case a of
+      0 -> [env, code]
+    | _ -> 
+      case pop(env) of
+        [s, env] -> pushArgs(env, code <+ Push(s), a - 1)
+      esac
+  esac
+}
+
+fun popArgs (code, a) {
+  case a of
+      0 -> code
+    | _ -> popArgs(code <+ Pop(eax), a - 1)
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -441,6 +528,61 @@ fun compile (env, code) {
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
                
+        | LD (x) ->
+            case allocate(env) of
+              [s, env] -> [env, code <+> move (loc (env, x), s)]
+            esac
+        | ST (x) ->
+            case pop(env) of
+              [s, env] -> [env, code <+> move (s, loc (env, x))]
+            esac
+        | CONST (n) -> 
+            case allocate(env) of 
+              [s, env] -> [env, code <+> move (L(n), s)]
+            esac
+        | BINOP (op) -> 
+            case env.pop2 of 
+              [r, l, env] ->
+                case binop(env, op, l, r) of
+                  [opCode, env] -> [env, code <+> opCode]
+                esac
+            esac
+        | LABEL (l) -> [if env.isBarrier then env.retrieveStack(l) else env fi, code <+ Label(l)]
+        | JMP (l) -> [env.setStack(l).setBarrier, code <+ Jmp(l)]
+        | CJMP (c, l) -> 
+            case pop(env) of
+              [s, env] -> [env, code <+ Binop("+", L(0), s) <+ CJmp(c, l)]
+            esac
+        | LDA (x) -> 
+            case allocate(env) of
+              [s, env] -> [env, code <+ Lea(loc(env, x), eax) <+ Mov (eax, s)]
+            esac
+        | STI ->
+            case env.pop2 of 
+              [x, v, env] -> [env, code <+> move(v, I(0, x))]
+            esac
+        | DROP -> [env.pop[1], code]
+        | DUP -> 
+            case env.peek of 
+              v -> 
+                case env.allocate  of
+                  [s, env] -> [env, code <+> move(v, s)]
+                esac
+            esac
+        | GLOBAL (x) -> [addGlobal(env, x), code]
+        | CALL (f, a) -> 
+            case liveRegisters(env, a) of
+              regs ->
+                case pushArgs(env, foldl(fun (code, reg) {code <+ Push (reg)}, code, regs), a) of
+                  [env, code] -> [env, foldr(fun (code, reg) {code <+ Pop(reg)}, popArgs(code <+ Call(f), a), regs)]
+                esac
+            esac
+
+        | BEGIN (f, _, l) -> [enterFunction(env, f, l), code <+> prologue(f)]
+        | END -> case epilogue(env) of
+                   [env, ep] -> [env, code <+> ep]
+                 esac
+            
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         (* End *)
         esac
