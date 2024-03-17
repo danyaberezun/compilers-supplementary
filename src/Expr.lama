@@ -79,31 +79,122 @@ fun checkFun (state, name) {
 
 -- Helper function: adds a bunch of regular variables current scope
 fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Var (0))}, state, names)
+  foldl (fun (s, name) {s.addName (name, 0)}, state, names)
 }
 
 -- Helper function: adds a function in current scope
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
+
+fun addDefs (state, defs) {
+  foldl(
+    fun (st, def) {
+      case def of
+          Fun (name, args, body) -> addFunction(st, name, args, body)
+        | Var (vars) -> addNames(st, vars)
+      esac
+    },
+    state,
+    defs
+  )
+}
+
+fun addVals (state, pairs) {
+  foldl(
+    fun (st, [ x, v ]) {
+      addName (st, x, v)
+    },
+    state,
+    pairs
+  )
+}
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
-  case foldl (fun ([c, vals], e) {
-                case eval (c, e) of
-                  [c, v] -> [c, v : vals]
-                esac
-              },
-              [c, {}],
-              exprs) of
+  case foldl (
+    fun ([c, vals], e) {
+      case eval (c, e) of
+        [c, v] ->
+          -- printf("evalList: c=%s, v=%s, vals=%s\n", c.string, v.string, vals.string);
+          [c, v : vals]
+      esac
+    },
+    [c, {}],
+    exprs
+  ) of
     [c, vals] -> [c, reverse (vals)]
   esac
 }
 
 (* Assignment *)
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (c@[state, world], expr) {
+  -- c = [ state, world ], where state = [ (scope, mapping), ... ] (stack of scopes and mappings between names and values)
+  -- printf("Inside eval: expr=%s\n", expr.string);
+
+  case expr of
+    Const (n) -> [c, n]
+  | Var (x) -> [c, lookup (state, x)]
+  | Ref (x) -> [c, x]
+  | Binop (op, e1, e2) ->
+      case evalList (c, { e1, e2 }) of
+        [conf, arr@{ l, r }] -> 
+          -- printf("binop l=%s, r=%s, op=%s, evaluated=%s, arr=%s\n", l.string, r.string, op.string, evalOp (op, l, r).string, arr.string); 
+          [conf, evalOp (op, l, r)]
+      esac
+  | Skip -> [c, {}]
+  | Assn (e1, e2) ->
+      case evalList (c, { e1, e2 }) of
+        [[st, wrld], arr@{ x, v }] ->
+          -- printf("Assign: arr=%s\n", arr.string);
+          -- printf("Assn (%s, %s): state=%s\n", x.string, v.string, st.string);
+          [[st <- [x, v], wrld], v]
+      esac
+  | Ignore (e) ->
+      case eval (c, e) of
+        [conf, v] -> [conf, {}]
+      esac
+  | Read (x) ->
+      case readWorld(world) of
+        [v, w] -> [[state <- [x, v], w], {}]
+      esac
+  | Write (e) ->
+      case eval (c, e) of
+        [[st, wrld], v] -> 
+          -- printf("Write('%s')\n", v.string);
+          [[st, writeWorld (v, wrld)], {}]
+      esac
+  | Seq (e1, e2) -> eval(eval(c, e1).fst, e2)
+  | If (e, s1, s2) ->
+      case eval(c, e) of
+        [conf, 0] -> eval(conf, s2)
+      | [conf, _] -> eval(conf, s1)
+      esac
+  | While (e, s) ->
+      case eval(c, e) of
+        [conf, 0] -> [conf, {}]
+      | [conf, _] -> eval(eval(conf, s).fst, expr)
+      esac
+  | DoWhile (s, e) -> eval(c, Seq (s, While (e, s)))
+  | Scope (defs, innerExpr) -> 
+      case eval([addDefs(enterScope(state), defs), world], innerExpr) of
+        [[st, w], v] -> [[leaveScope(st), w], v]
+      esac
+  | Call (name, params) -> 
+      checkFun (state, name);
+      case lookup (state, name) of
+        Fun (args, body) -> 
+          case evalList (c, params) of
+            -- assign vals to args
+            [[st, w], vals] -> 
+              case eval([addVals (enterFunction (st), zip (args, vals)), w], body) of
+                [[afterCallSt, w], v] -> [[leaveFunction (st, getGlobal (afterCallSt)), w], v]
+              esac
+          esac
+      esac
+  | x -> failure ("evalExpr for '%s' not implemented\n", x.string)
+  esac
 }
 (* End *)
 
