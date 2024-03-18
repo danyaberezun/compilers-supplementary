@@ -120,51 +120,57 @@ fun eval (env, w, insns) {
   (* Assignment *)
   fun eval (icfg@[st, cst, s, w], iinsns) {
       -- returns next cfg and insns
-    fun next(cfg@[stack, ctrlStack, locals, world], insns) {
+    fun next(cfg@[stack, ctrlStack, state, world], insns) {
       -- printf("stack: %s, world: %s, insns: %s\n", stack.string, world.string, insns.string);
+      -- printf("Locals: %s\n", state.string);
       -- if (debug) then printf("stack: %s, world: %s, insns: %s\n", stack.string, world.string, insns.string) else {} fi;
       case insns of
         {} -> [cfg, insns]
       | instr:insns -> fun evalNext(cfg){[cfg, insns]}
             case instr of
-              READ -> case readWorld(world) of [n, world] -> evalNext([n:stack, ctrlStack, locals, world]) esac
+              READ -> case readWorld(world) of [n, world] -> evalNext([n:stack, ctrlStack, state, world]) esac
 
-            | WRITE -> case stack of n:stack -> evalNext([stack, ctrlStack, locals, writeWorld(n, world)]) esac
+            | WRITE -> case stack of n:stack -> evalNext([stack, ctrlStack, state, writeWorld(n, world)]) esac
 
             -- arguments in binop taken  VVVVV  in reverse order 
             | BINOP (s) -> case stack of 
-                  b:a:stack -> evalNext([evalOp(s, a, b):stack, ctrlStack, locals, world])
+                  b:a:stack -> evalNext([evalOp(s, a, b):stack, ctrlStack, state, world])
                 | _ -> failure("No 2 vaues on stack for binop") esac
 
-            | LD (x) -> evalNext([lookup(locals, x):stack, ctrlStack, locals, world])
-            | LDA(x) -> evalNext([x:stack, ctrlStack, locals, world])
+            | LD (x) -> evalNext([lookup(state, x):stack, ctrlStack, state, world])
+            | LDA(x) -> evalNext([x:stack, ctrlStack, state, world])
 
             | ST (x) -> case stack of 
-                a:stack -> assign(locals, x, a); 
-                           evalNext([stack, ctrlStack, locals, world])
+                a:stack -> assign(state, x, a); 
+                           evalNext([stack, ctrlStack, state, world])
               | _ -> failure("Empty stack, but trying load") esac
             | STI -> case stack of 
-                v:x:stack -> assign(locals, x, v); 
-                             evalNext([v:stack, ctrlStack, locals, world]) 
+                v:x:stack -> assign(state, x, v); 
+                             evalNext([v:stack, ctrlStack, state, world]) 
               esac
-            | DROP -> case stack of n:stack -> evalNext([stack, ctrlStack, locals, world]) esac
-            | DUP ->  case stack of n:stack -> evalNext([n:n:stack, ctrlStack, locals, world]) esac
+            | DROP -> case stack of n:stack -> evalNext([stack, ctrlStack, state, world]) esac
+            | DUP ->  case stack of n:stack -> evalNext([n:n:stack, ctrlStack, state, world]) esac
 
-            | CONST (n) -> evalNext([n:stack, ctrlStack, locals, world])
+            | CONST (n) -> evalNext([n:stack, ctrlStack, state, world])
 
             | JMP (lable) -> [cfg, fromLabel(env, lable)] 
 
             | CJMP (NZ, lable) -> case stack of n:stack -> 
-                    if n != 0 then [[stack, ctrlStack, locals, world], fromLabel(env, lable)] 
-                              else evalNext([stack, ctrlStack, locals, world]) 
+                    if n != 0 then [[stack, ctrlStack, state, world], fromLabel(env, lable)] 
+                              else evalNext([stack, ctrlStack, state, world]) 
                     fi
                 | _ -> failure("Empty stack, but trying to cjump")
               esac
 
             | LABEL (label) -> evalNext(cfg)
 
-            | GLOBAL (x) -> assign(locals, Glb(x), 0); evalNext(cfg)
-            | _ -> failure("Unexpected stack machine instruction: %s", instr.string)
+            | GLOBAL (x) -> assign(state, Glb(x), 0); evalNext(cfg)
+
+            | BEGIN (name, argNum, localNum) -> evalNext([stack, ctrlStack, makeState(argNum, localNum), world])
+
+            | END -> if (ctrlStack == {}) then [cfg, {}] else failure("can't end") fi
+
+            | _ -> failure("Unexpected stack machine instruction: %s\n", instr.string)
           esac esac
     }
 
@@ -484,22 +490,57 @@ public fun compileSM (stmt) {
         esac esac esac
 
     | If (e, s1, s2) -> 
-        case env.genLabels(2) of [s1Lab, cjmpLab, env] -> 
+        case genLabels(env, 2) of [s1Lab, cjmpLab, env] -> 
           case compile(cjmpLab, env, e) of [cjmpUsed, env, eCode] ->
             case compile(lab, env, s1) of [_, env, s1Code] -> 
               case compile(lab, env, s2) of [_, env, s2Code] -> 
                 [true, env, eCode <+> label(cjmpLab, cjmpUsed) <+ CJMP(NZ, s1Lab) <+> s2Code <+ JMP(lab) <+ LABEL(s1Lab) <+> s1Code]
     esac esac esac esac
 
-    | Scope ({Var (vars)}, code) -> 
-        case enterScope(env) of env ->
-          case env.addVars(vars) of env ->
-            case if isGlobal(env) then listBuffer(map(fun (x){GLOBAL (x)}, vars)) else emptyBuffer () fi of defCode ->
-              case compile(lab, env, code) of [_, env, scode] ->
-                [false, leaveScope(env), defCode <+> scode]
+    | Scope ({Var (vars)}, expr) -> 
+        case addVars(beginScope(env), vars) of env ->
+          case if isGlobal(env) then listBuffer(map(fun (x){GLOBAL (x)}, vars)) else emptyBuffer () fi of globalDefs ->
+            case genLabel(env) of [endLab, env] ->
+              case compile(endLab, env, expr) of [endUsed, env, code] ->
+                case if (isGlobal(env)) then singletonBuffer(BEGIN("_MAIN_", 0, getLocals(env))) <+> code <+> label(endLab, endUsed) <+ END
+                                        else  code <+> label(endLab, endUsed) fi 
+                                  of code ->
+
+                  [false, endScope(env), globalDefs <+> code]
+                esac
               esac
             esac
           esac
+        esac
+
+    | Scope (defs, expr) -> 
+        case foldr(fun([env, funs, globalDefs], def){
+            case def of 
+              Var (ds) -> [addVars(env, ds), funs, if isGlobal(env)
+                then foldl(fun(globalDefs, name){ globalDefs <+ GLOBAL(name) }, globalDefs, ds)
+                else globalDefs
+                fi]
+              
+            | Fun (name, args, body) -> 
+              case genFunLabel(env, name) of [fLab, env] ->
+                [addFun(env, name, fLab, args.size), [fLab, args, body] : funs, globalDefs] 
+              esac
+            esac 
+        }, beginScope(env), defs) of [env, funs, globalDefs] ->
+          -- case if isGlobal(env) then listBuffer(map(fun (x){GLOBAL (x)}, vars)) else emptyBuffer () fi of globalDefs ->
+            case genLabel(env) of [endLab, env] ->
+              case compile(endLab, env, expr) of [endUsed, env, code] ->
+                case globalDefs <+> if (isGlobal(env)) 
+                  then singletonBuffer(BEGIN("_MAIN_", 0, getLocals(env))) <+> code <+> label(endLab, endUsed) <+ END
+                  else  code <+> label(endLab, endUsed) 
+                  fi
+                    of code ->
+                      case foldl(fun(env, [fLab, args, body]){rememberFun(env, fLab, args, body)}, env, funs) of env ->
+                        [false, env, code]
+                      esac 
+                esac
+              esac
+            esac
         esac
 
     | exp                 ->  failure ("compileSM not implemented for expr: %s\n", exp.string)
