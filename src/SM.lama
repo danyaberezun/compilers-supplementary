@@ -120,9 +120,10 @@ fun eval (env, w, insns) {
   (* Assignment *)
   fun eval (icfg@[st, cst, s, w], iinsns) {
       -- returns next cfg and insns
-    fun next(cfg@[stack, ctrlStack, state, world], insns) {
+    fun next(cfg@[stack, ctrlStack, state@[args, locs], world], insns) {
       printf("stack: %s, world: %s, insns: %s\n", stack.string, world.string, insns.string);
-      printf("Locals: %s\n", state.string);
+      -- printf("Locals: %s\n", state.string);
+      -- printf("env: %s\n", env.string);
       -- if (debug) then printf("stack: %s, world: %s, insns: %s\n", stack.string, world.string, insns.string) else {} fi;
       case insns of
         {} -> [cfg, insns]
@@ -166,9 +167,22 @@ fun eval (env, w, insns) {
 
             | GLOBAL (x) -> assign(state, Glb(x), 0); evalNext(cfg)
 
-            | BEGIN (name, argNum, localNum) -> evalNext([stack, ctrlStack, makeState(argNum, localNum), world])
+            | BEGIN (name, argNum, localNum) -> 
+                case take(stack, argNum) of [stack, args] ->
+                  case makeState(argNum, localNum) of state ->
+                    iter(fun([arg, num]){assign(state, Arg(num), arg)}, indexed(args));
+                    evalNext([stack, ctrlStack, state, world])
+                  esac
+                esac 
 
-            | END -> if (ctrlStack == {}) then [cfg, {}] else failure("can't end") fi
+            | END -> 
+                case ctrlStack of
+                  {} -> [cfg, {}]
+                | [oldArgs, nextInstrns] : ctrlStack -> [[stack, ctrlStack, [oldArgs, locs], world], nextInstrns]
+                esac
+
+            | CALL (fLab, numArgs) ->
+                  [[stack, [args, insns]:ctrlStack, state, world], fromLabel(env, fLab)]
 
             | _ -> failure("Unexpected stack machine instruction: %s\n", instr.string)
           esac esac
@@ -189,6 +203,7 @@ fun eval (env, w, insns) {
 
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM (input, insns) {
+  printf("%s\n", showSM(insns));
   eval (initEvalEnv (insns), createWorld (input), insns)
 }
 
@@ -421,7 +436,7 @@ public fun compileSM (stmt) {
   }
   
   fun compile (lab, env, stmt) {
-    printf("In compileSM. stmt: %s, env:%s\n", stmt.string, env.string);
+    -- printf("In compileSM. stmt: %s\n", stmt.string);
     case stmt of
       Skip              -> [false, env, emptyBuffer ()]
     | Var    (x)        -> [false, env, singletonBuffer (LD (lookupVar(env, x)))]
@@ -511,7 +526,7 @@ public fun compileSM (stmt) {
               esac
             esac 
         }, [beginScope(env), {}, emptyBuffer()], defs) of [env, funs, globalDefs] ->
-            case compile(lab, env, expr) of [labUsed, env, code] -> printf("scope compiled\n");
+            case compile(lab, env, expr) of [labUsed, env, code] -> 
               case foldl(fun(env, [fLab, args, body]){rememberFun(env, fLab, args, body)}, env, funs) of env ->
                 [labUsed, endScope(env), globalDefs <+> code]
               esac 
@@ -520,16 +535,13 @@ public fun compileSM (stmt) {
 
     | Call (name, args) -> 
           case lookupFun(env, name) of Fun (fLab, numArgs) ->
-            printf("compiling Call. args: %s, nargs: %s, fLab: %s\n", args.string, numArgs.string, fLab.string);
             case foldl(fun([env, code], arg){
-              printf("In foldl. arg: %s, env: %s\n", arg.string, env.string);
               case genLabel(env) of [endLab, env] ->
                 case compile(endLab, env, arg) of [endUsed, env, aCode] ->
                   [env, aCode <+> label(endLab, endUsed) <+> code]
                 esac
               esac
             }, [env, emptyBuffer()], args) of [env, code] ->
-              printf("after Call code: %s, env:%s\n", code.string, env.string);
               [false, env, code <+ CALL(fLab, numArgs)]
             esac
           esac
@@ -538,18 +550,21 @@ public fun compileSM (stmt) {
     esac
   }
 
-                --  Fun (fLabel, args, body, state) : functions)
   fun compileFuns(ienv, icode){
     fun iteration(env, funs){
-      foldl(fun([env, fcode], Fun (fLab, args, body, state)){
+      foldl(fun([env, code], f@Fun (fLab, args, body, state)){
+        -- printf("compiling fun: %s\n", f.string);
         case genLabel(env) of [endLab, env] ->
-          case compile(endLab, beginFun(env, state), body) of [endUsed, env, fCode] ->
-            [env, 
-              code <+> 
-              singletonBuffer(BEGIN(size(args), getLocals(env))) <+> 
-              listBuffer(map(fun(n){ LD(n) }, range(size(args)))) <+
-              END
-            ]
+          case compile(endLab, addArgs(beginFun(env, state), args), body) 
+            of [endUsed, env, fCode] -> --printf("Compiled fun, env: %s\n", env.string);
+              [env, 
+                code <+>
+                label(fLab, true) <+
+                BEGIN(fLab, size(args), getLocals(env)) <+> 
+                fCode <+>
+                label(endLab, endUsed) <+
+                END
+              ]
           esac
         esac
       }, [env, emptyBuffer()], funs)
@@ -561,26 +576,25 @@ public fun compileSM (stmt) {
     case getFuns(env) of [newFuns, newEnv] ->
       env := newEnv; funs := newFuns
     esac;
-    while(funs != {}) do {
+    while(funs != {} && funs != 0) do {
       case iteration(env, funs) of [newEnv, newCode] ->
         case getFuns(newEnv) of [newFuns, newEnv] ->
-          funs := newFuns; env := newEnv; code := newCode
+          funs := newFuns; env := newEnv; code := code <+> newCode
         esac
       esac
     } od;
-
     [env, code]
   }
 
   case initCompEnv ().genLabel of
     [endLab, env] ->
        case compile (endLab, env, stmt) of
-          [endLabUsed, env, code] -> printf("main compiled!\n");
+          [endLabUsed, env, code] -> 
             case compileFuns(env, singletonBuffer(BEGIN("__MAIN__", 0, getLocals(env))) <+> 
                                   code <+> 
                                   label (endLab, endLabUsed) <+ 
-                                  END) of 
-              [env, code] ->
+                                  END) 
+              of [env, code] -> 
                 getBuffer $ code 
             esac
        esac
