@@ -86,16 +86,19 @@ fun eval (env, w, insns) {
 
   -- Lookups a location in local/global states
   fun lookup ([args, locs], loc) {
-    case loc of
+
+    var value = case loc of
       Arg (i) -> args[i]
     | Loc (i) -> locs[i]
     | Glb (x) -> deref (globalState) (x)
-    esac
+    esac;
+    -- printf("lookup(): loc=%s, v=%s\n", loc.string, value.string);
+
+    value
   }
 
   -- Assigns a value to a location
   fun assign ([args, locs], loc, v) {
-    printf("assign(): loc=%s, v=%s\n\n", loc.string, v.string);
 
     case loc of
       Arg (i) -> args[i] := v
@@ -103,6 +106,8 @@ fun eval (env, w, insns) {
     | Glb (x) -> var g = deref (globalState);
                  globalState ::= fun (y) {if compare (x, y) == 0 then v else g (y) fi}
     esac;
+
+    -- printf("assign(): loc=%s, v=%s\n\n", loc.string, v.string);
 
     [args, locs]
   }
@@ -121,13 +126,37 @@ fun eval (env, w, insns) {
   }
 
 
+  fun createLocalState (stack, nArgs, nLocals) {
+    case take(stack, nArgs) of
+      [stack, args] -> 
+        case foldl (
+          fun ([st, n], arg) {
+            [assign (st, Arg (n), arg), n + 1]
+          }, [makeState (nArgs, nLocals), 0], args)
+        of
+          [st, _] -> [stack, st]
+        esac
+    esac
+  }
+
+
   -- Returns either new configuration for program or new configuration and new program instructions that are left to execute
   -- Returns: c | [c, insns]
-  fun evalSingleInsn (env, c@[stack, controlStack, st, w], ins) {
-    printf("evalSingleInsn(): ins=%s, stack=%s, state=%s\n", ins.string, stack.string, st.string);
+  fun evalSingleInsn (env, c@[stack, controlStack, st, w], ins, insnsToExecute) {
+    printf("evalSingleInsn(): ins=%s, stack=%s\n", ins.string, stack.string);
 
     case ins of
       GLOBAL (x) -> [stack, controlStack, assign (st, Glb (x), 0), w]
+    | BEGIN  (fLab, nArgs, nLocals) -> 
+      case createLocalState(stack, nArgs, nLocals) of
+        [stack, st] -> [stack, controlStack, st, w]
+      esac
+    | END  -> 
+      case controlStack of
+        [st, insns] : restCst -> [[stack, restCst, st, w], insns]
+      | {} -> [c, {}]
+      esac
+    | CALL (fLab, nArgs) -> [[stack, [st, insnsToExecute] : controlStack, st, w], fromLabel (env, fLab)]
     | READ ->
         case readWorld (w) of
           [v, wld] -> [v : stack, controlStack, st, wld]
@@ -139,11 +168,11 @@ fun eval (env, w, insns) {
       | _ -> failure ("Stack does not have enough elements. Required >=2 for BINOP.")
       esac
     | LD  (x) -> [lookup (st, x) : stack, controlStack, st, w]
-    | LDA (x) -> [Ref (x) : stack, controlStack, st, w]
+    | LDA (x) -> [x : stack, controlStack, st, w]
     | ST  (x) -> [stack, controlStack, assign (st, x, hd (stack)), w]
     | STI     ->
       case stack of
-        v : Ref (x) : rest -> [v : rest, controlStack, assign (st, x, v), w]
+        v : x : rest -> [v : rest, controlStack, assign (st, x, v), w]
       | _ -> failure ("Stack does not have enough elements. Required >=2 for STI.")
       esac
     | DROP   -> [tl (stack), controlStack, st, w]
@@ -175,7 +204,7 @@ fun eval (env, w, insns) {
     case insns of 
       {} -> c
     | ins : rest ->
-        case evalSingleInsn (env, c, ins) of
+        case evalSingleInsn (env, c, ins, rest) of
           [c, prog] -> eval (c, prog)
         | c         -> eval (c, rest)
         esac
@@ -475,7 +504,7 @@ public fun compileSM (stmt) {
             case compile (lab, addArgs (beginFun (env, state), args), body) of
               [used, fEnv, fBodyCode] -> [
                 env,
-                code <+ BEGIN (fLabel, size (args), getLocals (fEnv)) <+> fBodyCode <+> label (lab, used) <+ END
+                code <+ LABEL (fLabel) <+ BEGIN (fLabel, size (args), getLocals (fEnv)) <+> fBodyCode <+> label (lab, used) <+ END
               ]
             esac
         esac
@@ -509,11 +538,8 @@ public fun compileSM (stmt) {
       Scope (defs, e)  ->
         case addDefs (beginScope (env), defs) of
           [env, codeWithGlobals] ->
-            case rememberFuns (env, defs) of
-              env ->
-                case compile (lab, env, e) of
-                  [used, env, scopeCode] -> [used, endScope (env), codeWithGlobals <+> scopeCode]
-                esac
+            case compile (lab, rememberFuns (env, defs), e) of
+              [used, env, scopeCode] -> [used, endScope (env), codeWithGlobals <+> scopeCode]
             esac
         esac
     | Call   (name, params) -> 
@@ -614,11 +640,12 @@ public fun compileSM (stmt) {
 
   case initCompEnv ().genLabel of
     [endLab, env] ->
-      printf ("compile(): stmt=\n%s\n\n", stmt.string);
+      -- printf ("compile(): stmt=\n%s\n\n", stmt.string);
 
       case compile (endLab, env, stmt) of
         [endLabUsed, env, code] ->
-          getBuffer $ code <+> label (endLab, endLabUsed) <+> compileFuns (env)
+          -- adding main function is need for proper state initialization in eval() function. The state is dependent on the number of arguments of "scope" and the number of local variables inside "scope". Since only functions actually create a new scope in our code, then we need to create a function for global scope as well. Otherwise, state with be create of size (args: 0, local: 0), which for "locals" might not be correct.
+          getBuffer $ singletonBuffer (LABEL ("main")) <+ BEGIN ("main", 0, getLocals (env)) <+> code <+> label (endLab, endLabUsed) <+ END <+> compileFuns (env)
       esac
   esac
 }
