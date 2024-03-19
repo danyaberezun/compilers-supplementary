@@ -24,6 +24,8 @@ var ebx = R (0),
     ebp = R (6),
     esp = R (7);
 
+var dl = "%dl";
+
 -- We need to know the word size to calculate offsets correctly
 var wordSize = 4;
 
@@ -407,22 +409,164 @@ fun suffix (op) {
   esac
 }
 
+fun compileArithOp([op, x, y, env, code]) {
+  if (stackOpnd(x)) then 
+    [env.push(x), code <+ Mov (x, eax) <+ Binop (op, y, eax) <+ Mov(eax, x)]
+  else 
+    [env.push(x), code <+ Binop (op, y, x)]
+  fi 
+}
+
+
+fun compileDivOp([op, x, y, env, code]) {
+  var rreg = case op of 
+                "/" -> eax
+              | "%" -> edx
+             esac;
+  [env.push(y), code <+ Mov(x, eax) <+ Cltd <+ IDiv(y) <+ Mov(rreg, y)]
+}
+
+
+fun compileCmpOp([op, x, y, env, code]) {
+  if (stackOpnd(x) && stackOpnd(y)) then 
+    [env.push(y), code <+ Binop("^", edx, edx) <+ Mov(x, eax) <+ Binop("cmp", y, eax) <+ Set(suffix(op), dl) <+ Mov(edx, y)]
+  else 
+    [env.push(y), code <+ Binop("^", edx, edx) <+ Binop("cmp", y, x) <+ Set(suffix(op), dl) <+ Mov(edx, y)]
+  fi
+}
+
+
+fun compileLogicalOp([op, x, y, env, code]) {
+  case compileIntToBool(x, env, code) of 
+    [env, code] -> case compileIntToBool(y, env, code) of 
+                    [env, code] -> case env.pop2 of 
+                                    [by, bx, env] -> compileArithOp([op, bx, by, env, code])
+                                   esac
+                   esac 
+  esac
+}
+
+
+fun compileIntToBool(int, env, code) {
+  [env.push(int), code <+ Binop("^", edx, edx) <+ Binop("cmp", L(0), int) <+ Set(suffix("!="), dl) <+ Mov(edx, int)]
+}
+
+
+fun compileBinop(args) {
+  case args[0] of 
+      "+"  -> compileArithOp(args)
+    | "-"  -> compileArithOp(args)
+    | "*"  -> compileArithOp(args)
+    | "!!" -> compileLogicalOp(args)
+    | "&&" -> compileLogicalOp(args)
+    | "/"  -> compileDivOp(args)
+    | "%"  -> compileDivOp(args)
+    | "<"  -> compileCmpOp(args)
+    | "<=" -> compileCmpOp(args)
+    | "==" -> compileCmpOp(args)
+    | "!=" -> compileCmpOp(args)
+    | ">=" -> compileCmpOp(args)
+    | ">"  -> compileCmpOp(args)
+  esac
+}
+
+fun pushArgs(env, code, nargs) {
+  case nargs of 
+      0 -> [env, code]
+    | _ -> case pop(env) of 
+             [v, env] -> pushArgs(env, code <+ Push(v), nargs - 1)
+           esac
+  esac
+}
+
+fun popArgs(code, nargs) {
+  case nargs of 
+      0 -> code
+    | _ -> popArgs(code <+ Pop(edx), nargs - 1)
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
   fun compile (env, code) {
     foldl (
       fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n"); 
         case i of
           READ ->
             case env.allocate of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
+              [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
             esac             
         | WRITE ->
             case env.pop of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
+	            [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
             esac
+        | LD (x) ->
+            case allocate(env) of
+              [s, env] -> [env, code <+> move (loc (env, x), s)]
+            esac
+        | ST (x) ->
+            case pop(env) of
+              [s, env] -> [env, code <+> move (s, loc (env, x))]
+            esac
+        | BINOP (op) -> 
+            case pop2(env) of 
+              [y, x, env] -> compileBinop([op, x, y, env, code])
+            esac
+        | CONST (x) -> 
+            case allocate(env) of 
+              [s, env] -> [env, code <+> move(L(x), s)]
+            esac
+        | LABEL (l) -> [if isBarrier(env) then retrieveStack(env, l) else env fi, code <+ Label(l)]
+        | JMP (l) -> [setBarrier(setStack(env, l)), code <+ Jmp(l)]
+        | CJMP (c, l) -> 
+            case pop(env) of 
+              [s, env] -> [setStack(env, l), code <+ Binop("cmp", L(0), s) <+ CJmp(c, l)]
+            esac
+        | LDA (x) -> 
+            case allocate(env) of 
+              [s, env] -> [env, code <+ Lea (loc(env, x), eax) <+ Mov(eax, s)]
+            esac
+        | STI -> 
+            case pop2(env) of 
+              [v, x, env] -> [push(env, v), code <+> move(v, I(0, x))] 
+            esac
+        | DROP -> [pop(env)[1], code]
+        | DUP -> 
+            case peek(env) of 
+              v -> 
+                case allocate(env) of 
+                  [s, env] -> [env, code <+> move(v, s)]
+                esac
+            esac
+        | CALL (fLabel, nargs) -> 
+            case liveRegisters(env, nargs) of 
+              regs -> 
+                case foldl (fun (code, reg) {code <+ Push(reg)}, code, regs) of 
+                  code -> 
+                    case pushArgs(env, code, nargs) of 
+                      [env, code] -> 
+                        case popArgs(code <+ Call(fLabel), nargs) of 
+                          code -> 
+                            case allocate(env) of 
+                              [s, env] -> 
+                                case foldl(fun(code, reg) {code <+ Pop(reg)}, code, regs) of
+                                            code -> [env, code <+ Mov(eax, s)]
+                                esac
+                            esac
+                        esac
+                    esac
+                esac
+            esac
+        | BEGIN (fLabel, nargs, nlocals) -> [enterFunction(env, fLabel, nlocals), code <+> prologue(fLabel)]
+        | END -> 
+          case epilogue(env) of 
+            [env, eCode] -> [env, code <+> eCode]
+          esac
+        | GLOBAL (x) -> [addGlobal(env, x), code]
+        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+        esac
         (* Assignment *)
         
          -- Some guidelines for generating function calls:
@@ -440,10 +584,6 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-               
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        (* End *)
-        esac
       }, [env, emptyBuffer ()], code)
   }
 
