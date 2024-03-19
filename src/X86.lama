@@ -414,6 +414,7 @@ fun compile (env, code) {
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+        printf("compiling: %s\n", showSMInsn(i));
         case i of
           READ ->
             case env.allocate of
@@ -423,6 +424,47 @@ fun compile (env, code) {
             case env.pop of
 	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
             esac
+
+        | LDA(x) -> case allocate(env) of 
+              [dst, env] -> printf("Lda alloc\n"); [env, code <+ Lea(env.loc(x), dst)]
+            esac
+        | STI    -> case env.pop2 of
+                       [v, x, env] -> [push(env, x), code <+> move(v, I(0, x)) <+> move(v, x)]
+                     esac
+        | CONST (n) -> 
+            case allocate(env) of 
+              [dst, env] -> [env, code <+> move(L(n), dst)]
+            esac
+        | ST (x) ->
+            case peek(env) of
+	            [src, env] -> [env, code <+> move (src, loc(env, x))]
+	          esac
+
+        | LD (x) ->
+            case allocate(env) of
+	            [dst, env] -> [env, code <+> move (loc(env, x), dst)]
+	          esac
+        | DUP    -> case peek(env) of src -> 
+                      case env.allocate of [dst, env] -> 
+                        [env, code <+> move(src, dst)]
+                    esac esac
+        | DROP   -> case pop(env) of
+                      [_, env] -> [env, code]
+                    esac
+
+        | BINOP (op) -> compileBinop([env, code], op)
+
+        | JMP (label) -> 
+              [setBarrier(setStack(env, label)), code <+ Jmp(label)] 
+
+        | LABEL (label) -> case if isBarrier(env) then retrieveStack(env, label) else env fi of
+                            env -> [env, code <+ Label(label)]
+                          esac
+        | CJMP (NZ, label) -> 
+            case pop(env) of
+              [s, env] -> [setStack(env, label), code <+ cmpWithZeroInsn(s) <+ CJmp("ne", label)]
+            esac
+
         (* Assignment *)
         
          -- Some guidelines for generating function calls:
@@ -440,6 +482,17 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
+
+        | GLOBAL(x) -> --printf("compiling Global x: %s\n", x); 
+              [addGlobal(env, x), code]
+
+        | BEGIN (name, numArgs, numLocals) -> 
+            [enterFunction(env, name, numLocals), code <+> prologue(name)]
+        
+        | END -> case epilogue(env) of 
+                    [env, epil] -> [env, code <+> epil]
+                 esac
+        
                
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         (* End *)
@@ -450,9 +503,88 @@ fun compile (env, code) {
   compile (env, code) 
 }
 
+fun compileBinop([env, code], op) {
+  -- printf("Compiling binop: %s. env: %s. code: %s", s.string, env.string, code.string);
+  case pop2(env) of [b, a, env] -> [push(env, a),
+    case op of 
+      "+" -> code <+> compilePmMul(op, b, a)
+    | "-" -> code <+> compilePmMul(op, b, a)
+    | "*" -> code <+> compilePmMul(op, b, a)
+
+    | "/" -> code <+> compileDivMod(op, b, a)
+    | "%" -> code <+> compileDivMod(op, b, a)
+
+    | "!!" -> code <+> compileOr(b, a)
+    | "&&" -> code <+> compileAnd(b, a)
+
+    | "<"  -> code <+> compileCompare(op, b, a)
+    | ">"  -> code <+> compileCompare(op, b, a)
+    | "<=" -> code <+> compileCompare(op, b, a)
+    | ">=" -> code <+> compileCompare(op, b, a)
+    | "==" -> code <+> compileCompare(op, b, a)
+    | "!=" -> code <+> compileCompare(op, b, a)
+    | _ -> failure("codegeneration for BINOP %s is not yet implemented\n", op.string)
+    esac
+    ]
+  esac 
+}
+
+fun cmpWithZeroInsn(loc){
+  if isRegister(loc) then
+    Binop("test", loc, loc)
+  else 
+    Binop("cmp", L(0), loc)
+  fi
+}
+
+fun isRegister(loc){
+  case loc of
+    R(_) -> true
+  | _ -> false
+  esac
+}
+
+fun compileDivMod(op, b, a){
+  var code = emptyBuffer() <+ Mov(a, eax) <+ Cltd <+ IDiv(b);
+  case op of
+    "/" -> code <+ Mov(eax, a)
+  | "%" -> code <+ Mov(edx, a)
+  esac
+}
+
+fun compileOr(b, a){
+  if isRegister(a) !! isRegister(b) then 
+    emptyBuffer() <+ Binop("^", eax, eax) <+ Binop("!!", b, a) <+ Set("ne", "%al") <+ Mov(eax, a)
+  else
+    emptyBuffer() <+ Mov(a, eax) <+ Binop("!!",  b, eax) <+ Set("ne", "%al") <+ Binop("&&", L(1), eax) <+ Mov(eax, a)
+  fi
+}
+
+fun compileAnd(b, a){
+  emptyBuffer() <+ Binop("^", eax, eax) <+ cmpWithZeroInsn(a) <+ Set("ne", "%al") 
+        <+ cmpWithZeroInsn(b) <+ Set("ne", "%dl") <+ Binop("&&", edx, eax) <+ Mov(eax, a)
+}
+
+fun compilePmMul(op, b, a){
+  if isRegister(a) !! isRegister(b) then 
+    emptyBuffer() <+ Binop(op, b, a)
+  else
+    emptyBuffer() <+ Mov(a, eax) <+ Binop(op, b, eax) <+ Mov(eax, a)
+  fi
+}
+
+fun compileCompare(op, b, a) {
+  if isRegister(a) !! isRegister(b) then
+    emptyBuffer() <+ Binop("^", eax, eax) <+ Binop("cmp", b, a) <+ Set(suffix(op), "%al") <+ Mov(eax, a)
+  else
+    emptyBuffer() <+ Mov(a, eax) <+ Binop("cmp", b, eax) <+ Set(suffix(op), "%al") <+ Binop("&&", L(1), eax) <+ Mov(eax, a) 
+  fi
+}
+
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
 public fun compileX86 (args, code) {
+  printf("s\n", code.string);
   case compile (initEnv (), code) of
     [env, code] ->
        var asmFile = args.getBaseName ++ ".s",
