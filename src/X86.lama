@@ -407,6 +407,78 @@ fun suffix (op) {
   esac
 }
 
+fun toBool(x){
+  move(x, eax) <+ Binop ("cmp", L(0), eax) <+ Mov(L(0), eax) <+ Set(suffix("!="), "%al") <+ Mov(eax, x)
+}
+
+fun binopOperation(env, code, x, y, op){
+  if stackOpnd(x) && stackOpnd(y) then [push(env, y), code <+ Mov (y, eax) <+ Binop (op, x, eax) <+ Mov (eax, y)]
+  else [push(env, y), code <+ Binop (op, x, y)]
+  fi
+}
+
+fun logOperation(env, code, x, y, op){
+  if (stackOpnd(y) && stackOpnd(x)) then [env.push(y), code <+> toBool(y) <+> toBool(x) <+ Mov (y, eax) <+ Binop (op, x, eax) <+ Mov (eax, y)]
+  else [env.push(y), code <+> toBool(y) <+> toBool(x) <+ Binop(op, x, y)]
+  fi
+}
+
+fun compOperation(env, code, x, y, op){
+  case y of
+   R (_) -> [env.push(y), code <+ Binop("cmp", x, y) <+ Mov(L(0), eax) <+ Set(suffix(op), "%al") <+ Mov(eax, y)]
+   | _ -> [env.push(y), code <+> move(y, edx) <+ Binop("cmp", x, edx) <+ Mov(L(0), eax) <+ Set(suffix(op), "%al") <+ Mov(eax, y)]
+   esac
+}
+
+fun compileBinop (op, env, code) {
+  case pop2 (env) of
+    [x, y, env] -> 
+      case op of
+        "+"  -> binopOperation(env, code, x, y, op)
+      | "-"  -> binopOperation(env, code, x, y, op)
+      | "*"  -> binopOperation(env, code, x, y, op)
+
+      | "/" -> case env.allocate of
+        [res, env] -> [env, code <+> move(y, eax) <+ Cltd <+ IDiv(x) <+ Mov(eax, res)]
+      esac
+      
+      | "%" -> case env.allocate of
+        [res, env] -> [env, code <+> move(y, eax) <+ Cltd <+ IDiv(x) <+ Mov(edx, res)]
+      esac
+
+      | "&&" -> logOperation(env, code, x, y, op)
+      | "!!" -> logOperation(env, code, x, y, op)
+
+      | "<"  -> compOperation(env, code, x, y, op)
+      | "<=" -> compOperation(env, code, x, y, op)
+      | ">"  -> compOperation(env, code, x, y, op)
+      | ">=" -> compOperation(env, code, x, y, op)
+      | "==" -> compOperation(env, code, x, y, op)
+      | "!=" -> compOperation(env, code, x, y, op)
+
+      | _ -> failure ("codegeneration is not yet implemented\n")
+      esac
+  esac
+  }
+
+  fun compileCall(CALL(name, nArg), env, code){
+    var pushRegs = foldl(fun(code, reg) {code <+ Push(reg)}, emptyBuffer(), env.liveRegisters(nArg));
+    var popRegs = foldl(fun(code, reg) {code <+ Pop(reg)}, emptyBuffer(), reverse(env.liveRegisters(nArg)));
+
+    fun pushArgs(env, code, n){
+      if n == 0 then [env, code]
+      else case env.pop of [s, env] -> pushArgs(env, singletonBuffer(Push(s)) <+> code, n - 1) esac
+      fi
+    }
+    
+    case pushArgs(env, emptyBuffer(), nArg) of
+      [env, pushArgsCode] -> 
+        case env.allocate of
+         [res, env] -> [env, code <+> pushRegs <+> pushArgsCode <+ Call(name) <+ Binop("+", L(nArg * wordSize), esp) <+> popRegs <+> move(eax, res)]
+        esac
+    esac
+  }
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -414,6 +486,7 @@ fun compile (env, code) {
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+        -- printf("%s\n", string(i));
         case i of
           READ ->
             case env.allocate of
@@ -440,7 +513,43 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-               
+
+        | ST (x) ->
+            case env.peek of
+              s -> [env, code <+> move (s, env.loc (x))]
+            esac
+        | STI -> 
+          case pop2(env) of
+            [x, y, env] -> 
+              case allocate(env) of
+                [s, env] -> [env, code <+> move(x, I(0, y)) <+> move(x, s)]
+              esac
+          esac
+        | LDA (x) -> case allocate(env) of [refX, env] -> [env, code <+ Lea(loc(env, x), refX)] esac
+        | LD (x) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (loc (env, x), s)]
+          esac
+
+        | DROP -> 
+          case pop(env) of
+            [_, env] -> [env, code]
+          esac
+        | CONST (n) -> 
+          case allocate(env) of
+            [a, env] -> [env, code <+ Mov(L(n), a)]
+          esac
+        | LABEL (l) -> [if isBarrier (env) then retrieveStack (env, l) else env fi, code <+ Label(l)]
+        | JMP (l) -> [setBarrier (setStack (env, l)), code <+ Jmp(l)]
+        | CJMP (c, l) -> case pop(env) of [s, env] -> [setStack(env, l), code <+ Binop("cmp", L(0), s) <+ CJmp(c, l)] esac
+        
+        | BINOP (op) -> compileBinop(op, env, code)
+
+        | GLOBAL (x) -> [addGlobal(env, x), code]
+        | BEGIN (name, _, nLoc) -> [enterFunction(env, name, nLoc), code <+> prologue(name)] 
+        | END -> case epilogue(env) of [env, epilogueCode] -> [env, code <+> epilogueCode] esac
+
+        | c@CALL (name, nArg) -> compileCall(c, env, code)
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         (* End *)
         esac
