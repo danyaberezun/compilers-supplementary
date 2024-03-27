@@ -164,23 +164,7 @@ fun makeEnv (stack, stackSlots, globals) {
     stackSlots
   }
 
-  (* generates code that 
-     1. saves two caller-saved registers (ecx, edx),
-     2. adds @push_args_code,
-     3. calls function @func_name,
-     4. adds @addl_code
-     5. restores registers
-  *)
-  fun genCallF (func_name, push_args_code, addl_code) {
-    emptyBuffer() 
-      <+  Push (ecx) <+ Push (edx)
-      <+> push_args_code
-      <+  Call (func_name)
-      <+> addl_code
-      <+  Pop  (ecx) <+ Pop  (edx)
-  }
-
-  [envString, allocate, push, pop, pop2, addGlobal, loc, getGlobals, getStackSize, genCallF]
+  [envString, allocate, push, pop, pop2, addGlobal, loc, getGlobals, getStackSize]
 }
 
 -- Exported accessors
@@ -218,10 +202,6 @@ fun getGlobals (env) {
 
 fun getStackSize (env) {
   env [8] ()
-}
-
-fun genCallF (env, func_name, push_args_code, addl_code) {
-  env [9] (func_name, push_args_code, addl_code)
 }
 
 -- Creates an initial environment
@@ -299,6 +279,43 @@ fun suffix (op) {
   esac
 }
 
+
+fun trivialOp(code, x, y, s, op) {
+  code <+> move(x, eax) <+ Binop(op, y, eax) <+> move(eax, s)
+}
+
+fun castToBool(addr) {
+      Binop("cmp", L(0), addr).singletonBuffer <+> move (L(0), eax) <+ Set(suffix("!="), "%al") <+ Mov(eax, addr)
+}
+
+fun booleanOp(code, x, y, s, op) {
+  code <+> castToBool(x) <+> castToBool(y) <+> move(x, eax) <+ Binop(op, y, eax) <+> move(eax, s)
+}
+
+fun compareOp(code, x, y, s, op) {
+  code <+ Binop("^", eax, eax) <+> move(x, edx) <+ Binop("cmp", y, edx)  <+ Set (suffix(op), "%al") <+> move(eax, s)
+}
+
+fun binOpCode (code, x, y, s, op) {
+  case op of
+      "+" -> trivialOp(code, x, y, s, op)
+    | "-" -> trivialOp(code, x, y, s, op)
+    | "*" -> trivialOp(code, x, y, s, op) 
+    | "&&" -> booleanOp(code, x, y, s, op)
+	| "!!" -> booleanOp(code, x, y, s, op)
+	| "^" -> trivialOp(code, x, y, s, op)
+    | "/" -> code <+ Mov(x, eax) <+ Cltd <+ IDiv (y) <+ Mov(eax, s)
+    | "%" -> code <+ Mov(x, eax) <+ Cltd <+ IDiv (y) <+ Mov(edx, s)
+    | "==" -> compareOp(code, x, y, s, op)
+    | "!=" -> compareOp(code, x, y, s, op)
+    | "<=" -> compareOp(code, x, y, s, op)
+    | ">=" -> compareOp(code, x, y, s, op)
+    | "<" -> compareOp(code, x, y, s, op)
+    | ">" -> compareOp(code, x, y, s, op)
+	| _ -> failure ("unknown binary op %s\n", op)
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -308,13 +325,50 @@ fun compile (env, code) {
       case i of
         READ ->
           case env.allocate of
-            [s, env] -> [env, code <+> genCallF(env, "Lread", emptyBuffer(), emptyBuffer()) <+ Mov (eax, s)]
+            [s, env] -> [env, code <+ Call ("Lread") <+> move (eax, s)]
           esac             
       | WRITE ->
           case env.pop of
-            [s, env] -> [env, code <+> genCallF(env, "Lwrite", singletonBuffer(Push(s)), singletonBuffer(Pop (eax)))]
+            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+	  | CONST (n) -> 
+	      case env.allocate of
+            [s, env] -> [env, code <+> move ( L(n), s)]
+	      esac
+	  | ST (x) -> 
+	      case env.pop of
+		    [s, env] -> case env.addGlobal(x) of
+			              env -> [env, code <+> move(s, env.loc(x))]
+			            esac
+		  esac
+	  | LD (x) -> 
+	      case env.allocate of
+		    [s, env] -> [env, code <+> move(env.loc(x), s)]
+		  esac
+	  | BINOP (op) ->
+	      case env.pop2 of
+		    [y, x, env] -> case env.allocate of
+			                 [s, env] -> [env, binOpCode(code, x, y, s, op)]
+			               esac
+		  esac
+      | LABEL (l) -> [env, code <+ Label (l)]
+      | CJMP (c, l) ->
+      	case env.pop of
+          [s, env] -> [
+            env,
+            code
+            <+ Binop ("cmp", L (0), s)
+            <+ CJmp (case c of
+              0 -> "z"
+            esac, l)
+          ]
+        esac
+      | JMP (l) -> [
+          env,
+          code
+          <+ Jmp (l)
+        ]
+	  | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
     }, [env, emptyBuffer ()], code)}
 
