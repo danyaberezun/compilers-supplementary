@@ -43,7 +43,7 @@ fun initEvalEnv (insns) {
         }) $ [emptyMap (compare), insns];
   
   [fun (l) {
-     case findMap (map, l) of Some (insns) -> insns esac
+     case findMap (map, l) of Some (insns) -> insns | None -> failure(l) esac
   }]
 }
 
@@ -54,24 +54,37 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (c@[stack, state, world], insns) {
+fun eval (env, c@[stack, state, world], insns) {
   case insns of
-    stmt:tail -> eval(case stmt of
+    stmt:tail -> 
+    --fprintf(stderr, "> %s\n", showSMInsn (stmt));
+    case stmt of
       READ -> case readWorld (world) of
-        [n, newWorld] -> [n:stack, state, newWorld]
+        [n, newWorld] -> eval(env, [n:stack, state, newWorld], tail)
       esac
     | WRITE -> case stack of
-        n:bottom -> [bottom, state, writeWorld(n, world)]
+        n:bottom -> eval(env, [bottom, state, writeWorld(n, world)], tail)
       esac
     | BINOP (op) -> case stack of
-        y:x:bottom -> [evalExpr(emptyState, Binop (op, Const(x), Const(y))):bottom, state, world]
+        y:x:bottom -> eval(env, [evalExpr(emptyState, Binop (op, Const(x), Const(y))):bottom, state, world], tail)
       esac
-    | LD (v) -> [state(v):stack, state, world]
+    | LD (v) -> eval(env, [state(v):stack, state, world], tail)
     | ST (v) -> case stack of
-        x:bottom -> [bottom, state <- [v, x], world]
+        x:bottom -> eval(env, [bottom, state <- [v, x], world], tail)
       esac
-    | CONST (x) -> [x:stack, state, world]
-    esac, tail)
+    | CONST (x) -> eval (env, [x:stack, state, world], tail)
+    | LABEL (l) -> eval (env, c, tail)
+    | JMP (l) -> eval (env, c, fromLabel (env, l))
+    | CJMP (pred, l) -> case pred of
+        "Z" -> case stack of 
+            n:bottom -> eval (env, [bottom, state, world], if n == 0 then fromLabel (env, l) else tail fi)
+          esac
+      | "NZ" -> case stack of 
+          n:bottom -> eval (env, [bottom, state, world], if n != 0 then fromLabel (env, l) else tail fi)
+        esac
+      esac
+    | x -> fprintf("fail: %s", x)
+    esac
   | _ -> c
   esac
 }
@@ -112,12 +125,12 @@ fun genLabels (env, n) {
 }
 
 -- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
+-- Takes an expression, returns a buffer of stack machine instructions
 fun compileExpr (expr) {
   case expr of
-    Var (v) -> {LD (v)}
-  | Const (x) -> {CONST (x)}
-  | Binop (op, l, r) -> compileExpr(l) +++ compileExpr(r) +++ {BINOP (op)}
+    Var (v) -> singletonBuffer (LD (v))
+  | Const (x) -> singletonBuffer (CONST (x))
+  | Binop (op, l, r) -> compileExpr(l) <+> compileExpr(r) <+ BINOP (op)
   esac
 }
 
@@ -159,7 +172,47 @@ public fun compileSM (stmt) {
                   esac
              esac
         esac
-    | _              -> failure ("compileSM not implemented\n")
+    | If (cond, trueBranch, falseBranch) ->
+        case env.genLabels(2) of [trueEnd, falseBegin, env] -> 
+            case compile (trueEnd, env, trueBranch) of [trueEndUsed, env, trueBranchCode] -> 
+                case compile (lab, env, falseBranch) of [falseBeginUsed, env, falseBranchCode] ->
+                  [true, env, emptyBuffer ()
+                    <+> compileExpr (cond)
+                    <+ CJMP ("Z", falseBegin)
+                    <+> trueBranchCode
+                    <+> label (trueEnd, trueEndUsed)
+                    <+ JMP (lab)
+                    <+ LABEL (falseBegin)
+                    <+> falseBranchCode
+                  ]
+                esac
+            esac
+        esac
+    | While (cond, body) ->
+        case env.genLabels(2) of [whileBegin, bodyEnd, env] ->
+            case compile (bodyEnd, env, body) of [bodyEndUsed, env, bodyCode] ->
+              [true, env, emptyBuffer ()
+                <+ LABEL (whileBegin)
+                <+> compileExpr (cond)
+                <+ CJMP ("Z", lab)
+                <+> bodyCode
+                <+> label (bodyEnd, bodyEndUsed)
+                <+ JMP (whileBegin)
+              ]
+            esac
+        esac
+    | DoWhile (cond, body) ->
+        case env.genLabels(2) of [whileBegin, bodyEnd, env] ->
+            case compile (bodyEnd, env, body) of [bodyEndUsed, env, bodyCode] ->
+              [false, env, emptyBuffer ()
+                <+ LABEL (whileBegin)
+                <+> bodyCode
+                <+> label (bodyEnd, bodyEndUsed)
+                <+> compileExpr (cond)
+                <+ CJMP ("NZ", whileBegin)
+              ]
+            esac
+        esac
     esac
   }  
 
