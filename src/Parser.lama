@@ -19,22 +19,24 @@ fun error (msg, loc) {
 --   Ref  --- a reference to a mutable cell (aka "lvalue")
 --   Void --- no value (aka "void"/"unit")
 
--- Checks if a plain value "val" can be used in the context described by
--- the attribute "atr".
-fun assertValue (atr, v, loc) {
-  case atr of
-    Ref  -> error ("reference expected", loc)
-  | Void -> Ignore (v)
-  | _    -> v
-  esac
+fun wrapValue (v, loc) {
+  fun (atr) {
+    case atr of
+      Val -> v
+    | Void -> Ignore (v)
+    | Ref -> error ("Expected reference, got a plain value " ++ string (v), loc)
+    esac
+  }
 }
 
-fun assertVoid (atr, v, loc) {
-  case atr of
-    Void -> v
-  | Val  -> error ("value expected", loc)
-  | _    -> error ("reference expected", loc)
-  esac
+fun wrapVoid (v, loc) {
+  fun (atr) {
+    case atr of
+      Void -> v
+    | Val -> error ("Expected Val, got Void", loc)
+    | Ref -> error ("Expected Ref, got Void", loc)
+    esac
+  }
 }
 
 -- A parser of "something" in brackets; l, r are left and right
@@ -44,39 +46,127 @@ fun inbr (l, p, r) {
 }
 
 fun binop (op) {
-  [syntax (pos -s[op]), fun (l, loc, r) {
-                          fun (a) {
-                            assertValue (a, Binop (op, l (Val), r (Val)), loc)
-                          }
-                        }
+  [
+    syntax (pos -s[op]),
+    fun (l, loc, r) {
+      wrapValue (Binop (op, l (Val), r (Val)), loc)
+    }
   ]
 }
 
-var primary  = memo $ eta syntax (
-                                  -- decimal constant
-                                  loc=pos x=decimal                                 {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
+fun makeIf (cases, finalE) {
+  fun (atr) {
+    case cases of
+      {} -> finalE (atr)
+    | [cond, branch] : otherCases ->
+      If (cond (Val), branch (atr), makeIf (otherCases, finalE) (atr))
+    esac
+  }
+}
 
-                                  -- identifier
-                                  x=lident                                          {fun (a) {
-                                                                                       case a of
-                                                                                         Ref  -> Ref (x)
-                                                                                       | Void -> Ignore (Var (x))
-                                                                                       | _    -> Var (x)
-                                                                                       esac
-                                                                                    }} |
-                                  $(failure ("the rest of primary parsing in not implemented\n"))),
-    basic    = memo $ eta (expr ({[Right, {[s (":="),
-                                            fun (l, loc, r) {
-                                              fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
-                                            }]}],
-                                  [Left , map (binop, {"!!"})],
-                                  [Left , map (binop, {"&&"})],
-                                  [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
-                                  [Left , map (binop, {"+", "-"})],
-                                  [Left , map (binop, {"*", "/", "%"})]
-                                 },
-                                 primary)),
-    exp      = memo $ eta syntax (basic | s1=basic s[";"] s2=exp {fun (a) {Seq (s1 (Void), s2 (a))}});
+var primary  = memo $ eta syntax (
+  -- decimal constant
+  loc=pos x=decimal {
+    wrapValue (Const (stringInt (x)), loc)
+  }
+| -- identifier
+  x=lident {
+    fun (atr) {
+      case atr of
+        Ref  -> Ref (x)
+      | Void -> Ignore (Var (x))
+      | _    -> Var (x)
+      esac
+    }
+  } 
+| -- skip
+  loc=pos -kSkip {
+    wrapVoid (Skip, loc)
+  }
+| -- surrouned with brackets
+  inbr[s ("("), exp, s (")")]
+| -- if
+  -kIf condE=exp
+    -kThen thenE=exp
+    elifBlocks=$(eta syntax (-kElif exp -kThen exp))*
+    elseLoc=pos
+    elseBlock=$(eta syntax (-kElse exp))?
+  -kFi {
+    var finalE = case elseBlock of
+      Some (exp) -> exp
+    | None -> wrapVoid (Skip, elseLoc)
+    esac;
+    makeIf ([condE, thenE] : elifBlocks, finalE)
+  }
+| -- while
+  loc=pos -kWhile condE=exp kDo bodyE=exp -kOd {
+    wrapVoid (While (condE (Val), bodyE (Void)), loc)
+  }
+| -- do-while
+  loc=pos -kDo bodyE=exp -kWhile condE=exp kOd {
+    wrapVoid (DoWhile (bodyE (Void), condE (Val)), loc)
+  }
+| -- read
+  loc=pos -kRead s["("] v=lident s[")"] {
+    wrapVoid (Read (v), loc)
+  }
+| -- write
+  loc=pos -kWrite s["("] e=exp s[")"] {
+    wrapVoid (Write (e (Val)), loc)
+  }
+| -- for
+  loc=pos -kFor initE=exp s[","] condE=exp s[","] stepE=exp -kDo
+  bodyE=exp
+  -kOd {
+    wrapVoid (
+      Seq (
+        initE (Void),
+        While (
+          condE (Val),
+          Seq (
+            bodyE (Void),
+            stepE (Void)
+          )
+        )
+      ),
+      loc
+    )
+  }
+);
+
+var basic = memo $ eta (
+  expr (
+    {
+      [Right, {
+          [
+            s (":="),
+            fun (l, loc, r) {
+              wrapValue (Assn (l (Ref), r (Val)), loc)
+            }
+          ]
+        }
+      ],
+      [Left, map (binop, {"!!"})],
+      [Left, map (binop, {"&&"})],
+      [Nona, map (binop, {"==", "!=", "<", ">", "<=", ">="})],
+      [Left, map (binop, {"+", "-"})],
+      [Left, map (binop, {"*", "/", "%"})]
+    },
+    primary
+  )
+);
+var exp = memo $ eta syntax (
+  basic
+| s1=basic s[";"] s2=exp {
+    fun (atr) {
+      Seq (s1 (Void), s2 (atr))
+    }
+  }
+);
 
 -- Public top-level parser
-public parse = syntax (s=exp {s (Void)});
+public parse = syntax (
+  s=exp {
+    s (Void)
+  }
+);
