@@ -89,19 +89,33 @@ fun evalInsn (env, c@[stack,state,w], insn) {
   | LD (x) -> [[state (x):stack, state, w], None]
   | ST (x) ->
     case stack of
-      s:ss -> [[ss, state <- [x, s], w], None]
+      s:ss -> [[stack, state <- [x, s], w], None]
     esac
   | CONST (n) -> [[n:stack, state, w], None]
   | LABEL (_) -> [c, None]
   | JMP (label) -> [c, Some (fromLabel (env, label))]
-  | CJMP (pred, label) -> case stack of
-                            s:ss ->
-                              if case pred of "z" -> (s == 0) | "nz" -> (s != 0) esac then
-                                [[ss, state, w], Some (fromLabel (env, label))]
-                              else
-                                [[ss, state, w], None]
-                              fi
-                          esac
+  | CJMP (pred, label) ->
+    case stack of
+      s:ss ->
+        if case pred of "z" -> (s == 0) | "nz" -> (s != 0) esac then
+          [[ss, state, w], Some (fromLabel (env, label))]
+        else
+          [[ss, state, w], None]
+        fi
+    esac
+  | LDA (x) -> [[(Kref (x)):stack, state, w], None]
+  | STI ->
+    case stack of
+      v:(Kref (x)):ss -> [[v:ss, state <- [x, v], w], None]
+    esac
+  | DROP ->
+    case stack of
+      s:ss -> [[ss, state, w], None]
+    esac
+  | DUP ->
+    case stack of
+      s1:ss -> [[s1:s1:ss, state, w], None]
+    esac
   esac
 }
 
@@ -140,16 +154,6 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
-fun compileExpr (expr) {
-  case expr of
-    Var (v) -> {LD (v)}
-  | Const (n) -> {CONST (n)}
-  | Binop (op, e1, e2) -> compileExpr(e2) +++ compileExpr(e1) +++ {BINOP (op)}
-  esac
-}
-
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
@@ -159,6 +163,25 @@ public fun compileSM (stmt) {
     then singletonBuffer (LABEL (lab))
     else emptyBuffer ()
     fi
+  }
+
+  -- Function for chaining compiled expressions with correct env and outer label usage
+  fun compileAndThen (env, expr, suff) {
+      case env.genLabel of
+        [nLab, env] ->
+          case compile (nLab, env, expr) of
+            [nLabUsed, env, eCode] ->
+              case suff (env) of
+                [labUsed, env, suffCode] -> [labUsed, env, eCode <+> label (nLab, nLabUsed) <+> suffCode]
+              esac
+          esac
+      esac
+  }
+
+  -- Convenient function to pass tail param to compileAndThen
+  -- Don't use for JMP and CJMP
+  fun emitInsn (insn) {
+    fun (env) { [false, env, singletonBuffer (insn)] }
   }
 
   -- Generates SM code for a given statement
@@ -171,69 +194,62 @@ public fun compileSM (stmt) {
   --    code buffer
   fun compile (lab, env, stmt) {
     case stmt of
-      Skip           -> [false, env, emptyBuffer ()]
-    | Var    (x)     -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)     -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)     -> [false, env, singletonBuffer (CONST (n))]
-    | Skip           -> [false, env, emptyBuffer ()]
-    | Read  (x)      -> [false, env, singletonBuffer (READ) <+ ST (x)]
-    | Write (e)      -> [false, env, listBuffer (compileExpr (e)) <+ WRITE]
-    | Assn  (x, e)   -> [false, env, listBuffer (compileExpr (e)) <+ ST (x)]
-    | Seq   (s1, s2) ->
-        case env.genLabel of
-          [s2Lab, env] ->
-             case compile (s2Lab, env, s1) of
-               [s2LabUsed, env, s1Code] ->
-                  case compile (lab, env, s2) of
-                    [labUsed, env, s2Code] -> [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
-                  esac
-             esac
-        esac
+    -- values
+      Var    (x) -> [false, env, singletonBuffer (LD (x))]
+    | Ref    (x) -> [false, env, singletonBuffer (LDA (x))]
+    | Const  (n) -> [false, env, singletonBuffer (CONST (n))]
+    | Ignore (e) -> compileAndThen (env, e, emitInsn (DROP))
+    -- basic
+    | Skip -> [false, env, emptyBuffer ()]
+    | Read  (x) -> [false, env, singletonBuffer (READ) <+ ST (x) <+ DROP]
+    | Write (e) -> compileAndThen (env, e, emitInsn (WRITE))
+    | Assn  (x, e) -> compileAndThen (env, x, fun (env) {compileAndThen (env, e, emitInsn (STI))})
+    | Binop (op, e1, e2) -> compileAndThen (env, e2, fun (env) {compileAndThen (env, e1, emitInsn (BINOP (op)))})
+    -- control flow
+    | Seq (e1, e2) -> compileAndThen (env, e1, fun (env) {compile (lab, env, e2)})
     | If (pred, pb, nb) ->
-        case env.genLabels (2) of
-          [elseBegLab, pbEndLab, env] ->
-            case compile (pbEndLab, env, pb) of
-              [pbEndLabUsed, env, pbCode] ->
-                case compile (lab, env, nb) of
-                  [_, env, nbCode] -> [true, env,
-                                       listBuffer (compileExpr (pred)) <+
-                                       CJMP ("z", elseBegLab) <+>
-                                       pbCode <+>
-                                       label (pbEndLab, pbEndLabUsed) <+
-                                       JMP (lab) <+
-                                       LABEL (elseBegLab) <+>
-                                       nbCode
-                                      ]
-                esac
-            esac
-        esac
+      case env.genLabels (3) of
+        [elseBegLab, pbEndLab, predEndLab, env] ->
+          case compile (pbEndLab, env, pb) of
+            [pbEndLabUsed, env, pbCode] ->
+              case compile (lab, env, nb) of
+                [_, env, nbCode] ->
+                  case compile (predEndLab, env, pred) of
+                    [predEndLabUsed, env, predCode] ->
+                      [true, env,
+                        predCode <+>
+                        label(predEndLab, predEndLabUsed) <+
+                        CJMP ("z", elseBegLab) <+>
+                        pbCode <+>
+                        label (pbEndLab, pbEndLabUsed) <+
+                        JMP (lab) <+
+                        LABEL (elseBegLab) <+>
+                        nbCode
+                      ]
+                  esac
+              esac
+          esac
+      esac
     | While (pred, body) ->
-        case env.genLabels (2) of
-          [whileBegLab, bodyEndLab, env] ->
-            case compile (bodyEndLab, env, body) of
-              [bodyEndLabUsed, env, bodyCode] -> [true, env,
-                                                  singletonBuffer (LABEL (whileBegLab)) <+>
-                                                  listBuffer (compileExpr (pred)) <+
-                                                  CJMP ("z", lab) <+>
-                                                  bodyCode <+>
-                                                  label (bodyEndLab, bodyEndLabUsed) <+
-                                                  JMP (whileBegLab)
-                                                 ]
-            esac
-        esac
-    | DoWhile (body, pred) ->
-        case env.genLabels (2) of
-          [bodyBegLab, bodyEndLab, env] ->
-            case compile (bodyEndLab, env, body) of
-              [bodyEndLabUsed, env, bodyCode] -> [false, env,
-                                                  singletonBuffer (LABEL (bodyBegLab)) <+>
-                                                  bodyCode <+>
-                                                  label (bodyEndLab, bodyEndLabUsed) <+>
-                                                  listBuffer (compileExpr (pred)) <+
-                                                  CJMP ("nz", bodyBegLab)
-                                                ]
-            esac
-        esac
+      case env.genLabels (3) of
+        [whileBegLab, bodyEndLab, predEndLab, env] ->
+          case compile (bodyEndLab, env, body) of
+            [bodyEndLabUsed, env, bodyCode] ->
+              case compile (predEndLab, env, pred) of
+                [predEndLabUsed, env, predCode] ->
+                  [true, env,
+                    label (whileBegLab, true) <+>
+                    predCode <+>
+                    label (predEndLab, predEndLabUsed) <+
+                    CJMP ("z", lab) <+>
+                    bodyCode <+>
+                    label (bodyEndLab, bodyEndLabUsed) <+
+                    JMP (whileBegLab)
+                  ]
+              esac
+          esac
+      esac
+    | DoWhile (body, pred) -> compile (lab, env, Seq (body, While (pred, body)))
     esac
   }
 

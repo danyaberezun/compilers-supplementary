@@ -291,7 +291,7 @@ fun retrieveStack (env, l) {
 }
 
 fun genCallF (env, func_name, push_args_code, addl_code) {
-  env [14] (env, func_name, push_args_code, addl_code)
+  env [14] (func_name, push_args_code, addl_code)
 }
 
 -- Creates an initial environment
@@ -343,6 +343,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -360,62 +361,76 @@ fun move (from, to) {
   fi
 }
 
+-- Return [code buffer, output dest]
+-- Uses eax and edx as immediate regiters
+-- s2 should be register
+fun opImpl(lop, s1, s2) {
+
+  fun cmpWrapper(lop, s1, s2) {
+    [singletonBuffer (Binop ("cmp", s1, s2)) <+ Set (lop, "%al") <+ Binop ("&&", L (1), eax), eax]
+  }
+
+  var divCode = singletonBuffer (Mov (s2, eax)) <+ Cltd <+ IDiv (s1);
+
+  fun toBit(s) {
+    singletonBuffer (Mov(s, edx)) <+ Binop ("testl", edx, edx) <+ Set ("nz", "%dl") <+ Binop ("&&", L (1), edx) <+ Mov (edx, s)
+  }
+
+  case lop of
+    "&&" -> [toBit (s1) <+> toBit (s2) <+ Binop ("&&", s1, s2), s2]
+    | "!!" -> [toBit (s1) <+> toBit (s2) <+ Binop ("!!", s1, s2), s2]
+    | "/" -> [divCode, eax]
+    | "%" -> [divCode, edx]
+    | "<" -> cmpWrapper("l", s1, s2)
+    | "<=" -> cmpWrapper("le", s1, s2)
+    | ">" -> cmpWrapper("g", s1, s2)
+    | ">=" -> cmpWrapper("ge", s1, s2)
+    | "==" -> cmpWrapper("e", s1, s2)
+    | "!=" -> cmpWrapper("ne", s1, s2)
+    -- TODO: replace to + - *
+    | _ -> [singletonBuffer (Binop (lop, s1, s2)), s2]
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-
-  -- Return [code buffer, output dest]
-  -- Uses eax and edx as immediate regiters
-  -- s2 should be register
-  fun opImpl(lop, s1, s2) {
-
-    fun cmpWrapper(lop, s1, s2) {
-      [singletonBuffer (Binop ("cmp", s1, s2)) <+ Set (lop, "%al") <+ Binop ("&&", L (1), eax), eax]
-    }
-
-    var divCode = singletonBuffer (Mov (L (0), edx)) <+ Mov (s2, eax) <+ IDiv (s1);
-    var landCode = singletonBuffer (Binop ("testl", s1, s2)) <+ Set ("z", "%al") <+ Binop ("&&", L (1), eax);
-
-    case lop of
-      "&&" -> [landCode, eax]
-      | "!!" -> [singletonBuffer (Binop ("!!", s1, s2)) <+> landCode, eax]
-      | "/" -> [divCode, eax]
-      | "%" -> [divCode, edx]
-      | "<" -> cmpWrapper("l", s1, s2)
-      | "<=" -> cmpWrapper("le", s1, s2)
-      | ">" -> cmpWrapper("g", s1, s2)
-      | ">=" -> cmpWrapper("ge", s1, s2)
-      | "==" -> cmpWrapper("e", s1, s2)
-      | "!=" -> cmpWrapper("ne", s1, s2)
-      -- TODO: replace to + - *
-      | _ -> [singletonBuffer (Binop (lop, s1, s2)), s2]
-    esac
-  }
-
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      -- fprintf(stderr, "%s\n", showSMInsn (i));
       case i of
         READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+> genCallF(env, "Lread", emptyBuffer(), emptyBuffer()) <+ Mov (eax, s)]
-          esac
+        case env.allocate of
+          [s, env] -> [env, code <+> env.genCallF ("Lread", emptyBuffer (), emptyBuffer ()) <+ Mov (eax, s)]
+        esac
       | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+> genCallF(env, "Lwrite", singletonBuffer(Push(s)), singletonBuffer(Pop (eax)))]
-          esac
+        case env.pop of
+          [s, env] -> [env, code <+> env.genCallF ("Lwrite", singletonBuffer (Push (s)), singletonBuffer (Pop (eax)))]
+        esac
       | LD (x) ->
-          case env.addGlobal (x).allocate of
-            [s, env] -> [env, code <+> move (env.loc (x), s)]
-          esac
+        case env.addGlobal (x).allocate of
+          [s, env] -> [env, code <+> move (env.loc (x), s)]
+        esac
+      | LDA (x) ->
+        case env.addGlobal (x).allocate of
+          [s, env] -> [env, code <+ Lea (env.loc (x), s)]
+        esac
       | ST (x) ->
-          case env.addGlobal (x).pop of
-            [s, env] -> [env, code <+> move (s, env.loc (x))]
-          esac
+        case env.addGlobal (x) of
+          env -> [env, code <+> move (env.peek, env.loc (x))]
+        esac
+      | STI ->
+        case env.pop2 of
+          [v, rx, env] ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (v, I (0, rx)) <+> move (v, s)]
+            esac
+        esac
       | CONST (n) ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Mov (L (n), s)]
-          esac
+        case env.allocate of
+          [s, env] -> [env, code <+ Mov (L (n), s)]
+        esac
       | BINOP (lop) ->
         case env.pop2 of
           [s2, s1, env] ->
@@ -427,12 +442,17 @@ fun compile (env, code) {
                 esac
             esac
         esac
-      | LABEL (label) -> [env, code <+ Label (label)]
-      | JMP (label) -> [env, code <+ Jmp (label)]
+      | LABEL (label) -> [if env.isBarrier then env.retrieveStack (label) else env fi, code <+ Label (label)]
+      | JMP (label) -> [env.setStack (label).setBarrier, code <+ Jmp (label)]
       | CJMP (t, label) ->
-          case env.pop of
-            [x, new_env] -> [env, code <+ Binop("cmp", L(0), x) <+ CJmp(t, label)]
-          esac
+        case env.pop of
+          [x, env] -> [env.setStack (label).setBarrier, code <+ Binop ("cmp", L (0), x) <+ CJmp (t, label)]
+        esac
+      | DROP ->
+        case env.pop of
+          [_, env] -> [env, code]
+        esac
+      -- -- Not emitted now by SM compiler, so don't compile it. | DUP () ->
       esac
     }, [env, emptyBuffer ()], code)
 }
