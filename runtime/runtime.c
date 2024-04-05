@@ -107,7 +107,7 @@ void* Belem (void *p, int i0) {
   return (void*) ((int*) a->contents)[i];
 }
 
-void* Bsta (void *x, int i, void *v) {
+void* Bsta (void *v, void *x, int i) {
   if (UNBOXED(i)) {
     if (TAG(TO_DATA(x)->tag) == STRING_TAG)((char*) x)[UNBOX(i)] = (char) UNBOX(v);
     else ((int*) x)[UNBOX(i)] = (int) v;
@@ -122,6 +122,7 @@ void* Bsta (void *x, int i, void *v) {
 
 void Lwrite (int x) {
   printf ("%d\n", UNBOX (x));
+  fflush(stdout);
 }
 
 int Lread () {
