@@ -54,6 +54,7 @@ var wordSize = 4;
 --   Meta  (string)             -- metainformation (declarations, etc.)
 --
 --   Dec   (opnd)               -- arithmetic correction: decrement  
+--   Inc   (opnd)               -- increment
 --   Or1   (opnd)               -- arithmetic correction: or 0x0001                     
 --   Sal1  (opnd)               -- arithmetic correction: shl 1           
 --   Sar1  (opnd)               -- arithmetic correction: shr 1
@@ -104,6 +105,7 @@ fun insnString (insn) {
   | CJmp  (c, l)       -> sprintf ("\tj%s\t%s\n", c, l)
   | Meta  (m)          -> m
   | Dec   (s)          -> sprintf ("\tdecl\t%s\n", opndString (s))
+  | Inc   (s)          -> sprintf ("\tincl\t%s\n", opndString (s))
   | Or1   (s)          -> sprintf ("\torl\t$0x0001,\t%s\n", opndString (s))
   | Sal1  (s)          -> sprintf ("\tsall\t%s\n", opndString (s))
   | Sar1  (s)          -> sprintf ("\tsarl\t%s\n", opndString (s))    
@@ -440,6 +442,17 @@ fun move (from, to) {
   fi
 }
 
+
+fun moveBkp(from, to, buff){
+  if memOpnd(buff) then failure("buff must be register. Got: %s\n", buff.string) fi;
+
+  if memOpnd (from) && memOpnd (to)
+  then singletonBuffer (Mov (from, buff)) <+ Mov (buff, to)
+  else singletonBuffer (Mov (from, to))
+  fi
+
+}
+
 -- Gets a suffix for Set instruction from
 -- source language comparison operator
 fun suffix (op) {
@@ -464,6 +477,43 @@ fun toFixedNum (r) {
   singletonBuffer (Sal1 (r)) <+ Or1 (r)
 }
 
+fun fromFixedNum(r) {
+  singletonBuffer (Sar1 (r)) 
+}
+
+fun popN(env, n){
+  if n <= 0 
+    then [{}, env]
+    else 
+      case pop(env) of [v, env] ->
+        case popN(env, n - 1) of [res, env] ->
+          [v : res, env]
+        esac
+      esac
+  fi
+}
+
+fun builtinLabelFix(label){
+  if label[0] == '$' 
+    then "L" ++ substring(label, 1, length(label) - 1) 
+    else label
+  fi
+}
+
+fun allocateN(env, n){
+  fun helper(env, n, acc){
+    if n <= 0
+      then [env, reverse(acc)]
+      else 
+        case allocate(env) of [dst, env] ->
+          helper(env, n - 1, dst : acc)
+        esac
+    fi
+  }
+
+  helper(env, n, {})
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {  
@@ -473,37 +523,284 @@ fun compile (env, code) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
 
         case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+        LDA (x) -> 
+            case allocateN(env, 2) of [env, {dst1, dst2}] -> 
+              [env, 
+              if memOpnd(dst1) 
+                then code <+ Lea(loc(env, x), eax) <+> move(eax, dst1)
+                else code <+ Lea(env.loc(x), dst1)
+              fi <+> move(dst1, dst2)
+              ]
+            esac 
+
+        | STI    -> 
+            case env.pop2 of [v, x, env] ->
+                -- [push(env, x), code <+> move(v, I(0, x)) <+> move(v, x)]
+              if memOpnd(x)
+                then [push(env, x), code <+> move(x, eax) <+> moveBkp(v, I(0, eax), edx) <+> move(v, x)]
+                else [push(env, x), code <+> move(v, I(0, x)) <+> move(v, x)]
+              fi
+            esac
+
+        | CONST (n) -> 
+            case allocate(env) of 
+              [dst, env] -> [env, code <+> move(L(makeBox(n)), dst)]
+            esac
+
+        | ST (x) ->
+            case peek(env) of
+	            src -> [env, code <+> move (src, loc(env, x))]
+	          esac
+
+        | LD (x) ->
+            case allocate(env) of
+	            [dst, env] -> [env, code <+> move (loc(env, x), dst)]
+	          esac
+
+        | DUP    -> case peek(env) of src -> 
+                      case env.allocate of [dst, env] -> 
+                        [env, code <+> move(src, dst)]
+                      esac 
+                    esac
+
+        | DROP   -> case pop(env) of
+                      [_, env] -> [env, code]
+                    esac
+
+        | BINOP (op) -> compileBinop([env, code], op)
+
+        | JMP (label) -> 
+              [setBarrier(setStack(env, label)), code <+ Jmp(label)] 
+
+        | LABEL (label) -> case if isBarrier(env) then retrieveStack(env, label) else env fi of
+                            env -> [env, code <+ Label(label)]
+                          esac
+
+        | CJMP (NZ, label) -> 
+            case pop(env) of
+              [s, env] -> [setStack(env, label), code <+ cmpWithZeroInsn(s) <+ CJmp("ne", label)]
+            esac
+
+        | GLOBAL(x) -> --printf("compiling Global x: %s\n", x); 
+              [addGlobal(env, x), code]
+
+        | BEGIN (name, numArgs, numLocals) -> 
+            [enterFunction(env, name, numLocals), code <+> prologue(name)]
+        
+        | END -> case epilogue(env) of 
+                    [env, epil] -> [env, code <+> epil]
+                 esac
+
+        | CALL (label, numArgs) -> 
+            case compileCall(env, builtinLabelFix(label), numArgs) of 
+              [env, call] -> [env, code <+> call]
             esac
         
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
+        | BUILTIN (label, numArgs) ->
+            case compileCall(env, "L" ++ label, numArgs) of 
+              [env, call] -> [env, code <+> call]
+            esac
+
+        | STRING (s) -> 
+            case addString(env, s) of [env, name] -> 
+              case compileCall(push(env, M("$" ++ name)), "Bstring", 1) of [env, call] ->
+                  [env, code <+> call]
+              esac
+            esac
+
+        | ELEM -> 
+            case compileCall(env, "Belem", 2) of 
+              [env, call] -> [env, code <+> call]
+            esac
+
+        | STA -> 
+            case compileCall(env, "Bsta", 3) of 
+              [env, call] -> [env, code <+> call]
+            esac
+        
+        | ARRAY (n) -> 
+            case compileArrayCall(env, n) of [env, call] ->
+              [env, code <+> call]
+            esac
+
+        | SEXP (s, n) -> 
+            case compileSexpCall(env, s, n) of [env, call] ->
+              [env, code <+> call]
+            esac
                
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
+      esac
       }, [env, emptyBuffer ()], code)
   }
 
   compile (env, code) 
+}
+
+fun compileSexpCall(env, s, numElems){
+  case addString(env, s) of [env, name] ->
+    case liveRegisters(env, numElems) of liveRegs ->
+      case popN(env, numElems) of [args, env] ->
+        case allocate(env) of [res, env] ->
+          case  listBuffer(map(fun(reg){Push(reg)}, reverse(liveRegs))) 
+                <+  Push(M("$" ++ name))
+                <+> listBuffer(map(fun(arg){Push(arg)}, args)) 
+                <+  Push(L(makeBox(numElems)))
+                <+  Call("Barray") <+> move(eax, res) 
+                <+  Binop("+", L((numElems + 2) * wordSize), esp) 
+                <+> listBuffer(map(fun(r){ Pop(r) }, liveRegs)) 
+            of code ->
+                [env, code]
+          esac
+        esac
+      esac
+    esac
+  esac
+}
+
+fun compileArrayCall(env, numElems){
+  case liveRegisters(env, numElems) of liveRegs ->
+    case popN(env, numElems) of [args, env] ->
+      case allocate(env) of [res, env] ->
+        case  listBuffer(map(fun(reg){Push(reg)}, reverse(liveRegs))) 
+              <+> listBuffer(map(fun(arg){Push(arg)}, args)) 
+              <+  Push(L(makeBox(numElems)))
+              <+  Call("Barray") <+> move(eax, res) 
+              <+  Binop("+", L((numElems + 1) * wordSize), esp) 
+              <+> listBuffer(map(fun(r){ Pop(r) }, liveRegs)) 
+          of code ->
+              [env, code]
+        esac
+      esac
+    esac
+  esac
+}
+
+fun compileCall(env, label, numArgs){
+  case liveRegisters(env, numArgs) of liveRegs ->
+    case popN(env, numArgs) of [args, env] ->
+      case allocate(env) of [res, env] ->
+        case  listBuffer(map(fun(reg){Push(reg)}, reverse(liveRegs))) 
+              <+> listBuffer(map(fun(arg){Push(arg)}, args)) 
+              <+  Call(label) <+> move(eax, res) 
+              <+  Binop("+", L(numArgs * wordSize), esp) 
+              <+> listBuffer(map(fun(r){ Pop(r) }, liveRegs)) 
+          of code ->
+              [env, code]
+        esac
+      esac
+    esac
+  esac
+}
+
+fun compileBinop([env, code], op) {
+  -- printf("Compiling binop: %s. env: %s. code: %s", s.string, env.string, code.string);
+  case pop2(env) of [b, a, env] -> [push(env, a),
+    case op of 
+      "+" -> code <+> compileSum(b, a)
+    | "-" -> code <+> compileMinus(b, a)
+    | "*" -> code <+> compileMul(b, a)
+
+    | "/" -> code <+> compileDivMod(op, b, a)
+    | "%" -> code <+> compileDivMod(op, b, a)
+
+    | "!!" -> code <+> compileOr(b, a)
+    | "&&" -> code <+> compileAnd(b, a)
+
+    | "<"  -> code <+> compileCompare(op, b, a)
+    | ">"  -> code <+> compileCompare(op, b, a)
+    | "<=" -> code <+> compileCompare(op, b, a)
+    | ">=" -> code <+> compileCompare(op, b, a)
+    | "==" -> code <+> compileCompare(op, b, a)
+    | "!=" -> code <+> compileCompare(op, b, a)
+    | _ -> failure("codegeneration for BINOP %s is not yet implemented\n", op.string)
+    esac
+    ]
+  esac 
+}
+
+fun cmpWithZeroInsn(loc){
+  Binop("cmp", L(makeBox(0)), loc)
+}
+
+fun isRegister(loc){
+  case loc of
+    R(_) -> true
+  | _ -> false
+  esac
+}
+
+fun compileDivMod(op, b, a){
+      fromFixedNum(a) 
+  <+> fromFixedNum(b) 
+  <+  Mov(a, eax) 
+  <+  Cltd 
+  <+  IDiv(b) 
+  <+  case op of
+        "/" -> Mov(eax, a)
+      | "%" -> Mov(edx, a)
+      esac 
+  <+> toFixedNum(a)
+}
+
+fun compileOr(b, a){
+  fromFixedNum(b) <+>
+  fromFixedNum(a) <+>
+    if isRegister(a) !! isRegister(b) then 
+      singletonBuffer(Binop("^", eax, eax)) <+ Binop("!!", b, a) <+ Set("ne", "%al") 
+    else
+      singletonBuffer(Mov(a, eax)) <+ Binop("!!",  b, eax) <+ Set("ne", "%al") <+ Binop("&&", L(1), eax) 
+    fi <+ 
+  Mov(eax, a) <+>
+  toFixedNum(a)
+}
+
+fun compileAnd(b, a){
+  emptyBuffer() <+ 
+  Binop("^", eax, eax) <+ 
+  cmpWithZeroInsn(a) <+ 
+  Set("ne", "%al") <+ 
+  cmpWithZeroInsn(b) <+ 
+  Set("ne", "%dl") <+ 
+  Binop("&&", edx, eax) <+>
+  toFixedNum(eax) <+>
+  move(eax, a)
+}
+
+fun compileSum(b, a){
+  if isRegister(a) !! isRegister(b) then 
+    emptyBuffer() <+ Binop("+", b, a) 
+  else
+    emptyBuffer() <+ Mov(a, eax) <+ Binop("+", b, eax) <+ Mov(eax, a)
+  fi <+ Dec(a)
+}
+
+fun compileMinus(b, a){
+  if isRegister(a) !! isRegister(b) then 
+    emptyBuffer() <+ Binop("-", b, a) 
+  else
+    emptyBuffer() <+ Mov(a, eax) <+ Binop("-", b, eax) <+ Mov(eax, a)
+  fi <+ Inc(a)
+}
+
+fun compileMul(b, a){
+  fromFixedNum(a) <+>
+  fromFixedNum(b) <+>
+  if isRegister(a) !! isRegister(b) then 
+    singletonBuffer(Binop("*", b, a))
+  else
+    singletonBuffer(Mov(a, eax)) <+ Binop("*", b, eax) <+ Mov(eax, a)
+  fi <+>
+  toFixedNum(a)
+}
+
+fun compileCompare(op, b, a) {
+  if isRegister(a) !! isRegister(b) then
+    singletonBuffer(Binop("^", eax, eax)) <+ Binop("cmp", b, a) <+ Set(suffix(op), "%al") 
+  else
+    singletonBuffer(Mov(a, eax)) <+ Binop("cmp", b, eax) <+ Set(suffix(op), "%al") <+ Binop("&&", L(1), eax) 
+  fi
+  <+> toFixedNum(eax)
+  <+> move(eax, a)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
