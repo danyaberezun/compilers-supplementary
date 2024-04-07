@@ -3,10 +3,10 @@
 import List;
 import State;
 import World;
-import Lexer;
 import Parser;
+import Lexer;
 
--- As association map which maps "\otimes" into "\oplus"
+-- An association map which maps "\otimes" into "\oplus"
 var ops = {
   ["+" , infix + ],
   ["-" , infix - ],
@@ -86,9 +86,38 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
+
+-- Helper function: adds a bunch of variables 
+-- and initialize them with corresponding values in the current scope.
+fun initializeNames (state, names, values) {
+  foldl (fun (s, [name, Nat (value)]) { addName (s, name, Var (value)) }, state, zip (names, values))
+}
+
+-- Adds a definition to the current state.
+-- \param state state before the definitions
+-- \param def the definiton to add
+-- \return new state
+fun addDef (state, def) {
+  --printf ("Expr.addDef def=%s to state=%s\n", def.string, state.string);
+  case def of
+    Var (names) ->
+      addNames (state, names)
+  | Fun (name, parameterNames, bodyE) ->
+      addFunction (state, name, parameterNames, bodyE)
+  esac
+}
+
+-- Adds a list of definition to the current state.
+-- \param state state before the definitions
+-- \param defs a list of definitions to add
+-- \return new state
+fun addDefs (state, defs) {
+  --printf ("Expr.addDefs %s to state %s\n", string (defs), string (state));
+  foldl (addDef, state, defs)
+}
                                         
--- Evaluates a list of expressions, properly threading a configurations.
--- Returns the final configuration and the list of values
+-- Evaluates a list of expressions, properly threading the configuration.
+-- Returns the final configuration and the list of values.
 fun evalList (c, exprs) {
   case foldl (fun ([c, vals], e) {
                 case eval (c, e) of
@@ -101,15 +130,113 @@ fun evalList (c, exprs) {
   esac
 }
 
-(* Assignment *)
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun evalCond (condVal) {
+  case condVal of
+    Nat (n) -> n
+  | _ -> failure ("Cannot have a non-number as a condition\n")
+  esac
 }
-(* End *)
+
+fun eval (c@[s, w], expr) {
+  --printf ("Expr: evaluating %s\n", string (expr));
+  case expr of
+    Assn (lhs, rhs) ->
+      case evalList (c, {lhs, rhs}) of
+        [[s, w], {Ref (name), value@(Nat (n))}] ->
+          var check = checkVar (s, name);
+          var c = [s <- [name, Var (n)], w];
+          [c, value]
+      | _ -> failure ("AST ain't well-formed\n")
+      esac
+  | Seq (e1, e2) ->
+      case evalList (c, {e1, e2}) of [c, {_, v2}] ->
+        [c, v2]
+      esac
+  | Skip -> [c, Bot]
+  | Read (varName) ->
+      case readWorld (w) of [value, w] ->
+        [[s <- [varName, Var (value)], w], Bot]
+      esac
+  | Write (expr) ->
+      case eval (c, expr) of [c, value] ->
+        case value of
+          Nat (n) ->
+            [[s, writeWorld (n, w)], Bot]
+        | _ -> failure ("Cannot write a non-number\n")
+        esac
+      esac
+  | If (condE, thenE, elseE) ->
+      case eval (c, condE) of [c, condV] ->
+        if evalCond (condV)
+          then eval (c, thenE)
+          else eval (c, elseE)
+        fi
+      esac
+  | While (condE, bodyE) ->
+      var currentC = c;
+      while (
+        case eval (currentC, condE) of [newC, value] ->
+          currentC := newC;
+          evalCond (value)
+        esac
+      ) do
+        case eval (currentC, bodyE) of
+          [newC, Bot] -> currentC := newC
+        | _ -> failure ("While body must be Void")
+        esac
+      od;
+      [currentC, Bot]
+  | DoWhile (bodyE, condE) ->
+      var currentC = c;
+      do
+        case eval (currentC, bodyE) of
+          [newC, Bot] -> currentC := newC
+        | _ -> failure ("DoWhile body must be Void")
+        esac
+      while (
+        case eval (currentC, condE) of [newC, value] ->
+          currentC := newC;
+          evalCond (value)
+        esac
+      ) od;
+      [currentC, Bot]
+  | Var (v) -> 
+    case lookup (s, v) of Var (n) ->
+      --printf ("Expr.eval.Var %s -> %s\n", v, n.string);
+      [c, Nat (n)]
+    esac
+  | Ref (v) -> [c, Ref (v)]
+  | Const (n) -> [c, Nat (n)]
+  | Binop (op, lhsE, rhsE) ->
+      case evalList (c, {lhsE, rhsE}) of [c, {Nat (l), Nat (r)}] ->
+        [c, Nat (evalOp (op, l, r))]
+      esac
+  | Scope (defs, bodyE) ->
+      var s1 = addDefs (enterScope (s), defs);
+      case eval ([s1, w], bodyE) of [[s, w], value] ->
+        [[leaveScope (s), w], value]
+      esac
+  | Call (name, e_args) ->
+      case lookup (s, name) of Fun (params, e_body) ->
+        case evalList (c, e_args) of [[s, w], v_args] ->
+          var inFuncSt = initializeNames (enterFunction (s), params, v_args);
+          case eval ([inFuncSt, w], e_body) of [[inFuncSt, w], w_result] ->
+            [[leaveFunction (s, getGlobal (inFuncSt)), w], w_result]
+          esac
+        esac
+      esac
+  | Ignore (e) ->
+      case eval (c, e) of [c, _] ->
+        [c, Bot]
+      esac
+  esac
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
+  --printf ("Expr: evaluating progrum on %s\n", string (expr));
   case eval ([emptyState (), createWorld (input)], expr) of
     [c, _] -> c.snd.getOutput
   esac
 }
+
