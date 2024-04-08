@@ -410,40 +410,154 @@ fun suffix (op) {
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
+  fun intToBool(x) {
+    emptyBuffer() <+ Binop("cmp", L(0), x) <+ Mov(L(0), eax) <+ Set(suffix("!="), "%al") <+ Mov(eax, x)
+  }
+
+  fun compileCmp(code, op, x, y, res) {
+      code 
+      <+ Mov(x, eax) 
+      <+ Binop("cmp", y, eax) 
+      <+ Mov (L (0), eax)
+      <+ Set(suffix(op), "%al") 
+      <+ Mov(eax, res)
+  }
+
+  fun compileDiv(code, op, x, y, res) {
+      code 
+      <+ Mov(x, eax) 
+      <+ Cltd 
+      <+ IDiv (y) 
+      <+ Mov (if compare(op, "/") == 0 then eax else edx fi, res)
+  }
+
+  fun compileArithmetic(code, op, x, y, res) {
+    code <+ Mov (x, eax) <+ Binop(op, y, eax) <+ Mov(eax, res)
+  }
+
+  fun compileLogic(code, op, x, y, res) {
+    code 
+    <+> intToBool(x) 
+    <+> intToBool(y) 
+    <+ Mov (x, eax) 
+    <+ Binop(op, y, eax) 
+    <+ Mov(eax, res)
+  }
+
   fun compile (env, code) {
-    foldl (
+        foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+        printf("compiling %s\n", i.string);
         case i of
           READ ->
             case env.allocate of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
+              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
             esac             
         | WRITE ->
             case env.pop of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
+              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
             esac
-        (* Assignment *)
-        
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-               
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        (* End *)
-        esac
+        | LD (x) ->
+            case env.addGlobal (x).allocate of
+              [s, env] -> [env, code <+> move (env.loc (x), s)]
+            esac
+        | ST (x) ->
+            case env.addGlobal(x).pop of
+              [s, env] -> [push(env, x), code <+> move (s, env.loc (x))]
+            esac
+        | CONST (n) -> 
+            case env.allocate of 
+              [s, env] -> [env, code <+ Mov (L(n), s)]
+            esac
+        | BINOP (op) -> 
+            case env.pop2 of 
+              [y, x, env] -> case env.allocate of 
+                [res, env] ->
+                  [env, 
+                  case op of
+                    "<" -> compileCmp(code, op, x, y, res)
+                    | "<=" -> compileCmp(code, op, x, y, res)
+                    | ">" -> compileCmp(code, op, x, y, res)
+                    | ">=" -> compileCmp(code, op, x, y, res)
+                    | "==" -> compileCmp(code, op, x, y, res)
+                    | "!=" -> compileCmp(code, op, x, y, res)
+                    | "/" -> compileDiv(code, op, x, y, res)
+                    | "%" -> compileDiv(code, op, x, y, res)
+                    | "+" -> compileArithmetic(code, op, x, y, res)
+                    | "-" -> compileArithmetic(code, op, x, y, res)
+                    | "*" -> compileArithmetic(code, op, x, y, res)
+                    | "!!" -> compileLogic(code, op, x, y, res)
+                    | "&&" -> compileLogic(code, op, x, y, res)
+                    | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+                  esac
+                  ]
+                esac
+              esac
+        | LABEL(l)    -> case env.isBarrier of
+              true  -> [retrieveStack(env, l), code <+ Label(l)]
+            | false -> [env, code <+ Label(l)]
+          esac
+        | JMP(l) -> [setBarrier(setStack(env, l)), code <+ Jmp(l)]
+        | CJMP(c, l) -> case env.pop of 
+            [x, env] -> [env.setStack(l), code <+ Mov(L(0), eax) <+ Binop("cmp", x, eax) <+ CJmp(c, l)]
+          esac
+        | LDA (x) -> case env.addGlobal(x).allocate 
+                of [s, env] -> [env, code <+ Lea(loc(env, x), s)]
+              esac
+        | STI -> case pop2(env) of
+            [v, r, env] -> [push(env, v), code <+> move(v, I(0, r))]
+          esac 
+        | DROP -> case pop(env) of 
+            [_, env] -> [env, code]
+          esac
+        | BEGIN (functionName, nArgs, nLocs) -> [enterFunction(env, functionName, nLocs), code <+> prologue(functionName)]
+        | END -> case epilogue(env) of
+            [env, epilogueCompiled] -> [env, code <+> epilogueCompiled]
+          esac
+        | GLOBAL(name) -> [addGlobal(env, name), code]
+        | CALL (fLabel, nArgs) ->
+              case liveRegisters(env, getStackSize(env)) of
+                registers ->
+                  fun pushRegisters(registers) {
+                    fun pushRegister(code, register) {
+                      code <+ Push(register)
+                    }
+                    foldl(pushRegister, emptyBuffer(), registers)
+                  }
+
+                  fun popRegisters(registers) {
+                    fun popRegister(code, register) {
+                      code <+ Pop(register)
+                    }
+                    foldl(popRegister, emptyBuffer(), registers)                    
+                  }
+
+                  fun pushArguments([env, code], nArgs) { 
+                    case nArgs of
+                        0 -> [env, code]
+                      | nArgs -> case pop(env) of
+                        [argument, env] -> pushArguments([env, code <+ Push(argument)], nArgs - 1)
+                      esac
+                    esac
+                  }
+
+                  case pushArguments([env, emptyBuffer()], nArgs) of
+                    [env, pushedArguments] ->
+                      case allocate(env) of
+                        [res, env] ->
+                          [env, code
+                            <+> pushRegisters(registers)
+                            <+> pushedArguments
+                            <+ Call(fLabel)
+                            <+ Binop("+", L(wordSize * nArgs), esp)
+                            <+> popRegisters(reverse(registers))
+                            <+> move(eax, res)
+                          ]
+                      esac
+                  esac
+              esac
+      esac
       }, [env, emptyBuffer ()], code)
   }
 
