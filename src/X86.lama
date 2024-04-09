@@ -9,10 +9,10 @@ import Buffer;
 
 -- Assembler language interface
 -- The registers: 
-var regs = ["%ebx", "%ecx", "%esi", "%edi", "%eax", "%edx", "%ebp", "%esp"];
+var registers = ["%ebx", "%ecx", "%esi", "%edi", "%eax", "%edx", "%ebp", "%esp"];
 
 -- We can not freely operate with all register; only with 4 by now
-var nRegs = regs.length - 5;
+var nRegs = registers.length - 5;
 
 -- For convenience we define the following synonyms for the registers: 
 var ebx = R (0),
@@ -70,7 +70,7 @@ fun insnString (insn) {
 
   fun opndString (opnd) {
     case opnd of
-      R (i)    -> regs [i]
+      R (i)    -> registers [i]
     | S (i)    ->  if i >= 0
                    then sprintf ("-%d(%%ebp)", (i+1) * wordSize)
                    else sprintf ("%d(%%ebp)", 8 + (-1-i) * wordSize)
@@ -407,6 +407,25 @@ fun suffix (op) {
   esac
 }
 
+
+fun compileSimpleOp(env, code, op, y, x, p) {
+  [env, code <+> move(x, eax) <+ Binop (op, y, eax) <+> move (eax, p)]
+}
+
+fun compileAndOrOp(env, code, op, y, x, p) {
+  [env, code <+ Binop ("^", eax, eax) <+ Binop ("cmp", L(0), x) <+ Set (suffix ("!="), "%al") <+> move (eax, p) <+ Binop ("^", eax, eax) <+ Binop ("cmp", L (0), y) <+ Set (suffix ("!="), "%al") <+ Binop (op, eax, p)]
+}
+
+fun addArgs([env, arguments], args) { 
+  case args of
+    0 -> [env, arguments]
+    | args -> 
+      case env.pop of
+        [argument, env] -> addArgs([env, arguments <+ Push(argument)], args - 1)
+      esac
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -440,9 +459,91 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-               
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        (* End *)
+        | LD (x) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac
+        | ST (x) -> [env, code <+> move (env.peek, env.loc (x))]
+        | CONST (n) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (L (n), s)]
+          esac
+        | BINOP (op) ->
+          case env.pop2 of
+            [y, x, env] ->
+              case env.allocate of
+                [p, env] ->
+                  case op of
+                    "+" -> compileSimpleOp(env, code, op, y, x, p)
+                    | "-" -> compileSimpleOp(env, code, op, y, x, p)
+                    | "*" -> compileSimpleOp(env, code, op, y, x, p)
+                    | "/" -> [env, code <+> move(x, eax) <+ Cltd <+ IDiv (y) <+> move (eax, p)]
+                    | "%" -> [env, code <+> move(x, eax) <+ Cltd <+ IDiv (y) <+> move (edx, p)]
+                    | "&&" -> compileAndOrOp(env, code, op, y, x, p)
+                    | "!!" -> compileAndOrOp(env, code, op, y, x, p)
+                    | _ -> [env, code <+ Binop ("^", eax, eax) <+> move(x, edx) <+ Binop ("cmp", y, edx) <+ Set (suffix (op), "%al") <+> move (eax, p)]
+                  esac
+              esac
+          esac
+        | LABEL (l) -> 
+          if env.isBarrier 
+          then
+            [retrieveStack(env, l), code <+ Label (l)]
+          else
+            [env, code <+ Label (l)]
+          fi
+        | JMP (l) -> [setBarrier(setStack(env, l)), code <+ Jmp (l)]
+        | CJMP (s, l) ->
+          case env.pop of
+            [x, env] -> [setBarrier(setStack(env, l)), code <+ Binop ("^", eax, eax) <+ Binop ("cmp", L(0), x) <+ CJmp (s, l)]
+          esac
+        | STI ->
+          case env.pop2 of
+            [first, second, env] ->
+              case env.allocate of
+                [s, env] -> [env, code <+> move(first, I(0, second)) <+> move(first, s)]
+              esac
+          esac
+        | LDA (x) ->
+          case env.allocate of
+            [s, env] -> [env, code <+ Lea(env.loc (x), s)]
+          esac
+        | DROP ->
+          case env.pop of
+            [_, env] -> [env, code]
+          esac
+        | GLOBAL (x) -> [addGlobal (env, x), code]
+        | BEGIN (fName, _, locs) -> [
+            enterFunction(env, fName, locs),
+            code <+> prologue(fName)
+          ] 
+        | END -> 
+          case epilogue(env) of
+            [env, envEpilg] -> [env, code <+> envEpilg]
+          esac
+        | CALL (fName, args) ->
+          case liveRegisters(env, args) of
+            regs ->
+              case addArgs([env, emptyBuffer()], args) of
+                [env, arguments] ->
+                  case env.allocate of
+                    [result, env] ->
+                      [env, code
+                        <+> foldl(
+                          fun (code, register) {
+                            code <+ Push(register)
+                          }, emptyBuffer(), regs
+                        )
+                        <+> arguments <+ Call(fName) <+ Binop("+", L(wordSize * args), esp)
+                        <+> foldl(
+                          fun (code, register) {
+                            code <+ Pop(register)
+                          }, emptyBuffer(), reverse(regs)
+                        ) <+> move(eax, result)
+                      ]
+                  esac
+              esac
+          esac
         esac
       }, [env, emptyBuffer ()], code)
   }
