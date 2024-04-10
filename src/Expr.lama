@@ -25,8 +25,8 @@ var ops = {
 
 -- The evaluator for infix operators: takes an operator as a string
 -- and two operand values, and returns the result
-public fun evalOp (operation, l, r) {
-  case assoc (ops, operation) of
+public fun evalOp (op, l, r) {
+  case assoc (ops, op) of
     Some (f) -> f (l, r)
   esac
 }
@@ -79,6 +79,19 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
+
+fun addFuncNames (state, defs) {
+  foldl (fun (state, def) {
+    case def of
+      Var (name) -> state.addNames (name)
+      | Fun (name, args, body) -> state.addFunction (name, args, body)
+    esac
+  }, state, defs)
+}
+
+fun addArguments (state, names, values) {
+  foldl (fun (s, [name, value]) { s.addName (name, value)}, state, zip (names, values))
+}
                                         
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
@@ -95,76 +108,60 @@ fun evalList (c, exprs) {
 }
 
 (* Assignment *)
-fun eval (c@[s, world], expr) {
+fun eval (c@[s, w], expr) {
   case expr of
-      Var (label) -> 
-        [c, lookup (s,  label)]
-    | Const (n) ->
-        [c, n]
-    | Binop (operation, l, r) ->
-        case evalList (c, {l, r}) of
-          [c, {l, r}] -> [c, evalOp (operation, l, r)]
-        esac
-    | Assn (x, e) ->
-        case evalList (c, {x, e}) of
-          [[s, world], {x, e}] -> [[s <- [x, e], world], e]
-        esac
-    | Seq (fst_stmt, snd_stmt) ->
-        case evalList (c, {fst_stmt, snd_stmt}) of
-          [c, {fst_stmt, snd_stmt}] -> [c, snd_stmt]
-        esac
-    | Skip -> 
-        [c, {}]
-    | Read (lable) ->
-        case readWorld (world) of
-          [data, world] -> [[s <- [lable, data], world], {}]
-        esac
-    | Write (expr) ->
-        case eval (c, expr) of
-          [[s, world], data] -> [[s, writeWorld (data, world)], {}]
-        esac
-    | If (expr, is_stmt, else_stmt) ->
-        case eval (c, expr) of [c, data] ->
-          if data then eval (c, is_stmt) else eval (c, else_stmt) fi
-        esac
-    | While (stmt, expr) ->
-        case eval (c, stmt) of [c, data] ->
-          if data then eval (c, Seq (expr, While (stmt, expr))) else [c, {}] fi
-        esac
-    | DoWhile (stmt, expr) ->
-        eval (c, Seq (stmt, While (expr, stmt)))
-   | Scope (defs, expr) ->
-      case foldl (fun (s, expr_in) {
-        case expr_in of
-          Var (lables) -> addNames (s, lables)
-        | Fun (name, args, body) -> addFunction (s, name, args, body)
-        esac
-      }, s.enterScope, defs) of
-        s -> case eval ([s, world], expr) of
-          [[s, world], value] -> [[s.leaveScope, world], value]
-        esac 
+    Const (n) -> [c, n]
+  | Var (x) -> [c, lookup (s, x)]
+  | Binop (op, l, r) ->
+      case evalList (c, {l, r}) of
+        [c, {x, y}] -> [c, evalOp (op, x, y)]
       esac
-    | Ref (expr) -> 
-        [c, expr]
-    | Ignore (expr) ->
-        case eval (c, expr) of
-          [c, _] -> [c, {}]
+  | Ref (x) -> [c, Ref (x)]
+  | Skip -> [c, None]
+  | Assn (l, r) -> 
+      case evalList (c, {l, r}) of
+        [[newS, newW], {Ref (x), value}] -> [[newS <- [x, value], newW], value]
+      esac
+  | Write (e) ->
+      case eval (c, e) of
+        [[newS, newW], v] -> [[newS, writeWorld (v, newW)], None]
+      esac
+  | Read (x) -> 
+      case readWorld (w) of
+        [z, newW] -> [[s <- [x, z], newW], z]
+      esac
+  | Seq (e1, e2) -> eval (eval (c, e1).fst, e2)
+  | Ignore (e) -> [eval (c, e).fst, None]
+  | If (e, branchT, branchF) ->
+      case eval (c, e) of
+        [c, resE] -> eval (c, if resE then branchT else branchF fi)
+      esac
+  | While (e, body) ->
+      case eval (c, e) of
+        [c, resE] -> if resE then eval (c, Seq (body, expr)) else [c, None] fi
+      esac
+  | DoWhile (body, e) ->
+      case eval (c, body) of
+        [c, _] -> eval (c, While (e, body))
+      esac
+  | Scope (defs, expr) -> case enterScope (s) of
+      s1 -> case addFuncNames (s1, defs) of
+        s2 -> case eval ([s2, w], expr) of
+          [[s3, w1], res] -> [[leaveScope (s3), w1], res]
         esac
-    | Call (name, exprs) ->
-      case lookup (s, name) of
-        Fun (args, body) -> 
-          case evalList (c, exprs) of
-            [c@[s, world], data] ->
-              case foldl (fun (s, [arg, elem]) {
-                s.addName (arg, elem) 
-              }, enterFunction (s), zip (args, data)) of
-                x ->
-                  case eval ([x, world], body) of 
-                    [[x, world], elem] -> [[leaveFunction (s, getGlobal (x)), world], elem]
-                  esac
-              esac
+      esac
+    esac
+  | Call (name, args) -> case evalList (c, args) of
+      [[s1, w1], argVals] -> case lookup (s1, name) of
+        Fun (argNames, body) -> case enterFunction (s1) of
+          sFun -> case addArguments (sFun, argNames, argVals) of
+            sFun1 -> case eval ([sFun1, w1], body) of
+              [[sFun2, w2], res] -> [[leaveFunction (s1, getGlobal (sFun2)), w2], res]
             esac
+          esac
+        esac
       esac
+    esac
   esac
 }
 (* End *)
