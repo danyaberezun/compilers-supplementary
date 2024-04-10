@@ -24,6 +24,14 @@ var ebx = R (0),
     ebp = R (6),
     esp = R (7);
 
+var dl = "%dl",
+    dh = "%dh";
+
+var al = "%al",
+    ne = "ne",
+    e = "e",
+    cmp = "cmp";
+
 -- We need to know the word size to calculate offsets correctly
 var wordSize = 4;
 
@@ -394,7 +402,7 @@ fun move (from, to) {
   fi
 }
 
--- Gets a suffix for Set instruction from
+-- Gets a suffix  for Set instruction from
 -- source language comparison operator
 fun suffix (op) {
   case op of
@@ -405,6 +413,28 @@ fun suffix (op) {
   | ">=" -> "ge"
   | ">"  -> "g"
   esac
+}
+
+fun opType (op) {
+  case op of
+    "+" -> Ar
+  | "-" -> Ar
+  | "*" -> Ar
+  | "/" -> Div
+  | "%" -> Mod
+  | "<" -> Cmp
+  | "<=" -> Cmp
+  | "==" -> Cmp
+  | "!=" -> Cmp
+  | ">=" -> Cmp
+  | ">"  -> Cmp
+  | "&&" -> Lgc
+  | "!!" -> Lgc
+  esac
+}
+
+fun clear (reg) {
+  Binop ("^", reg, reg)
 }
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
@@ -441,7 +471,88 @@ fun compile (env, code) {
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
                
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+        | LD (x) ->
+            case env.allocate of
+	            [s, env] -> [env, code <+> move (env.loc (x), s)]
+	          esac
+        | ST (x) ->
+            case env.peek of
+	            s -> [env, code <+> move (s, env.loc (x))]
+	          esac
+        | CONST (n) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (L (n), s)]
+            esac
+        | BINOP (op) ->
+            case env.pop2 of 
+              [y, x, env] -> 
+                case env.allocate of 
+                  [t, env] -> 
+                    var new = case opType(op) of
+                        Ar -> code <+> move(x, eax) <+ Binop (op, y, eax) <+> move (eax, t)
+                      | Div -> code <+> move(x, eax) <+ Cltd <+ IDiv (y) <+> move (eax, t)
+                      | Mod -> code <+> move(x, eax) <+ Cltd <+ IDiv (y) <+> move (edx, t)
+                      | Cmp -> code <+ clear (eax) <+> move(x, edx) <+ Binop ("cmp", y, edx) <+ Set (suffix (op), "%al") <+> move (eax, t)
+                      | Lgc -> code <+ clear (eax) <+ Binop ("cmp", L (0), x) <+ Set (suffix ("!="), "%al") <+> move (eax, t) <+ clear (eax) <+ Binop ("cmp", L (0), y) <+ Set (suffix ("!="), "%al") <+ Binop (op, eax, t)
+                    esac;
+                    [env, new]
+                esac
+            esac  
+
+        | LABEL (l) -> 
+            if env.isBarrier 
+            then
+              [retrieveStack(env, l), code <+ Label (l)]
+            else
+              [env, code <+ Label (l)]
+            fi
+          | JMP (l) -> [setBarrier(setStack(env, l)), code <+ Jmp (l)]
+          | CJMP (s, lab) ->
+            case env.pop of
+              [x, env] -> [setBarrier (setStack (env, lab)), code <+ clear (eax) <+ Binop ("cmp", L(0), x) <+ CJmp (s, lab)]
+            esac
+          | STI ->
+            case env.pop2 of
+              [first, second, env] ->
+                case env.allocate of
+                  [s, env] -> [env, code <+> move(first, I(0, second)) <+> move(first, s)]
+                esac
+            esac
+         | LDA (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Lea (env.loc (x), s)]
+            esac
+        | DROP ->
+            case env.pop of
+              [_, env] -> [env, code]
+            esac
+        | CALL (lablee, body) ->
+            var regs = liveRegisters (env, body);
+            code := foldl (fun (code, reg) {
+                                              code <+ Push (reg)
+                                            }, code, regs);
+            for var i; i := body, i > 0, i := i - 1 do
+              case env.pop of
+                [elem, updEnv] ->
+                  code := code <+ Push (elem);
+                  env := updEnv
+              esac
+            od;
+            code := code <+ Call (lablee) <+ Binop ("+", L (wordSize * body), esp);
+            code := foldl (fun (code, reg) {
+              code <+ Pop (reg)
+            }, code, regs);
+            case env.allocate of [s, env] ->
+              [env, code <+> move (eax, s)]
+            esac
+        | BEGIN (lable, body, pt) ->
+            [enterFunction (env, lable, pt), code <+> prologue (lable)] 
+        | END -> 
+            case epilogue (env) of [env, eCode] -> 
+              [env, code <+> eCode] 
+            esac
+        | GLOBAL (lable) ->
+            [env.addGlobal (lable), code]
         (* End *)
         esac
       }, [env, emptyBuffer ()], code)
