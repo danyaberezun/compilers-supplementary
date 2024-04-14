@@ -13,14 +13,14 @@ Parser.o: Lexer.o
 
 State.o: Lexer.o Parser.o
 
-Expr.o: State.o 
+Expr.o: State.o
 
 SM.o: State.o World.o Expr.o Parser.o Lexer.o
 
 X86.o: SM.o Manifest.o
 
 %.o: %.lama
-	$(LAMAC) -I . -c $<
+	$(LAMAC) -g -I . -c $<
 
 variate:
 	for f in $(FILES) ; do cp $$f $$f~ ; cat $$f~ | awk 'BEGIN {skip=0; show=1} $$0 ~ /End \*\)/ {show=1; skip=1} $$0 ~ /\(\* Assignment/ {show=1; skip=1} $$0 ~ /\(\* Implementation/ {show=0; skip=1} {if (! skip && show) print $$0; skip = 0}' > $$f ; done
