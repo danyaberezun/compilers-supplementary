@@ -444,6 +444,49 @@ fun suffix (op) {
   esac
 }
 
+fun compileSimpleOp(env, code, op, y, x, p) {
+  [env, code <+> move(x, eax) <+ Binop (op, y, eax) <+> move (eax, p)]
+}
+
+fun compileAndOrOp(env, code, op, y, x, p) {
+  [env, code <+ Binop ("^", eax, eax) <+ Binop ("cmp", L(0), x) <+ Set (suffix ("!="), "%al") <+> move (eax, p) <+ Binop ("^", eax, eax) <+ Binop ("cmp", L (0), y) <+ Set (suffix ("!="), "%al") <+ Binop (op, eax, p)]
+}
+
+fun addArgs([env, arguments], args) { 
+  case args of
+    0 -> [env, arguments]
+    | args -> 
+      case env.pop of
+        [argument, env] -> addArgs([env, arguments <+ Push(argument)], args - 1)
+      esac
+  esac
+}
+
+fun callHelper(env, name, a) {
+  case liveRegisters(env, args) of
+    regs ->
+      case addArgs([env, emptyBuffer()], args) of
+        [env, arguments] ->
+          case env.allocate of
+            [result, env] ->
+              [env, code
+                <+> foldl(
+                  fun (code, register) {
+                    code <+ Push(register)
+                  }, emptyBuffer(), regs
+                )
+                <+> arguments <+ Call(fName) <+ Binop("+", L(wordSize * args), esp)
+                <+> foldr(
+                  fun (code, register) {
+                    code <+ Pop(register)
+                  }, emptyBuffer(), reverse(regs)
+                ) <+> move(eax, result)
+              ]
+          esac
+      esac
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {  
@@ -457,7 +500,7 @@ fun compile (env, code) {
             case env.allocate of
               [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
             esac             
-        | WRITE ->
+          | WRITE ->
             case env.pop of
               [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
             esac
@@ -477,8 +520,101 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-               
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+          | LD (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (env.loc (x), s)]
+            esac
+          | ST (x) -> [env, code <+> move (env.peek, env.loc (x))]
+          | CONST (n) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (L (n), s)]
+            esac
+          | BINOP (op) ->
+            case env.pop2 of
+              [y, x, env] ->
+                case env.allocate of
+                  [p, env] ->
+                    case op of
+                      "+" -> compileSimpleOp(env, code, op, y, x, p)
+                      | "-" -> compileSimpleOp(env, code, op, y, x, p)
+                      | "*" -> compileSimpleOp(env, code, op, y, x, p)
+                      | "/" -> [env, code <+> move(x, eax) <+ Cltd <+ IDiv (y) <+> move (eax, p)]
+                      | "%" -> [env, code <+> move(x, eax) <+ Cltd <+ IDiv (y) <+> move (edx, p)]
+                      | "&&" -> compileAndOrOp(env, code, op, y, x, p)
+                      | "!!" -> compileAndOrOp(env, code, op, y, x, p)
+                      | _ -> [env, code <+ Binop ("^", eax, eax) <+> move(x, edx) <+ Binop ("cmp", y, edx) <+ Set (suffix (op), "%al") <+> move (eax, p)]
+                    esac
+                esac
+            esac
+          | LABEL (l) -> 
+            if env.isBarrier 
+            then
+              [retrieveStack(env, l), code <+ Label (l)]
+            else
+              [env, code <+ Label (l)]
+            fi
+          | JMP (l) -> [setBarrier(setStack(env, l)), code <+ Jmp (l)]
+          | CJMP (s, l) ->
+            case env.pop of
+              [x, env] -> [setBarrier(setStack(env, l)), code <+ Binop ("^", eax, eax) <+ Binop ("cmp", L(0), x) <+ CJmp (s, l)]
+            esac
+          | STI ->
+            case env.pop2 of
+              [first, second, env] ->
+                case env.allocate of
+                  [s, env] -> [env, code <+> move(first, I(0, second)) <+> move(first, s)]
+                esac
+            esac
+          | LDA (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Lea(env.loc (x), s)]
+            esac
+          | DROP ->
+            case env.pop of
+              [_, env] -> [env, code]
+            esac
+          | GLOBAL (x) -> [addGlobal (env, x), code]
+          | BEGIN (fName, _, locs) -> [
+              enterFunction(env, fName, locs),
+              code <+> prologue(fName)
+            ] 
+          | END -> 
+            case epilogue(env) of
+              [env, envEpilg] -> [env, code <+> envEpilg]
+            esac
+          | CALL (fName, args) ->
+            case callHelper(env, fName, args) of 
+              [env, code1] -> [env, code <+> code1]
+          | STRING (string) ->
+            case allocate (env) of 
+              [s, env] ->  
+                case addString (env, string) of 
+                  [env, name] ->
+                    case callHelper (env, "Bstring", 1) of 
+                      [env, code1] -> [env, code <+> move (M ("$" ++ name), s) <+> code1]
+                    esac
+                esac
+            esac
+          | STA -> 
+            case callHelper (env, "Bsta", 3) of 
+              [env, code1] -> [env, code <+> code1]
+            esac
+          | SEXP (_, n) -> 
+            case callHelper (env, "Bsexp", n + 1) of 
+              [env, code1] -> [env, code <+> code1]
+            esac
+          | ARRAY (n) -> 
+            case callHelper(env, "Barray", n + 1) of 
+              [env, code1] -> [env, code <+> code1]
+            esac
+          | ELEM -> 
+            case callHelper (env, "Belem", 2) of 
+              [env, code1] -> [env, code <+> code1]
+            esac
+          | BUILTIN (name, arguments) -> 
+            case callHelper (env, "L" ++ name, arguments) of 
+              [env, code1] -> [env, code <+> code1]
+            esac               
         esac
       }, [env, emptyBuffer ()], code)
   }
