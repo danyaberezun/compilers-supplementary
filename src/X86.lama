@@ -444,45 +444,44 @@ fun suffix (op) {
   esac
 }
 
-fun opType (op) {
+fun getOperationType (op) {
   case op of
-    "+" -> Arithm
-  | "-" -> Arithm
-  | "*" -> Arithm
+    "+" -> Ar
+  | "-" -> Ar
+  | "*" -> Ar
   | "/" -> Div
   | "%" -> Mod
-  | "<" -> Comp
-  | "<=" -> Comp
-  | "==" -> Comp
-  | "!=" -> Comp
-  | ">=" -> Comp
-  | ">"  -> Comp
-  | "&&" -> Logic
-  | "!!" -> Logic
+  | "<" -> Cmp
+  | "<=" -> Cmp
+  | "==" -> Cmp
+  | "!=" -> Cmp
+  | ">=" -> Cmp
+  | ">"  -> Cmp
+  | "&&" -> Lgc
+  | "!!" -> Lgc
   esac
 }
 
-fun clear (reg) {
-  Binop ("^", reg, reg)
-}
+fun caller(env, name, a) {
+  var regs = liveRegisters (env, a);
 
-fun compileCall(env, name, a) {
-  var regs = liveRegisters(env, a);
   var code = foldl (fun (code, reg) {
     code <+ Push (reg)
   }, emptyBuffer (), regs);
+
   for var i; i := a, i > 0, i := i - 1 do
     case env.pop of
-      [arg, newEnv] ->
-        code := code <+ Push (arg);
-        env := newEnv
+      [arg, updEnv] ->
+        code := code <+ Push (arg); env := updEnv
     esac
   od;
+
   code := code <+ Call (name) <+ Binop ("+", L (wordSize * a), esp);
   code := foldr (fun (code, reg) {
     code <+ Pop (reg)
   }, code, regs);
-  case env.allocate of 
+
+  case allocate (env) of 
     [s, env] -> [env, code <+> move (eax, s)]
   esac
 }
@@ -520,91 +519,100 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
+               
+        | LD (x) ->
+            case env.allocate of
+	            [s, env] -> [env, code <+> move (env.loc (x), s)]
+	          esac
+        | ST (x) ->
+            case env.peek of
+	            s -> [env, code <+> move (s, env.loc (x))]
+	          esac
+        | CONST (n) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (L (n), s)]
+            esac
         | BINOP (op) ->
-            case env.pop2 of
-              [y, x, env] ->
-                case env.allocate of
-                  [z, env] ->
-                    var new = case opType(op) of
-                        Arithm -> code <+> move (x, eax) <+ Binop (op, y, eax) <+> move (eax, z)
-                      | Div -> code <+> move (x, eax) <+ Cltd <+ IDiv (y) <+> move (eax, z)
-                      | Mod -> code <+> move (x, eax) <+ Cltd <+ IDiv (y) <+> move (edx, z)
-                      | Comp -> code <+ clear (eax) <+> move (x, edx) <+ Binop ("cmp", y, edx) <+ Set (suffix (op), "%al") <+> move (eax, z)
-                      | Logic -> code <+ clear (eax) <+ Binop ("cmp", L(0), x) <+ Set (suffix ("!="), "%al") <+> move (eax, z) <+ clear (eax) <+ Binop ("cmp", L (0), y) <+ Set (suffix ("!="), "%al") <+ Binop (op, eax, z)
+            case env.pop2 of 
+              [y, x, env] -> 
+                case env.allocate of 
+                  [t, env] -> 
+                    var new = case getOperationType(op) of
+                        Ar -> code <+> move(x, eax) <+ Binop (op, y, eax) <+> move (eax, t)
+                      | Div -> code <+> move(x, eax) <+ Cltd <+ IDiv (y) <+> move (eax, t)
+                      | Mod -> code <+> move(x, eax) <+ Cltd <+ IDiv (y) <+> move (edx, t)
+                      | Cmp -> code <+ Binop ("^", eax, eax) <+> move(x, edx) <+ Binop ("cmp", y, edx) <+ Set (suffix (op), "%al") <+> move (eax, t)
+                      | Lgc -> code <+ Binop ("^", eax, eax) <+ Binop ("cmp", L (0), x) <+ Set (suffix ("!="), "%al") <+> move (eax, t) <+ Binop ("^", eax, eax) <+ Binop ("cmp", L (0), y) <+ Set (suffix ("!="), "%al") <+ Binop (op, eax, t)
                     esac;
                     [env, new]
                 esac
-            esac
-        | LD (x) ->
-            case env.allocate of
-              [s, env] -> [env, code <+> move (env.loc (x), s)]
+            esac  
+
+        | LABEL (lab) -> 
+            [if env.isBarrier then retrieveStack(env, lab) else env fi, code <+ Label (lab)]
+        | JMP (lab) -> 
+            [setBarrier (setStack (env, lab)), code <+ Jmp (lab)]
+        | CJMP (s, lab) ->
+            case env.pop of
+              [x, env] -> [setBarrier (setStack (env, lab)), code <+ Binop ("^", eax, eax) <+ Binop ("cmp", L(0), x) <+ CJmp (s, lab)]
             esac
         | LDA (x) ->
             case env.allocate of
               [s, env] -> [env, code <+ Lea (env.loc (x), s)]
             esac
-        | ST (x) ->
-            case env.peek of
-              s -> [env, code <+> move (s, env.loc (x))]
-            esac
         | STI ->
-            case env.pop2 of
-              [y, x, env] ->
-                case env.allocate of
-                  [s, env] -> [env, code <+> move (y, I (0, x)) <+> move (y, s)]
-                esac
-            esac
-        | SEXP (name, n) -> 
-          case compileCall (env, "Bsexp", n + 1) of 
-            [env, cCode] -> [env, code <+> cCode]
-          esac
-        | CONST (n) ->
-            case env.allocate of
-              [s, env] -> [env, code <+> move (L (n), s)]
-            esac
-        | LABEL (lab) -> [if env.isBarrier then retrieveStack (env, lab) else env fi, code <+ Label (lab)]
-        | JMP (lab) -> [setBarrier (setStack (env, lab)), code <+ Jmp (lab)]
-        | CJMP (s, lab) ->
-            case env.pop of
-              [x, env] -> [setBarrier (setStack (env, lab)), code <+ clear (eax) <+ Binop ("cmp", L (0), x) <+ CJmp (s, lab)]
-            esac
+             case env.pop2 of
+               [y, x, env] ->
+                 case env.allocate of
+                   [s, env] -> [env, code <+> move (y, I (0, x)) <+> move (y, s)]
+                 esac
+             esac
         | DROP ->
             case env.pop of
               [_, env] -> [env, code]
             esac
-        | CALL (name, a) ->
-            case compileCall(env, name, a) of 
-              [env, cCode] -> [env, code <+> cCode]
+        | CALL (lable, args) -> 
+            case caller(env, lable, args) of 
+              [env, aCode] -> [env, code <+> aCode]
             esac
-        | BEGIN (name, _, l) ->  [enterFunction (env, name, l), code <+> prologue (name)] 
-        | GLOBAL (name) ->  [addGlobal (env, name), code]
-        | END -> case epilogue (env) of [env, eCode] -> [env, code <+> eCode] esac
+        | BEGIN (lable, body, pt) ->
+            [enterFunction (env, lable, pt), code <+> prologue (lable)] 
+        | GLOBAL (lable) ->  
+            [env.addGlobal (lable), code]
+        | END -> 
+            case epilogue (env) of [env, eCode] -> 
+              [env, code <+> eCode] 
+            esac
         | STRING (s) -> 
-          case addString (env, s) of 
-            [env, name] -> 
-              case allocate (env) of 
-                [s, env] -> 
-                  case compileCall (env, "Bstring", 1) of 
-                    [env, cCode] -> [env, code <+> move (M ("$" ++ name), s) <+> cCode]
-                  esac
-              esac
-          esac
-        | ARRAY (n) -> 
-          case compileCall(env, "Barray", n + 1) of 
-            [env, cCode] -> [env, code <+> cCode]
-          esac
-        | STA -> 
-          case compileCall (env, "Bsta", 3) of 
-            [env, cCode] -> [env, code <+> cCode]
-          esac
+            case addString (env, s) of 
+              [env, lable] -> 
+                case allocate (env) of 
+                  [s, env] -> 
+                    case caller (env, "Bstring", 1) of 
+                      [env, aCode] -> [env, code <+> move (M ("$" ++ lable), s) <+> aCode]
+                    esac
+                esac
+            esac
         | ELEM -> 
-          case compileCall (env, "Belem", 2) of 
-            [env, cCode] -> [env, code <+> cCode]
-          esac
-        | BUILTIN (name, na) -> 
-          case compileCall (env, "L" ++ name, na) of 
-            [env, cCode] -> [env, code <+> cCode]
-          esac               
+            case caller (env, "Belem", 2) of 
+              [env, aCode] -> [env, code <+> aCode]
+            esac
+        | ARRAY (n) -> 
+            case caller(env, "Barray", n + 1) of 
+              [env, aCode] -> [env, code <+> aCode]
+            esac
+        | STA -> 
+            case caller (env, "Bsta", 3) of 
+              [env, aCode] -> [env, code <+> aCode]
+            esac
+        | SEXP (lable, n) -> 
+            case caller (env, "Bsexp", n + 1) of 
+              [env, aCode] -> [env, code <+> aCode]
+            esac
+        | BUILTIN (lable, na) -> 
+            case caller (env, "L" ++ lable, na) of 
+              [env, aCode] -> [env, code <+> aCode]
+            esac               
         esac
       }, [env, emptyBuffer ()], code)
   }
