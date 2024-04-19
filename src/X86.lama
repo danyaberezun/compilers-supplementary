@@ -444,46 +444,192 @@ fun suffix (op) {
   esac
 }
 
+fun binopType (op) {
+  case op of
+    "+"  -> 1
+  | "-"  -> 1
+  | "*"  -> 1
+  | "/"  -> 2
+  | "%"  -> 2
+  | "<"  -> 3
+  | "<=" -> 3
+  | "==" -> 3
+  | "!=" -> 3
+  | ">=" -> 3
+  | ">"  -> 3
+  | "&&" -> 4
+  | "!!" -> 5
+  | _ -> 0
+  esac
+}
+
+fun divreg (op) {
+  case op of
+    "/" -> eax
+  | "%" -> edx
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
-fun compile (env, code) {  
+fun compile (env, code) { 
+
+  fun popN (env, n) {
+    fun helper (env, acc, n) {
+      case n of
+        0 -> [acc, env]
+      | n -> case env.pop of [s, env] -> helper (env, s:acc, n - 1) esac
+      esac
+    }
+
+    --var dbgfile = fopen ("dbg.txt", "a"); fprintf (dbgfile, "%s\n", n.string); fclose (dbgfile);
+    helper (env, {}, n)
+  }
+
+  fun compileCall (env, f, n) {
+    var liveRegs = env.liveRegisters (n);
+    var code = emptyBuffer ();
+    case foldl (fun ([env, code], reg) { [env, code <+ Push (reg)] }, [env, code], liveRegs) of
+      [env, code] ->
+        case popN (env, n) of
+          [args, env] ->
+            case foldr (fun ([env, code], arg) { [env, code <+ Push (arg)] }, [env, code], args) of
+              [env, code] ->
+                case [env, code <+ Call (f) <+ Binop ("+", L (wordSize * n), esp)] of
+                  [env, code] ->
+                    case foldr (fun ([env, code], reg) { [env, code <+ Pop (reg)] }, [env, code], liveRegs) of
+                      [env, code] ->
+                        case env.allocate of
+                          [s, env] -> [env, code <+> move (eax, s)]
+                        esac
+                    esac
+                esac
+            esac
+        esac
+    esac
+  }
+
   fun compile (env, code) {
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-
+        --var dbgfile = fopen ("dbg.txt", "a"); fprintf (dbgfile, "%s\n", showSMInsn (i)); fclose (dbgfile);
         case i of
-          READ ->
+          LD (x) ->
             case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+              [s, env] -> [env, code <+> move (env.loc (x), s)]
             esac
-        
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-               
+        | ST (x) ->
+            case env.pop of
+              [s, env] -> [env.push (s), code <+> move (s, env.loc (x))]
+            esac
+        | CONST (n) ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Mov (L (n), s)]
+            esac
+        | BINOP (op) ->
+            case binopType(op) of
+              1 ->
+                case env.pop2 of
+                  [s, t, env] -> [env.push(t), code <+> move (t, eax) <+ Binop (op, s, eax) <+> move (eax, t)]
+                esac
+            | 2 ->
+                case env.pop2 of
+                  [s, t, env] ->
+                    case env.allocate of
+                      [u, env] -> [env, code <+ Mov (t, eax) <+ Cltd <+ IDiv (s) <+ Mov (divreg(op), u)]
+                    esac
+                esac
+            | 3 ->
+                case env.pop2 of
+                  [s, t, env] ->
+                    case env.allocate of
+                      [u, env] ->
+                        case s of
+                          R (_) -> [env, code <+ Mov (L (0), eax) <+ Binop ("cmp", s, t) <+ Set (suffix(op), "%al") <+ Mov (eax, u)]
+                        | S (_) -> [env, code <+ Mov (L (0), eax) <+ Mov (s, edx) <+ Binop ("cmp", edx, t) <+ Set (suffix(op), "%al") <+ Mov (eax, u)]
+                        esac
+                    esac
+                esac
+            | 4 ->
+                case env.pop2 of
+                  [s, t, env] ->
+                    case env.allocate of
+                      [u, env] -> [env, code <+ Mov (L (0), edx) <+ Mov (L (0), eax) <+
+                                                Binop ("cmp", s, eax) <+ Set ("ne", "%dl") <+
+                                                Binop ("cmp", t, eax) <+ Set ("ne", "%dh") <+ 
+                                                Mov (L (257), eax) <+
+                                                Binop ("cmp", edx, eax) <+ 
+                                                Mov (L (0), eax) <+
+                                                Set ("e", "%al") <+
+                                                Mov (eax, u)]
+                    esac
+                esac
+            | 5 ->
+                case env.pop2 of
+                  [s, t, env] ->
+                    case env.allocate of
+                      [u, env] -> [env, code <+ Mov (L (0), edx) <+ Mov (L (0), eax) <+
+                                                Binop ("cmp", s, eax) <+ Set ("ne", "%dl") <+
+                                                Binop ("cmp", t, eax) <+ Set ("ne", "%dh") <+ 
+                                                Binop ("cmp", edx, eax) <+ Set ("ne", "%al") <+
+                                                Mov (eax, u)]
+                    esac
+                esac
+            | _ -> failure ("codegeneration for binary operation %s is not yet implemented\n", i.string)
+            esac
+        | LABEL (l) -> [case env.isBarrier of true -> retrieveStack (env, l) | false -> env esac, code <+ Label (l)]
+        | JMP (l) -> [setBarrier (setStack (env, l)), code <+ Jmp (l)]
+        | CJMP (c, l) -> 
+            case env.pop of
+              [s, env] -> [setStack (env, l), code <+ Mov (L (0), eax) <+ Binop ("cmp", eax, s) <+ CJmp (c, l)]
+            esac
+        | LDA (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Lea (env.loc (x), s)]
+            esac
+        | STI ->
+            case env.pop2 of
+              [s, t, env] -> 
+                case env.allocate of
+                  [u, env] -> [env, code <+> move (s, I (0, t)) <+> move (s, u)]
+                esac
+            esac
+        | DROP ->
+            case env.pop of
+              [s, env] -> [env, code]
+            esac
+        | GLOBAL (n) -> [env.addGlobal (n), code]
+        | BEGIN (label, a, l) ->
+            case enterFunction (env, label, l) of
+              env -> [env, code <+> prologue (label)]
+            esac
+        | END ->
+            case epilogue (env) of
+              [env, epiCode] -> [env, code <+> epiCode]
+            esac
+        | CALL (f, n) -> case compileCall (env, f, n) of [env, codeC] -> [env, code <+> codeC] esac
+        | BUILTIN (f, n) -> case compileCall (env, "L" ++ f, n) of [env, codeC] -> [env, code <+> codeC] esac
+        | STRING (s) ->
+            case env.addString (s) of
+              [env, name] ->
+                case env.allocate of
+                  [t, env] ->
+                    case compileCall (env, "Bstring", 1) of
+                      [env, codeC] -> [env, code <+> move (M ("$" ++ name), t) <+> codeC]
+                    esac
+                esac
+            esac
+        | ELEM -> case compileCall (env, "Belem", 2) of [env, codeC] -> [env, code <+> codeC] esac
+        | STA -> case compileCall (env, "Bsta", 3) of [env, codeC] -> [env, code <+> codeC] esac
+        | ARRAY (n) -> case compileCall (env, "Barray", n + 1) of [env, codeC] -> [env, code <+> codeC] esac
+        | SEXP (_, n) -> case compileCall (env, "Bsexp", n + 1) of [env, codeC] -> [env, code <+> codeC] esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
   }
 
-  compile (env, code) 
+  compile (env, code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
