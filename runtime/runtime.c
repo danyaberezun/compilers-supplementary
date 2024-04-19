@@ -1,3 +1,5 @@
+#define _GNU_SOURCE 1
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -161,6 +163,7 @@ extern void *Bsexp(int bn, ...)
   sexp *r;
   data *d;
   int n = UNBOX(bn);
+  __pre_gc();
 
   r = (sexp *)alloc(sizeof(int) * (n + 1));
   d = &(r->contents);
@@ -181,6 +184,7 @@ extern void *Bsexp(int bn, ...)
   r->tag = UNBOX(va_arg(args, int));
 
   va_end(args);
+  __post_gc();
 
   return d->contents;
 }
@@ -192,11 +196,13 @@ void *Barray(int n0, ...)
   int i, ai;
   data *r;
 
+  __pre_gc();
+
   r = (data *)alloc(sizeof(int) * (n + 1));
 
   r->tag = ARRAY_TAG | (n << 3);
 
-  va_start(args, n);
+  va_start(args, n0);
 
   for (i = 0; i < n; i++)
   {
@@ -205,6 +211,8 @@ void *Barray(int n0, ...)
   }
 
   va_end(args);
+  __post_gc();
+
   return r->contents;
 }
 
@@ -569,7 +577,7 @@ extern void Bmatch_failure(void *v, char *fname, int line, int col)
 /*   Globals @__gc_data_end and @__gc_data_start are used to idenfity the begin and the end */
 /*   of the static data area. They are defined while generating X86 code in src/X86.lama. */
 /* 2) Program stack. */
-/*   Globals @__gc_stack_bottom and @__gc_stack_top (see runctime/gc_runtime.s) have to be set */
+/*   Globals @__gc_stack_bottom and @__gc_stack_top (see runtime/gc_runtime.s) have to be set */
 /*   as the begin and the end of program stack or its part where roots can be found. */
 /* 3) Traditionally, roots can be also found in registers but our compiler always saves all */
 /*   registers on program stack before any external function call. */
@@ -580,14 +588,15 @@ extern void Bmatch_failure(void *v, char *fname, int line, int col)
 
 // The begin and the end of static area (are specified in src/X86.lama fucntion genasm)
 extern const size_t __gc_data_end, __gc_data_start;
+extern const size_t* __gc_stack_top, *__gc_stack_bottom;
 
-// @L__gc_init is defined in runtime/runtime.s
+// @L__gc_init is defined in runtime/gc_runtime.s
 //   it sets up stack bottom and calls init_pool
 //   it is called from the main function (see src/X86.lama function compileX86)
 extern void L__gc_init();
 
 // You also have to define two functions @__pre_gc and @__post_gc in runtime/gc_runtime.s.
-// These auxiliary functions have to be defined in oder to correctly set @__gc_stack_top.
+// These auxiliary functions have to be defined in order to correctly set @__gc_stack_top.
 // Note that some of our functions (from runtime.c) activation records can be on top of the
 // program stack. These activation records contain usual values and thus we do not have a
 // way to distinguish pointers from non-pointers. And some of these values may accidentally be
@@ -612,21 +621,26 @@ typedef struct
 
 static pool from_space; // From-space (active ) semi-heap
 static pool to_space;   // To-space   (passive) semi-heap
-static size_t *current; // Pointer to the free space begin in active space
+
+const int WORD = sizeof(int);
 
 // initial semi-space size
-static size_t SPACE_SIZE = 8;
-#define POOL_SIZE (2 * SPACE_SIZE)
+static size_t SPACE_SIZE = 1 * WORD; // Less than PAGE_SIZE will be rounded to PAGE_SIZE in mmap
+                                     // Small SPACE_SIZE for at least one gc call in tests
 
-// @init_to_space initializes to_space
-// @flag is a flag: if @SPACE_SIZE has to be increased or not
-static void init_to_space(int flag) { NIMPL }
+void init_space(pool* space);
 
 // @free_pool frees memory pool p
-static int free_pool(pool *p) { NIMPL }
+int free_pool(pool *p) {
+  munmap((void*)p->begin, p->size);
+}
 
 // swaps active and passive spaces
-static void gc_swap_spaces(void){NIMPL}
+static void gc_swap_spaces(void) {
+  pool old_from = from_space;
+  from_space = to_space;
+  to_space = old_from;
+}
 
 // checks if @p is a valid pointer to the active (from-) space
 #define IS_VALID_HEAP_POINTER(p) \
@@ -646,21 +660,135 @@ static void gc_swap_spaces(void){NIMPL}
 // @extend_spaces extends size of both from- and to- spaces
 static void extend_spaces(void)
 {
-  NIMPL
+  SPACE_SIZE <<= 1;
+  from_space.begin = mremap(from_space.begin, from_space.size, SPACE_SIZE, MREMAP_MAYMOVE);
+  if (from_space.begin == MAP_FAILED) {
+    perror("extend spaces: mremap from_space failed\n");
+    exit(1);
+  }
+  to_space.begin = mremap(to_space.begin, to_space.size, SPACE_SIZE, 0); // move invalidate all pointers
+                                                                         // need to write moving of all pointers or call to gc
+  if (to_space.begin == MAP_FAILED) {
+    perror("extend spaces: mremap to_space failed\n");
+    exit(1);
+  }
+}
+
+void clear_space(pool* space) {
+  space->current = space->begin;
+  space->end = space->begin + SPACE_SIZE / WORD;
+  space->size = SPACE_SIZE;
+}
+
+void init_space(pool* space) {
+  space->begin = mmap(NULL, SPACE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+  clear_space(space);
 }
 
 // @init_pool is a memory pools initialization function
 //   (is called by L__gc_init from runtime/gc_runtime.s)
-extern void init_pool(void) { NIMPL }
+// two diffent mmaps for flexibility:
+// it's allows us to remap free space if required without moving pointers
+extern void init_pool(void) {
+  init_space(&from_space);
+  init_space(&to_space);
+}
+
+size_t round_word(size_t num) {
+  return (num + WORD - 1) / WORD;
+}
+
+void gc_test_and_copy_root(size_t** root);
+
+void *gc_copy(size_t *p) {
+  data* obj = TO_DATA(p);
+  if (IS_FORWARD_PTR((size_t*)obj->tag)) {
+    return (void*)obj->tag;
+  }
+  switch(TAG(obj->tag)) {
+    case ARRAY_TAG: {
+      size_t len = LEN(obj->tag);
+      memcpy((void*)to_space.current, (void*)obj, (len + 1) * WORD);
+      size_t* pos = to_space.current + 1;
+      obj->tag = (int)pos;
+      to_space.current += 1 + len;
+      size_t* first = pos;
+      for (size_t* it = first; it < first + len; ++it) {
+        gc_test_and_copy_root((size_t**)it);
+      }
+      return pos;
+    }
+    case SEXP_TAG: {
+      sexp* s = TO_SEXP(p);
+      size_t len = LEN(obj->tag);
+      memcpy((void*)to_space.current, (void*)s, (len + 2) * WORD);
+      size_t* pos = to_space.current + 2;
+      obj->tag = (int)pos;
+      to_space.current += 2 + len;
+      size_t* first = pos;
+      for (size_t* it = first; it < first + len; ++it) {
+        gc_test_and_copy_root((size_t**)it);
+      }
+      return pos;
+    }
+    case STRING_TAG: {
+      size_t len = LEN(obj->tag);
+                                              // [tag, c_str, '\0']
+      memcpy((char*)to_space.current, (void*)obj, WORD + len + 1);
+      size_t* pos = to_space.current + 1;
+      obj->tag = (int)pos;
+      to_space.current += 1 + round_word(len);
+      return pos;
+    }
+    default:
+      failure("gc copy: tag: 0x%x\n",TAG(obj->tag));
+  }
+}
+
+void gc_test_and_copy_root(size_t **root) {
+  if (IS_VALID_HEAP_POINTER(*root)) {
+    *root = gc_copy(*root);
+  }
+}
 
 // @gc performs stop-the-world copying garbage collection
 //   and extends pools (i.e. calls @extend_spaces) if necessarily
 // @size is a size of the block that @alloc failed to allocate
-// returns a pointer the new free block
-static void *gc(size_t size) { NIMPL }
+static void gc(size_t size) {
+  // fprintf(stderr, "gc called on %d\n", size);
+  // Static data
+  for (size_t* i = (size_t*)&__gc_data_start; i < &__gc_data_end; i++) {
+    gc_test_and_copy_root((size_t**)i);
+  }
+  // Stack
+  for (size_t* i = (size_t*)__gc_stack_top; i < __gc_stack_bottom; i++) {
+    gc_test_and_copy_root((size_t**)i);
+  }
+  // Extra roots
+  for (int i = 0; i < extra_roots.current_free; ++i) {
+    gc_test_and_copy_root((size_t**)extra_roots.roots[i]);
+  }
+  // Equal to avoid empty arrays and sexps (their content == space.end)
+  while (to_space.end - to_space.current <= size) {
+    extend_spaces();
+    to_space.size = SPACE_SIZE;
+    to_space.end = to_space.begin + SPACE_SIZE / WORD;
+  }
+  clear_space(&from_space);
+  gc_swap_spaces();
+}
 
 // @alloc allocates @size memory words
-//   it enaibles garbage collection if out-of-memory,
+//   it enables garbage collection if out-of-memory,
 //   i.e. calls @gc when @current + @size > @from_space.end
 // returns a pointer to the allocated block of size @size
-extern void *alloc(size_t size) { NIMPL }
+extern void *alloc(size_t size) {
+  size = round_word(size);
+  // Equal to avoid empty arrays and sexps (their content == space.end)
+  if (from_space.current + size >= from_space.end) {
+    gc(size);
+  }
+  size_t *free = from_space.current;
+  from_space.current += size;
+  return free;
+}

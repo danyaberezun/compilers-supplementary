@@ -57,7 +57,14 @@ public fun evalOp (op, l, r) {
 --        Array   (expr list)          |
 --        Elem    (expr, expr)         |
 --        ElemRef (expr, expr)         |
---        Builtin (string, expr list)
+--        Builtin (string, expr list)  |
+--        Case    (expr, (pat, expr)+)
+
+-- pat = Const    (int)          |
+--       Wildcard                |
+--       Array    (pat*)         |
+--       Sexp     (string, pat*) |
+--       Named    (string, pat)
 
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
@@ -78,15 +85,15 @@ fun lookupFun (state, name) {
 }
 
 -- Helper function: adds a bunch of regular variables current scope
-fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
+fun addNamesConf ([state, world], names, values) {
+  [foldl (fun (s, [name, value]) {s.addName (name, value)}, state, zip(names, values)), world]
 }
 
 -- Helper function: adds a function in current scope
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -101,10 +108,150 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun enterScopeConf (c@[s, w]) {
+  [enterScope(s), w]
 }
 
+fun leaveScopeConf (c@[s, w]) {
+  [leaveScope(s), w]
+}
+
+fun enterFunctionConf(c@[s, w]) {
+  [enterFunction(s), w]
+}
+
+public fun unwrapSexp(v) {
+  case v of
+    Sexp(_, a) -> a
+    | a -> a
+  esac
+}
+
+fun all(l, f) {
+  foldr(fun (a, el){
+    a && f(el)
+  }, true, l)
+}
+
+fun matchPatValueLists(pats, values) {
+  if size(pats) == values.length then
+  all(zip(pats, arrayList(values)), fun ([el, v]) {match(el, v)}) else false fi
+}
+
+fun match(pat, value) {
+  -- fprintf(stderr, "Match %s %s\n", pat.string, value.string);
+  case pat of
+      Wildcard -> true
+    | Const(n) -> n == value
+    | Array(pats) -> matchPatValueLists(pats, value)
+    | Sexp(pName, pArgs) -> case value of
+          Sexp(vName, vArgs) -> if compare(vName, pName) == 0 then
+                                matchPatValueLists(pArgs, vArgs) else false fi
+        | _ -> false
+       esac
+    | Named(_, pat) -> match(pat, value)
+  esac
+}
+
+fun evalPats(c@[st, w], v, pats) {
+  case pats of
+    [p, e] : tail ->
+      if match(p, v) then eval(c, e)
+      else evalPats(c, v, tail) fi
+    | [] -> failure("Match failure")
+  esac
+}
+
+fun eval (c@[st, w], e) {
+  -- fprintf(stderr, "%s\n", e.string);
+  case e of
+      Const (n) -> [c, n]
+    | Var (x)   -> [c, lookup(st, x)]
+    | Ref (x)   -> [c, Ref (x)]
+    | Binop (op, e1, e2) ->
+      case evalList(c, {e1, e2}) of
+        [c, {w, v}] -> [c, evalOp (op, w, v)]
+      esac
+    | Skip -> [c, Bottom]
+    | Assn (name, expr) ->
+      case evalList(c, {name, expr}) of
+          [[st, w], {Ref (x), value}] -> [[st <- [x, value], w], value]
+        | [[st, w], {ElemRef (arr, i), value}] -> [[st, w], arr[i] := value]
+      esac
+    | Read (name) ->
+      case readWorld (w) of
+        [z, w] -> [[st <- [name, z], w], Bottom]
+      esac
+    | Write (expr) ->
+      case eval(c, expr) of
+        [[st, w], value] -> [[st, writeWorld (value, w)], Bottom]
+      esac
+    | Seq (s1, s2) ->
+      case evalList(c, {s1, s2}) of
+        [c, {_, v2}] -> [c, v2]
+      esac
+    | If (e, s1, s2) ->
+      case eval(c, e) of
+        [c, 0] -> eval(c, s2)
+      | [c, n] -> eval(c, s1)
+      esac
+    | While (body, s) ->
+      case eval(c, body) of
+        [c, 0] -> [c, Bottom]
+      | [c, n] -> eval(c, Seq(s, e))
+      esac
+    | DoWhile (s, e) ->
+      eval(eval(c, s)[0], While(e, s))
+    | Ignore (e) -> [eval(c, e)[0], Bottom]
+    | Scope(defs, exprs) ->
+      case eval(foldl(fun ([acc_st, w], def) {
+          [case def of
+              Fun (name, args, body) -> addFunction(acc_st, name, args, body)
+            | Var (name)             -> addName(acc_st, name, 0)
+          esac, w]
+        }, enterScopeConf(c), defs), exprs) of
+        [c, v] -> [leaveScopeConf(c), v]
+      esac
+    | Call (x, arg_vals) ->
+      case lookup(st, x) of
+        Fun(arg_names, body) ->
+          case evalList(c, arg_vals) of
+            [new_c, arg_vals] ->
+              case eval(addNamesConf(enterFunctionConf(new_c), arg_names, arg_vals), body) of
+                [[c, w], value] -> [[leaveFunction(new_c[0], getGlobal(c)), w], value]
+              esac
+          esac
+      esac
+    | Builtin(x, arg_vals) ->
+      case evalList(c, arg_vals) of
+        [c, arg_vals] ->
+        case evalBuiltin(x, arg_vals, w) of
+          [v, w] -> [[st, w], v]
+        esac
+      esac
+    | String(s) -> [c, s]
+    | Sexp(s, vals) ->
+      case evalList(c, vals) of
+        [c, vals] -> [c, Sexp(s, listArray(vals))]
+      esac
+    | Array(vals) ->
+      case evalList(c, vals) of
+        [c, vals] -> [c, listArray(vals)]
+      esac
+    | Elem(e, i) ->
+      case evalList(c, {e, i}) of
+        [c, {e, i}] -> [c, unwrapSexp(e)[i]]
+      esac
+    | ElemRef(e, i) ->
+      case evalList(c, {e, i}) of
+        [c, {e, i}] -> [c, ElemRef(unwrapSexp(e), i)]
+      esac
+    | Case(e, brs) ->
+      case eval(c, e) of
+        [c, v] -> evalPats(c, v, brs)
+      esac
+  esac
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
