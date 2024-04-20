@@ -444,6 +444,38 @@ fun suffix (op) {
   esac
 }
 
+fun typeOfOp (op) {
+  case op of
+   "*"  -> ARITHM
+  | "+"  -> ARITHM
+  | "-"  -> ARITHM
+  | "/"  -> DIV
+  | "%"  -> MOD
+  | "<"  -> CMP
+  | "<=" -> CMP
+  | "==" -> CMP
+  | "!=" -> CMP
+  | ">=" -> CMP
+  | ">"  -> CMP
+  | "&&" -> AND
+  | "!!" -> OR
+  | _    -> failure("No such op: %s\n", op)
+  esac
+}
+
+fun pushArgs(args, env, count) { 
+  case count of
+    0 -> [env, args]
+    | count -> case pop(env) of [arg, env] -> pushArgs(args <+ Push(arg), env, count - 1) esac esac
+}
+
+fun compileBuildin(env, f, count) {
+  case liveRegisters(env, count) of regs ->
+    case pushArgs(foldl (fun (code, reg) {code <+ Push (reg)}, emptyBuffer (), regs), env, count) of [env, code] -> 
+      case allocate(env) of [s, env] -> [env, foldr (fun (code, reg) { code <+ Pop (reg)}, code <+ Call (f)
+         <+ Binop ("+", L (wordSize * count), esp), regs) <+> move (eax, s)] esac esac esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {  
@@ -477,9 +509,45 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-               
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
+        | LD (x) -> case allocate(env) of [s, env] -> [env, code <+> move (loc(env, x), s)] esac
+        | ST (x) -> [env, code <+> move (peek(env),loc(env, x))]
+        | CONST (n) -> case allocate(env) of [s, env] -> [env, code <+> move (L (n), s)] esac
+        | BINOP (op) ->
+          case pop2(env) of [s1, s2, env] ->
+            case allocate(env) of [ret, env] ->
+              case typeOfOp (op) of
+                ARITHM -> [env, code <+ Mov(s2, eax) <+ Binop (op, s1, eax) <+ Mov(eax, ret)]
+                | DIV -> [env, code <+ Mov(s2, eax) <+ Cltd <+ IDiv (s1) <+ Mov(eax, ret)]
+                | MOD -> [env, code <+ Mov(s2, eax) <+ Cltd <+ IDiv (s1) <+ Mov(edx, ret)]
+                | CMP -> [env, code <+ Mov(s1, eax) <+ Binop("cmp", eax, s2) <+ Mov(L(0), eax) <+ Set(suffix(op), "%al") <+ Mov (eax, ret)]
+                | AND -> [env, code <+ Mov(L(0), eax) <+ Mov(L(0), edx) <+ Binop("cmp", s1, eax) <+ Set(suffix("!="), "%dl") <+ Binop("cmp", s2, eax) <+ Set(suffix("!="), "%dh") <+ Mov(L(257), eax) <+ Binop("cmp", edx, eax) <+ Mov(L(0), eax) <+ Set(suffix("=="), "%al") <+> move(eax, ret)]
+                | OR -> [env, code <+ Mov(L(0), eax) <+ Mov(L(0), edx) <+ Binop("cmp", s1, eax) <+ Set(suffix("=="), "%dl") <+ Binop("cmp", s2, eax) <+ Set(suffix("=="), "%dh") <+ Mov(L(257), eax) <+ Binop("cmp", edx, eax) <+ Mov(L(0), eax) <+ Set(suffix("!="), "%al") <+> move(eax, ret)]
+                | _ -> TODO esac esac esac
+        | LABEL (l) -> if isBarrier(env) then [retrieveStack(env, l), code <+ Label (l)] else [env, code <+ Label (l)] fi
+        | JMP (l) -> [setBarrier(setStack(env, l)), code <+ Jmp (l)]
+        | CJMP (c, l) -> case pop(env) of [s, env] -> [setBarrier(setStack(env, l)), code <+ Binop ("^", eax, eax) <+ Mov(L(0), eax) <+ Binop ("cmp", eax, s) <+ CJmp (c, l)] esac
+        | STI -> case pop2(env) of [first, second, env] ->
+          case allocate(env) of [s, env] -> [env, code <+> move(first, I(0, second)) <+> move(first, s)] esac esac
+        | LDA (x) -> case allocate(env) of [s, env] -> [env, code <+ Lea(loc(env, x), s)] esac
+        | DROP -> case pop(env) of [_, env] -> [env, code] esac
+        | CALL (name, count) -> case liveRegisters(env, count) of regs -> case pushArgs(emptyBuffer(), env, count) of [env, arguments] ->
+          case allocate(env) of [result, env] -> [env, code <+> foldl(
+            fun (code, register) {
+              code <+ Push(register)
+            }, emptyBuffer(), regs) <+> arguments <+ Call(name) <+ Binop("+", L(wordSize * count), esp) <+> foldl(
+            fun (code, register) {
+              code <+ Pop(register)
+            }, emptyBuffer(), reverse(regs)) <+> move(eax, result)] esac esac esac
+        | BUILTIN (name, arguments) -> case compileBuildin(env, "L" ++ name, arguments) of [env, code1] -> [env, code <+> code1] esac
+        | GLOBAL (x) -> [addGlobal(env, x), code]
+        | BEGIN (name, _, locals) -> [enterFunction(env, name, locals), code <+> prologue(name)] 
+        | END -> case epilogue(env) of [env, endCode] -> [env, code <+> endCode] esac
+        | SEXP (_, count) -> case compileBuildin(env, "Bsexp", count + 1) of [env, sexpCode] -> [env, code <+> sexpCode] esac
+        | ARRAY (count) -> case compileBuildin(env, "Barray", count + 1) of [env, arrayCode] -> [env, code <+> arrayCode] esac
+        | STRING (strg) -> case allocate(env) of [s, env] -> case addString(env, strg) of [env, name] ->
+          case compileBuildin(env, "Bstring", 1) of [env, strgCode] -> [env, code <+> move(M ("$" ++ name), s) <+> strgCode] esac esac esac
+        | STA -> case compileBuildin(env, "Bsta", 3) of [env, staCode] -> [env, code <+> staCode] esac
+        | ELEM -> case compileBuildin(env, "Belem", 2) of [env, elemCode] -> [env, code <+> elemCode] esac esac
       }, [env, emptyBuffer ()], code)
   }
 
