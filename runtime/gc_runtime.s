@@ -10,11 +10,9 @@ __gc_stack_top:	        .long	0
 			.globl	__pre_gc
 			.globl	__post_gc
 			.globl	L__gc_init
-			.globl	__gc_root_scan_stack
 			.globl	__gc_stack_top
 			.globl	__gc_stack_bottom
 			.extern	init_pool
-			.extern	gc_test_and_copy_root
 			.extern nimpl
 			.text
 
@@ -37,12 +35,4 @@ __pre_gc:
 // then return
 // else set __gc_stack_top to 0
 __post_gc:
-			call nimpl
-
-// ==================================================
-// Scan stack for roots
-// strting from __gc_stack_top
-// till __gc_stack_bottom
-// and calls gc_test_and_copy_root for each found root
-__gc_root_scan_stack:
 			call nimpl

@@ -24,9 +24,11 @@ Please, see the comments in [runtime](runtime/runtime.c).c](runtime/runtime.c)
 **Standard deadline**: one week
 
 **Task**:
-* Support S-expression and pattern-matching in all modes
+* Implement simple memory allocation pool
+* Implement Cheney's algorithm (stop-the-world, copying, iterative)
+* See comments in `runtime/runtime.c` for details
 
 **Compile and run tests (from the root folder)**:
 ```bash
-$ make
+make
 ```
