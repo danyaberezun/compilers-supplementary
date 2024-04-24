@@ -13,27 +13,53 @@ import Expr;
 import Builtins;
 import Buffer;
 
+-- data SMLocation =
+--   Arg (i) -- i'th function argument
+-- | Loc (i) -- i'th local variable
+-- | Glb (x) -- global variable with name x
+
+-- Renders SMLocation to string.
+-- \param loc : SMLocation
+-- \return string
+fun showSMLocation (loc) {
+  case loc of
+    Arg (i) -> sprintf ("arg[%d]", i)
+  | Loc (i) -> sprintf ("loc[%d]", i)
+  | Glb (x) -> x
+  esac
+}
+
+-- data SMInstruction =
+-- | BINOP (op)
+-- | LD (loc)
+-- | LDA (loc)
+-- | ST (x)
+-- | STI
+-- | SEXP (s, n)
+-- | CONST (n)
+-- | LABEL (label)
+-- | JMP (label)
+-- | CJMP (cond, label)
+-- | CALL (functionLabel, argumentsNo)
+-- | BEGIN (functionLabel, argumentsNo, localsNo)
+-- | GLOBAL (x)
+-- | END
+-- | DUP
+-- | DROP
+-- | STRING (s)
+-- | ARRAY (n)
+-- | STA
+-- | ELEM
+-- | BUILTIN (f, n)
+
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
 public fun showSMInsn (i) {
-  -- Shows a location (a reference to function argument, local or global variable)
-  fun showLoc (d) {
-    fun varity (f) {
-      if f then "var" else "val" fi
-    }
-    
-    case d of
-      Arg (i) -> sprintf ("arg[%d]", i)
-    | Loc (i) -> sprintf ("loc[%d]", i)
-    | Glb (x) -> sprintf ("%s", x)
-    esac
-  }
-  
   case i of
     BINOP  (s)       -> sprintf ("BINOP %s", s)
-  | LD     (x)       -> sprintf ("LD %s", showLoc (x))
-  | LDA    (x)       -> sprintf ("LDA %s", showLoc (x))
-  | ST     (x)       -> sprintf ("ST %s", showLoc (x))
+  | LD     (x)       -> sprintf ("LD %s", showSMLocation (x))
+  | LDA    (x)       -> sprintf ("LDA %s", showSMLocation (x))
+  | ST     (x)       -> sprintf ("ST %s", showSMLocation (x))
   | STI              -> "STI"
   | SEXP   (s, n)    -> sprintf ("SEXP ""%s"", %d", s, n)
   | CONST  (n)       -> sprintf ("CONST %d", n)
@@ -54,8 +80,15 @@ public fun showSMInsn (i) {
   esac
 }
 
+-- type SMProgram = List SMInstruction
+--
+-- The order is from the first instruction to the last.
+
+-- Renders SMProgram to string.
+-- \param prg : SMProgram
+-- \return string
 public fun showSM (prg) {
-  map (fun (i) {showSMInsn (i) ++ "\n"}, prg).stringcat
+  stringcat (map (fun (i) {showSMInsn (i) ++ "\n"}, prg))
 }
 
 -- Evaluation environment: keeps a mapping between labels and (sub)programs
@@ -66,6 +99,7 @@ fun initEvalEnv (insns) {
             case insns of
               {}               -> m
             | LABEL (lab) : tl -> rec ([addMap (m, lab, insns), tl])
+            | BEGIN (functionLabel, _, _) : tl -> rec ([addMap (m, functionLabel, insns), tl])
             | _ : tl           -> rec ([m, tl])
             esac
           }
@@ -76,350 +110,770 @@ fun initEvalEnv (insns) {
   }]
 }
 
--- Accessor function
+-- Given a label, returns the subprogram of this label.
+--
+-- \param env : SMEvalEnv -- evaluation environment
+-- \param lab : string -- label name
 fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
--- Stack machine interpreter. Takes an environment, a world and a program,
--- returns a final output
-fun eval (env, w, insns) {
-  -- Global state maps names of global variables to values
-  var globalState = ref (fun (x) {error (sprintf ("name ""%s"" is undefined", x), getLoc (x))});
-  
-  -- Make a fresh local state: a pair of arrays for arguments and local variables;
-  -- takes the numbers of arguments and local variables respectively
-  fun makeState (a, l) {
-    [initArray (a, fun (_) {0}), initArray (l, fun (_) {0})]
-  }
+-- data SMStack = ?
 
-  -- Lookups a location in local/global states
-  fun lookup ([args, locs], loc) {
+-- data SMControlStack
+
+-- data SMLocalState = [List Int, List Int],
+-- where first is arguments, and second is local variables
+
+fun smLocalStateCreate (argNo, locNo) {
+  [initArray (argNo, fun (_) {0}), initArray (locNo, fun (_) {0})]
+}
+
+-- data SMGlobalState = String -> Int
+
+fun smGlobalStateEmpty (name) {
+  failure ("name '%s' is undefined", name)
+}
+
+fun smGlobalStateAssign (state, name, value) {
+  fun (x) {
+    if compare (x, name) == 0
+      then value
+      else state (x)
+    fi
+  }
+}
+
+fun smStackPopN (n, stack) {
+  var arr = makeArray (n);
+  var currentStack = stack;
+  for var index; index := n - 1, index >= 0, index := index - 1 do
+    case currentStack of value : tail ->
+      arr [index] := value;
+      currentStack := tail
+    esac
+  od;
+  [arr, currentStack]
+}
+
+-- data SMConfiguration = SMConfiguration (SMStack, SMControlStack, SMLocalState, World)
+
+-- \param env : SMEvalEnv -- evaluation environment
+-- \return (SMConfiguration, SMProgram) -> SMConfiguration
+fun evalImpl (env) {
+
+  -- data ProgramStep = Forward | JumpTo (label) | Stop | GoToInsts (nextInsts)
+  
+  -- data SValue = Int
+  --             | String
+  --             | [Value]
+  --             | Sexp (Uident, [Value])
+  --             | LocRef (loc)
+
+  -- globalState : SMGlobalState
+  var globalState = ref (smGlobalStateEmpty);
+
+  -- Looks up value for given SM location in given local, or in the global state.
+  --
+  -- \param localState : SMLocalState
+  -- \param loc : SMLocation
+  -- \return Int
+  fun lookup (localState@[args, locals], loc) {
     case loc of
-      Arg (i) -> args[i]
-    | Loc (i) -> locs[i]
-    | Loc (i) -> locs[i]
+      Arg (argIdx) -> args[argIdx]
+    | Loc (localIdx) -> locals[localIdx]
     | Glb (x) -> deref (globalState) (x)
-    esac 
+    esac
   }
 
-  -- Assigns a value to a location
-  fun assign ([args, locs], loc, vl) {
+  -- Assigns a value to given SM location.
+  --
+  -- \param localState : SMLocalState
+  -- \param loc : SMLocation
+  -- \param value : Int
+  fun assign (localState@[args, locals], loc, value) {
     case loc of
-      Arg (i) -> args[i] := vl
-    | Loc (i) -> locs[i] := vl
-    | Glb (x) -> var g = deref (globalState);
-                 globalState ::= fun (y) {if compare (x, y) == 0 then vl else g (y) fi}
+      Arg (argIdx) ->
+        args[argIdx] := value
+    | Loc (localIdx) ->
+        locals[localIdx] := value
+    | Glb (x) ->
+        globalState ::= smGlobalStateAssign (deref (globalState), x, value)
     esac
   }
 
-  -- Takes n positions from the list, retursn a pair: the remaining list and the taken
-  -- sublist
-  fun take (list, n) {
-    fun inner (n, acc, list) {
-      if n == 0
-      then [list, acc]
-      else inner (n-1, list.hd : acc, list.tl)
-      fi
-    }
-
-    inner (n, {}, list)
+  -- \param config : SMConfiguration
+  -- \param inst : SMInstruction
+  -- \param nextInsts : List SMInstruction
+  fun evalInst (config@[stack, controlStack, localState, world], inst, nextInsts) {
+    --printf ("SM.evalInst inst=%s\n", showSMInsn (inst));
+    --printf ("stack: %s\n", stack.string);
+    case inst of
+      BINOP (op) ->
+        case stack of (rhs@#val) : (lhs@#val) : stackTail ->
+          var result = evalOp (op, lhs, rhs);
+          [Forward, [result : stackTail, controlStack, localState, world]]
+        esac
+    | LD (loc) ->
+        [Forward, [lookup (localState, loc) : stack, controlStack, localState, world]]
+    | LDA (loc) ->
+        [Forward, [LocRef (loc) : stack, controlStack, localState, world]]
+    | ST (loc) ->
+        case stack of value : stackTail ->
+          assign (localState, loc, value);
+          [Forward, config]
+        esac
+    | STI ->
+        case stack of value : ref : stackTail ->
+          case ref of
+            LocRef (loc) ->
+              assign (localState, loc, value)
+          esac;
+          [Forward, [value : stackTail, controlStack, localState, world]]
+        esac
+    | SEXP (uident, n) ->
+        case smStackPopN (n, stack) of [elements, stack]->
+          [Forward, [Sexp (uident, elements) : stack, controlStack, localState, world]]
+        esac
+    | CONST (n) ->
+        [Forward, [n : stack, controlStack, localState, world]]
+    | LABEL (_) ->
+        [Forward, config]
+    | JMP (label) ->
+        [JumpTo (label), config]
+    | CJMP (condition, label) ->
+        case stack of (stackTop@#val) : stackTail ->
+          var programStep = case condition of
+            "z" ->
+              if (stackTop == 0)
+                then JumpTo (label)
+                else Forward
+              fi
+          | "nz" ->
+              if (stackTop != 0)
+                then JumpTo (label)
+                else Forward
+              fi
+          esac;
+          [programStep, [stackTail, controlStack, localState, world]]
+        esac
+    | CALL ("Lread", 0) ->
+        case readWorld (world) of [value, world] ->
+          [Forward, [value : stack, controlStack, localState, world]]
+        esac
+    | CALL ("Lwrite", 1) ->
+        case stack of (n@#val) : stack ->
+          [Forward, [0 : stack, controlStack, localState, writeWorld (n, world)]]
+        esac
+    | CALL ("Llength", 1) ->
+        case stack of container : stack ->
+          var len = case container of
+            Sexp (_, elements) -> length (elements)
+          | _ -> length (container)
+          esac;
+          [Forward, [len : stack, controlStack, localState, world]]
+        esac
+    | CALL (functionLabel, argNo) ->
+        [JumpTo (functionLabel), [stack, [localState, nextInsts] : controlStack, localState, world]]
+    | BEGIN (funcName, argNo, localNo) ->
+        case smStackPopN (argNo, stack) of [args, stack] ->
+          var localState = [args, initArray (localNo, fun (_) {0})];
+          [Forward, [stack, controlStack, localState, world]]
+        esac
+    | GLOBAL (x) ->
+        assign (localState, Glb (x), 0);
+        [Forward, config]
+    | END ->
+        case controlStack of
+          [localState, nextInsts] : controlStack ->
+            [GoToInsts (nextInsts), [stack, controlStack, localState, world]]
+        | {} ->
+            [Stop, config]
+        esac
+    | DUP ->
+        case stack of stackTop : stackTail ->
+          [Forward, [stackTop : stack, controlStack, localState, world]]
+        esac
+    | DROP ->
+        case stack of _ : stackTail ->
+          [Forward, [stackTail, controlStack, localState, world]]
+        esac
+    | STRING (s) ->
+        [Forward, [s : stack, controlStack, localState, world]]
+    | ARRAY (n) ->
+        case smStackPopN (n, stack) of [arr, stack] ->
+          [Forward, [arr : stack, controlStack, localState, world]]
+        esac
+    | STA ->
+        case stack of value : index : container : tail ->
+          case container of
+            arr@#array -> arr [index] := value
+          | s@#str -> s [index] := value
+          | Sexp (_, elements) -> elements [index] := value
+          | LocRef (loc) -> assign (localState, loc, value)
+          esac;
+          [Forward, [value : tail, controlStack, localState, world]]
+        esac
+    | ELEM ->
+        case stack of (index@#val) : container : stack ->
+          var elem = case container of
+            arr@#array -> arr [index]
+          | s@#str -> s [index]
+          | Sexp (_, elements) -> elements [index]
+          esac;
+          [Forward, [elem : stack, controlStack, localState, world]]
+        esac
+    | BUILTIN (_, _) -> failure ("wat")
+    esac
   }
 
-  -- Core interpreter: takes a configuration and a program, returns a configuration
-  fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+  fun eval (config, program) {
+    case program of
+      {} -> config
+    | firstInst : nextInsts ->
+      case evalInst (config, firstInst, nextInsts) of [programStep, config] ->
+        var subprogram = case programStep of
+          Forward -> nextInsts
+        | JumpTo (label) -> fromLabel (env, label)
+        | Stop -> {}
+        | GoToInsts (nextInsts) -> nextInsts
+        esac;
+        eval (config, subprogram)
+      esac
+    esac
   }
-  
-  
-  eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
+
+  eval
 }
 
--- Runs a stack machine for a given input and a given program, returns an output
-public fun evalSM (input, insns) {
-  eval (initEvalEnv (insns), createWorld (input), insns)
+-- Stack machine interpreter. 
+--
+-- \param env : SMEvalEnv -- evaluation environment
+-- \param config : SMConfiguration -- initial SM configuration
+-- \param program : SMProgram -- the SM program to evaluate
+-- \return SMConfiguration -- final SM configuration
+fun eval (env, config, program) {
+  var impl = evalImpl (env);
+  impl (config, program)
 }
 
--- Compilation environment: generates labels
-fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
-  -- Generates a new label
+-- Stack machine interpreter.
+--
+-- \param input : string -- program input
+-- \param program : SMProgram -- the SM program to interpret
+-- \return string -- program output
+public fun evalSM (input, program) {
+  --printf ("SM.evalSM\n%s\n", showSM (program));
+  getOutput $ eval (
+    initEvalEnv (program),
+    [{}, {}, smLocalStateCreate (0, 0), createWorld (input)],
+    program
+  )[3]
+}
+
+-- Create a label object, which keeps a flag, indicating if this label has been used or not.
+-- If this flag is false, then emitting LABEL instruction won't be necessary.
+--
+-- \param labelName : String
+-- \return SMLabel
+fun makeLabel (labelName) {
+  var labelUsed = ref (false);
+
+  fun use () {
+    labelUsed ::= true
+  }
+
+  fun compile () {
+    if deref (labelUsed)
+      then getInst ()
+      else emptyBuffer ()
+    fi
+  }
+
+  fun getInst () {
+    use ();
+    singletonBuffer (LABEL (labelName))
+  }
+
+  fun makeJmp () {
+    use ();
+    singletonBuffer (JMP (labelName))
+  }
+
+  fun makeCJmp (c) {
+    use ();
+    singletonBuffer (CJMP (c, labelName))
+  }
+
+  [use, compile, getInst, makeJmp, makeCJmp]
+}
+
+fun labelUse (label) {
+  label[0] ()
+}
+
+fun labelCompile (label) {
+  label[1] ()
+}
+
+fun labelGetInst (label) {
+  label[2] ()
+}
+
+fun labelMakeJmp (label) {
+  label[3] ()
+}
+
+fun labelMakeCJmp (label, c) {
+  label[4] (c)
+}
+
+-- data SMCompFunc = Func String (List String) Expr State
+
+-- \return SMCompilationEnv
+fun cEnvCreate () {
+  -- nextLabelNo : Ref Int
+  var nextLabelNo = ref (0);
+
+  -- scopeDepth : Ref Int
+  var scopeDepth = ref (0);
+
+  -- state : Ref State
+  var state = ref (emptyState ());
+
+  -- argumentsNo : Ref Int
+  var argumentsNo = ref (0);
+
+  -- localsNo : Ref Int
+  var localsNo = ref (0);
+
+  -- functions : Ref (List SMCompFunc) 
+  var functions = ref ({});
+
   fun genLabel () {
-    [sprintf ("L%d", nLabels), makeCompEnv (nLabels+1, scopeDepth, state, nLocals, nArgs, functions)]
+    var labelNo = deref (nextLabelNo);
+    var label = sprintf ("L%d", labelNo);
+    nextLabelNo ::= labelNo + 1;
+    makeLabel (label)
   }
 
-  -- Adds a new function 
-  fun rememberFun (fLabel, args, body) {
-    makeCompEnv (nLabels,
-                 scopeDepth,
-                 state,
-                 nLocals,
-                 nArgs,
-                 Fun (fLabel, args, body, state) : functions)
-  }
-
-  -- Enters a local scope
   fun beginScope () {
-    makeCompEnv (nLabels, scopeDepth+1, enterScope (state), nLocals, nArgs, functions)
+    scopeDepth ::= deref (scopeDepth) + 1;
+    state ::= enterScope (deref (state))
   }
 
-  -- Leaves a local scope
   fun endScope () {
-    makeCompEnv (nLabels, scopeDepth-1, leaveScope (state), nLocals, nArgs, functions)
+    scopeDepth ::= deref (scopeDepth) - 1;
+    state ::= leaveScope (deref (state))
   }
 
-  -- Adds an argument for the current function
-  fun addArg (name) {
-    makeCompEnv (nLabels, scopeDepth, addName (state, name, Arg (nArgs)), nLocals, nArgs+1, functions)
+  fun addArgument (name) {
+    var argumentIdx = deref (argumentsNo);
+    argumentsNo ::= argumentIdx + 1;
+    state ::= addName (deref (state), name, Arg (argumentIdx))
   }
 
-  -- Adds a variable in the scope
-  fun addVar (name) {
-    if isGlobal ()
-    then makeCompEnv (nLabels, scopeDepth, addName (state, name, Glb (name, true)), nLocals, nArgs, functions)
-    else makeCompEnv (nLabels, scopeDepth, addName (state, name, Loc (nLocals, true)), nLocals+1, nArgs, functions)
+  fun addVariable (name) {
+    if deref (scopeDepth) == 2
+    then
+      state ::= addName (deref (state), name, Glb (name))
+    else
+      var localIdx = deref (localsNo);
+      localsNo ::= localIdx + 1;
+      state ::= addName (deref (state), name, Loc (localIdx))
     fi
   }
 
-  -- Adds a value in the scope
-  fun addVal (name) {
-    if isGlobal ()
-    then makeCompEnv (nLabels, scopeDepth, addName (state, name, Glb (name, false)), nLocals, nArgs, functions)
-    else makeCompEnv (nLabels, scopeDepth, addName (state, name, Loc (nLocals, false)), nLocals+1, nArgs, functions)
+  fun takeFunctions () {
+    var result = deref (functions);
+    functions ::= {};
+    result
+  }
+
+  fun beginFunction (function@Fun (functionLabel, params, bodyExpr, functionState)) {
+    --printf ("SM.beginFunction %s\n", function.string);
+    scopeDepth ::= 2;
+    state ::= enterFunction (functionState);
+    argumentsNo ::= 0;
+    localsNo ::= 0;
+    iter (fun (paramName) {
+      addArgument (paramName)
+    }, params)
+  }
+
+  fun lookupVariable (identifier) {
+    case lookup (deref (state), identifier) of
+      Fun (_, _) -> failure ("Identifier ""%s"" does not designate a variable", identifier)
+    | v -> v
+    esac
+  }
+
+  fun addFunction (functionName, functionLabel, argumentsNo) {
+    state ::= addName (deref (state), functionName, Fun (functionLabel, argumentsNo))
+  }
+
+  fun genFunctionLabel (functionName) {
+    if deref (scopeDepth) > 2 then
+      var functionLabelNo = deref (nextLabelNo);
+      nextLabelNo ::= functionLabelNo + 1;
+      sprintf ("L%s_%d", functionName, functionLabelNo)
+    else
+      sprintf ("L%s", functionName)
     fi
   }
 
-  -- Adds a binding for a function
-  fun addFun (name, fLabel, nargs) {
-    makeCompEnv (nLabels, scopeDepth, addName (state, name, Fun (fLabel, nargs)), nLocals, nArgs, functions)
-  }
-  
-  -- Enters a function
-  fun beginFun (state) {
-    makeCompEnv (nLabels, 2, enterFunction (state), 0, 0, functions)
+  fun registerFunction (functionLabel, parameterNames, bodyExpr) {
+    functions ::= Fun (functionLabel, parameterNames, bodyExpr, deref (state)) : deref (functions)
   }
 
-  -- Get functions and empty functions list
-  fun getFuns () {
-    [functions, makeCompEnv (nLabels, scopeDepth, state, nArgs, nLocals, {})]
-  }
-
-  -- Lookups variable
-  fun lookupVar (name) {
-    case lookup (state, name) of
-      Loc (i, true) -> Loc (i)
-    | Glb (x, true) -> Glb (x)
-    | _             -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
+  fun lookupFunction (identifier) {
+    case lookup (deref (state), identifier) of
+      Fun (functionLabel, argumentsNo) -> 
+        Fun (functionLabel, argumentsNo)
+    | _ -> failure ("Function %s undefined", identifier)
     esac
   }
 
-  -- Lookups value
-  fun lookupVal (name) {
-    case lookup (state, name) of
-      Loc (i, _) -> Loc (i)
-    | Glb (x, _) -> Glb (x)
-    | Arg (i)    -> Arg (i)
-    | _          -> error (sprintf ("the name ""%s"" does not designate a value", name), getLoc (name))
-    esac
-  }
-  
-  -- Lookups a name of a function
-  fun lookupFun (name) {
-    case lookup (state, name) of
-      x@Fun (_, _) -> x
-    | _            -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
-    esac
-  }
-
-  -- Gets the number of local variables
-  fun getLocals () {
-    nLocals
-  }
-
-  -- Generates an intrinsic function name
-  fun genFunLabel (name) {
-     if isGlobal ()
-     then [sprintf ("L%s", name),             makeCompEnv (nLabels  , scopeDepth, state, nLocals, nArgs, functions)]
-     else [sprintf ("L%s_%d", name, nLabels), makeCompEnv (nLabels+1, scopeDepth, state, nLocals, nArgs, functions)]
-     fi 
-  }
-
-  -- Checks if the current scope is a global
-  fun isGlobal () {
-    scopeDepth == 2
-  }
-  
-  [genLabel,
-   rememberFun,
-   beginScope,
-   endScope,
-   addArg,
-   addVar,
-   addVal,
-   beginFun,
-   getFuns,
-   lookupVar,
-   lookupVal,
-   lookupFun,
-   getLocals,
-   genFunLabel,
-   addFun,
-   isGlobal
+  [
+    genLabel,
+    scopeDepth,
+    beginScope,
+    endScope,
+    addArgument,
+    addVariable,
+    takeFunctions,
+    beginFunction,
+    lookupVariable,
+    addFunction,
+    genFunctionLabel,
+    registerFunction,
+    lookupFunction,
+    localsNo
   ]
 }
 
--- Initialize a new compilation environment
-fun initCompEnv () {
-  makeCompEnv (0, 0, emptyState (), 0, 0, {})
-}
-
--- Accessor functions
-fun genLabel (env) {
+-- Generate a new label.
+-- 
+-- \param env : SMCompilationEnv
+-- \return SMLabel
+fun cEnvGenLabel (env) {
   env [0] ()
 }
 
-fun rememberFun (env, name, args, body) {
-  env [1] (name, args, body)
+-- Check if the current scope is the global scope.
+--
+-- \param env : SMCompilationEnv
+-- \return Bool
+fun cEnvIsGlobal (env) {
+  deref (env [1]) == 2
 }
 
-fun beginScope (env) {
+-- Enter a new scope.
+--
+-- \param env : SMCompilationEnv
+fun cEnvBeginScope (env) {
   env [2] ()
 }
 
-fun endScope (env) {
+-- Leave the current scope.
+--
+-- \param env : SMCompilationEnv
+fun cEnvEndScope (env) {
   env [3] ()
 }
 
-fun addArg (env, name) {
+-- Add an argument for the current function.
+--
+-- \param env : SMCompilationEnv
+-- \param name : String -- the name of the argument.
+fun cEnvAddArgument (env, name) {
   env [4] (name)
 }
 
-fun addVar (env, name) {
-  env [5] (name)
-}
-
-fun addVal (env, name) {
-  env [6] (name)
-}
-
-fun beginFun (env, state) {
-  env [7] (state)
-}
-
-fun getFuns (env) {
-  env [8] ()
-}
-
-fun lookupVar (env, name) {
-  env [9] (name)
-}
-
-fun lookupVal (env, name) {
-  env [10] (name)
-}
-
-fun lookupFun (env, name) {
-  env [11] (name)
-}
-
-fun getLocals (env) {
-  env [12] ()
-}
-
-fun genFunLabel (env, name) {
-  env [13] (name)
-}
-
-fun addFun (env, name, fLabel, nargs) {
-  env [14] (name, fLabel, nargs)
-}
-
-fun isGlobal (env) {
-  env [15] ()
-}
-
--- Helper function: generates n labels
-fun genLabels (env, n) {
-  fun inner (env, n) {
-    if n == 0
-    then {env}
-    else case genLabel (env) of
-           [lab, env] -> lab : inner (env, n-1)
-         esac
-    fi
-  }
-
-  listArray (inner (env, n))
-}
-
--- Helper function: adds a bunch of arguments
-fun addArgs (env, names) {
-  foldl (fun (env, name) {addArg (env, name)}, env, names)
-}
-
--- Helper function: adds a bunch of local variables
-fun addVars (env, names) {
-  foldl (fun (env, name) {addVar (env, name)}, env, names)
-}
-
--- Helper function: adds a bunch of locals values
-fun addVals (env, names) {
-  foldl (fun (env, name) {addVal (env, name)}, env, names)
-}
-
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine
--- instructions.
-
-
--- Some guidelines for compiling functions and scopes.
+-- Add a variable to the current scope.
+-- If the current scope is the global scope, a global variable will be added.
+-- Otherwise, a local variable for the current function is added.
 --
--- 1. use env.beginScope/env.endScope properly;
--- 2. in each scope traverse the definitions twice:
---    a. first, add all bindings into symbolic state,
---       using end.addVar/env.addFun;
---    b. do not forget to generate GLOBAL instructions for
---       top-level variable declarations;
---    c. on the secord traversal add functions themselves for
---       future code generation (use env.rememberFun).
--- 3. the overall flow for codegeneration:
---    a. generate the code for thetopmost expression (the progrman itself);
---    b. take list of nested functions definitions via env.getFuns and
---       generate the code for each function;
---    c. repeat b. until no function definitions appear.
--- 4. when compiling functions, do not forget to create proper
---    environment (use env.beginFun) and register arguments
---    (use env.addArg).
+-- \param env : SMCompilationEnv
+-- \param identifier : String -- variable name.
+fun cEnvAddVariable (env, identifier) {
+  env [5] (identifier)
+}
 
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine
--- instructions.
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine
--- instructions.
-public fun compileSM (stmt) {
-  fun label (lab, labUsed) {
-    if labUsed
-    then singletonBuffer (LABEL (lab))
-    else emptyBuffer ()
-    fi
+-- Add several variables to the current scope.
+--
+-- \param env : SMCompilationEnv
+-- \param identifiers : List String
+fun cEnvAddVariables (env, identifiers) {
+  iter (fun (identifier) { 
+    cEnvAddVariable (env, identifier)
+  }, identifiers)
+}
+
+-- Get all registered functions and clear the functions registry list.
+--
+-- \param env : SMCompilationEnv
+-- \return List SMCompFunc
+fun cEnvTakeFunctions (env) {
+  env [6] ()
+}
+
+-- Prepare compilation environment for compiling a new function.
+--
+-- \param env : SMCompilationEnv
+-- \param function : SMCompFunc
+fun cEnvBeginFunction (env, function) {
+  env [7] (function)
+}
+
+-- Lookup a variable.
+--
+-- \param env : SMCompilationEnv
+-- \param identifier : String -- name of the variable.
+-- \return SMLocation -- location of the variable.
+fun cEnvLookupVariable (env, identifier) {
+  env [8] (identifier)
+}
+
+-- Declare a function in the current scope.
+--
+-- \param env : SMCompilationEnv
+-- \param functionName : String
+-- \param functionLabel : String
+-- \param argumentsNo : Int
+fun cEnvAddFunction (env, functionName, functionLabel, argumentsNo) {
+  env [9] (functionName, functionLabel, argumentsNo)
+}
+
+-- Create a label for a function.
+--
+-- \param env : SMCompilationEnv
+-- \param functionName : String
+-- \return String -- name of the created label.
+fun cEnvGenFunctionLabel (env, functionName) {
+  env [10] (functionName)
+}
+
+-- \param env : SMCompilationEnv
+-- \param functionLabel : String
+-- \param parameterNames : List String
+-- \param bodyExpr : Expr
+fun cEnvRegisterFunction (env, functionLabel, parameterNames, bodyExpr) {
+  env [11] (functionLabel, parameterNames, bodyExpr)
+}
+
+-- Lookup a function.
+--
+-- \param env : SMCompilationEnv
+-- \param identifier : String -- function name.
+-- \return Fun (functionLabel, argumentsNo)
+fun cEnvLookupFunction (env, identifier) {
+  env [12] (identifier)
+}
+
+-- Get the total number of local variables in the current function.
+--
+-- \param env : SMCompilationEnv
+-- \return Int
+fun cEnvGetLocalsNo (env) {
+  deref (env [13])
+}
+
+-- Compile a Lama expression into stack machine code.
+--
+-- \param root -- root of the Lama AST
+-- \return SMProgram -- compiled SM program
+public fun compileSM (root) {
+  -- env : SMCompilationEnv
+  var env = cEnvCreate ();
+
+  -- type SMCode = Buffer SMInstruction
+
+  fun compileDefinitions (definitions) {
+    var code = ref (emptyBuffer ());
+    var functionsToRegister = ref ({});
+
+    -- Declare variables and functions
+    iter (fun (definition) {
+      case definition of
+        Var (identifiers) ->
+          if cEnvIsGlobal (env) then 
+            iter (fun (identifier) {
+              code ::= deref (code) <+ GLOBAL (identifier)
+            }, identifiers)
+          fi;
+          cEnvAddVariables (env, identifiers)
+      | Fun (functionName, parameters, bodyExpr) ->
+          var functionLabel = cEnvGenFunctionLabel (env, functionName);
+          cEnvAddFunction (env, functionName, functionLabel, size (parameters));
+          functionsToRegister ::= [functionLabel, parameters, bodyExpr] : deref (functionsToRegister)
+      esac
+    }, definitions);
+    
+    -- Register functions
+    iter (fun ([functionLabel, parameters, bodyExpr]) {
+      cEnvRegisterFunction (env, functionLabel, parameters, bodyExpr)
+    }, deref (functionsToRegister));
+
+    deref (code)
   }
-  
-  fun compile (lab, env, stmt) {
-    case stmt of
-      Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 ->  failure ("compileSM not implemented\n")
+
+  fun compileExpressionList (expressions) {
+    var code = ref (emptyBuffer ());
+    iter (fun (expr) {
+      var endLabel = cEnvGenLabel (env);
+      code ::= deref (code)
+        <+> compile (endLabel, expr)
+        <+> labelCompile (endLabel)
+    }, expressions);
+    deref (code)
+  }
+
+  -- Compile a Lama expression into stack machine code.
+  --
+  -- \param endLabel : SMLabel
+  -- \param expr -- Lama expression
+  -- \return SMCode
+  fun compile (endLabel, expr) {
+    --printf ("SM.compile expr=%s\n", expr.string);
+    case expr of
+      Assn (e_var, e_val) ->
+        compileExpressionList ({e_var, e_val})
+          <+ STA
+    | Set (identifier, e_val) ->
+        compileExpressionList ({e_val})
+          <+ ST (cEnvLookupVariable (env, identifier))
+    | Seq (e1, e2) ->
+        var e2Label = cEnvGenLabel (env);
+        compile (e2Label, e1)
+          <+> labelCompile (e2Label)
+          <+> compile (endLabel, e2)
+    | Skip ->
+        emptyBuffer ()
+    | If (condE, thenE, elseE) ->
+        var checkLabel = cEnvGenLabel (env);
+        var thenLabel = cEnvGenLabel (env);
+        compile (checkLabel, condE)
+          <+> labelCompile (checkLabel)
+          <+> labelMakeCJmp (thenLabel, "nz")
+          <+> compile (endLabel, elseE)
+          <+> labelMakeJmp (endLabel)
+          <+> labelGetInst (thenLabel)
+          <+> compile (endLabel, thenE)
+    | While (condE, bodyE) ->
+        var condLabel = cEnvGenLabel (env);
+        var checkLabel = cEnvGenLabel (env);
+        labelGetInst (condLabel)
+          <+> compile (checkLabel, condE)
+          <+> labelCompile (checkLabel)
+          <+> labelMakeCJmp (endLabel, "z")
+          <+> compile (condLabel, bodyE)
+          <+> labelMakeJmp (condLabel)
+    | DoWhile (bodyE, condE) ->
+        var bodyLabel = cEnvGenLabel (env);
+        var condLabel = cEnvGenLabel (env);
+        var checkLabel = cEnvGenLabel (env);
+        labelGetInst (bodyLabel)
+          <+> compile (condLabel, bodyE)
+          <+> labelCompile (condLabel)
+          <+> compile (checkLabel, condE)
+          <+> labelCompile (checkLabel)
+          <+> labelMakeCJmp (bodyLabel, "nz")
+    | Var (identifier) ->
+        singletonBuffer (LD (cEnvLookupVariable (env, identifier)))
+    | Ref (identifier) ->
+        singletonBuffer (LDA (cEnvLookupVariable (env, identifier)))
+          <+ DUP
+    | Const (n) ->
+        singletonBuffer (CONST (n))
+    | Binop (op, lhsE, rhsE) ->
+        var rhsLabel = cEnvGenLabel (env);
+        var opLabel = cEnvGenLabel (env);
+        compile (rhsLabel, lhsE)
+          <+> labelCompile (rhsLabel)
+          <+> compile (opLabel, rhsE)
+          <+> labelCompile (opLabel)
+          <+ BINOP (op)
+    | Scope (definitions, expr) ->
+        cEnvBeginScope (env);
+        (
+          var code = compileDefinitions (definitions)
+            <+> compile (endLabel, expr);
+          cEnvEndScope (env);
+          code
+        )
+    | Call (functionName, argumentsE) ->
+        var code = compileExpressionList (argumentsE);
+        case cEnvLookupFunction (env, functionName) of Fun (functionLabel, argumentsNo) ->
+          code <+ CALL (functionLabel, argumentsNo)
+        esac
+    | Ignore (expr) ->
+        var ignoreLabel = cEnvGenLabel (env);
+        compile (ignoreLabel, expr)
+          <+> labelCompile (ignoreLabel)
+          <+ DROP
+    | String (s) ->
+        singletonBuffer (STRING (s))
+    | Array (e_elements) ->
+        var code = compileExpressionList (e_elements);
+        code <+ ARRAY (size (e_elements))
+    | Sexp (uident, e_elements) ->
+        var code = compileExpressionList (e_elements);
+        code <+ SEXP (uident, size (e_elements))
+    | Elem (e_container, e_index) ->
+        compileExpressionList ({e_container, e_index})
+          <+ ELEM
+    | ElemRef (e_container, e_index) ->
+        compileExpressionList ({e_container, e_index})
     esac
   }
 
-  case initCompEnv ().beginScope.addFun ("read"  , "$read"  , 0)
-                                .addFun ("write" , "$write" , 1)
-                                .addFun ("length", "$length", 1).genLabel of
-    [endLab, env] ->
-       case compile (endLab, env, stmt) of
-         [endLabUsed, _, code] -> getBuffer $ code <+> label (endLab, endLabUsed) 
-       esac
-  esac
+  -- Compile a function (which also includes the "main" function as the global program).
+  --
+  -- When a nested function definition is encountered, it is also compiled
+  -- and appended after this functions code.
+  --
+  -- \param root -- top-level Lama expression of this function.
+  -- \param functionLabel : String -- label of this function.
+  -- \param argumentsNo : Int -- number of arguments of this function.
+  -- \return SMCode -- compiled stack machine code of this function.
+  fun compileFunction (root, functionLabel, argumentsNo) {
+    -- Force root expression to be a Scope expression
+    --var x = printf ("SM.compileFunction %s argumentsNo=%s\n%s\n", functionLabel, argumentsNo.string, root.string);
+    var reifiedRoot = case root of
+      Scope (_, _) -> root
+    | _ -> Scope ({}, root)
+    esac;
+    var endLabel = cEnvGenLabel (env);
+    var code =
+      compile (endLabel, reifiedRoot)
+      <+> labelCompile (endLabel)
+      <+ END;
+    var registeredFunctions = cEnvTakeFunctions (env);
+    code := singletonBuffer (BEGIN (functionLabel, argumentsNo, cEnvGetLocalsNo (env)))
+      <+> code;
+    code := ref (code);
+    iter (fun (function) {
+      case function of Fun (functionLabel, args, body, state) ->
+        var bodyCode;
+        var localsNo;
+        cEnvBeginFunction (env, function);
+        bodyCode := compileFunction (body, functionLabel, size (args));
+        code ::= deref (code)
+          <+> bodyCode
+      esac
+    }, registeredFunctions);
+    deref (code)
+  }
+
+  var code;
+  --printf ("SM.compileSM\n%s\n", root.string);
+  cEnvBeginScope ();
+  cEnvAddFunction (env, "read", "Lread", 0);
+  cEnvAddFunction (env, "write", "Lwrite", 1);
+  cEnvAddFunction (env, "length", "Llength", 1);
+  code := compileFunction (root, "main", 0);
+  getBuffer (code)
 }
+
+
