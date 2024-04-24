@@ -563,7 +563,7 @@ extern void Bmatch_failure(void *v, char *fname, int line, int col)
 /* 3. Fix pointers */
 /* 4. Swap spaces */
 /*   I.e. active space becomes passive and vice versa. */
-/* In the implementation, the first four steps are performed together. */
+/* In the implementation, the first two steps (1 and 2) are performed simultaneously. */
 /* Where root can be found in: */
 /* 1) Static area. */
 /*   Globals @__gc_data_end and @__gc_data_start are used to idenfity the begin and the end */
@@ -585,9 +585,6 @@ extern const size_t __gc_data_end, __gc_data_start;
 //   it sets up stack bottom and calls init_pool
 //   it is called from the main function (see src/X86.lama function compileX86)
 extern void L__gc_init();
-// @__gc_root_scan_stack (you have to define it in runtime/gc_runtime.s)
-//   finds roots in program stack and calls @gc_test_and_copy_root for each found root
-extern void __gc_root_scan_stack();
 
 // You also have to define two functions @__pre_gc and @__post_gc in runtime/gc_runtime.s.
 // These auxiliary functions have to be defined in oder to correctly set @__gc_stack_top.
@@ -595,7 +592,7 @@ extern void __gc_root_scan_stack();
 // program stack. These activation records contain usual values and thus we do not have a
 // way to distinguish pointers from non-pointers. And some of these values may accidentally be
 // equal to pointers into active semi-space but maybe not to the begin of an object.
-// Calling @gc_copy on such values leads to undefined behavior.
+// Considering such values as pointers leads to undefined behavior.
 // Thus, @__gc_stack_top has to point before these activation records.
 // Note, you also have to find a correct place(-s) for @__pre_gc and @__post_gc to be called.
 // @__pre_gc  sets up @__gc_stack_top if it is not set yet
@@ -652,11 +649,6 @@ static void extend_spaces(void)
   NIMPL
 }
 
-// @gc_copy takes a pointer to an object, copies it
-//   (i.e. moves from from_space to to_space)
-//   , rests a forward pointer, and returns new object location.
-extern size_t *gc_copy(size_t *obj) { NIMPL }
-
 // @init_pool is a memory pools initialization function
 //   (is called by L__gc_init from runtime/gc_runtime.s)
 extern void init_pool(void) { NIMPL }
@@ -665,10 +657,6 @@ extern void init_pool(void) { NIMPL }
 //   and extends pools (i.e. calls @extend_spaces) if necessarily
 // @size is a size of the block that @alloc failed to allocate
 // returns a pointer the new free block
-// I.e.
-//   1) identifies all roots in the static memory and iteratively moving them (and its ancestors) into the passive space ( @gc_copy )
-//   2) identifies all roots in the program stack and iteratively moving them (and its ancestors) into the passive space ( @gc_copy )
-//   3) extends spaces if there is not enough space to be allocated after gc
 static void *gc(size_t size) { NIMPL }
 
 // @alloc allocates @size memory words
