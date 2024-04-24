@@ -4,6 +4,7 @@ import List;
 import Array;
 import State;
 import World;
+import Builtins;
 import Lexer;
 import Parser;
 import Fun;
@@ -11,11 +12,11 @@ import Builtins;
 
 -- As association map which maps "\otimes" into "\oplus"
 var ops = {
-  ["+" , infix + ],
-  ["-" , infix - ],
-  ["*" , infix * ],
-  ["/" , infix / ],
-  ["%" , infix % ],
+  ["+", infix +],
+  ["-", infix -],
+  ["*", infix *],
+  ["/", infix /],
+  ["%", infix %],
   ["==", infix ==],
   ["!=", infix !=],
   ["<" , infix < ],
@@ -51,6 +52,7 @@ public fun evalOp (op, l, r) {
 --        Ref     (string)             |
 --        Const   (int)                |
 --        Binop   (string, expr, expr) |
+--        Scope   (def list, expr)     |
 --        Call    (string, expr list)  |
 --        Ignore  (expr)               |
 --        String  (string)             |
@@ -87,7 +89,16 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
+
+fun addDefinitions(state, defs) {
+  foldl(fun (cstate, def) {
+    case def of
+        Var(x)                -> addNames(cstate, x)
+      | Fun(name, args, body) -> addFunction(cstate, name, args, body)
+    esac
+  }, state, defs)
+}
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -102,8 +113,90 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval(c@[state, world], expr) {
+  case expr of
+     Set(name, value)             -> eval(c, Assn(Ref(name), value))
+    | Assn (exL, exR)              -> case evalList(c, { exL, exR }) of
+      [c@[state, world], { n, v }] ->
+        case n of
+            ElemRef(name, index) -> [c, name[index] := v]
+          | _                    -> [[state <- [n, v], world], v]
+        esac
+    esac
+    | Seq (ex1, ex2)               -> case evalList(c, { ex1, ex2 }) of
+      [c, { _, v }] -> [c, v]
+    esac
+    | Skip                         -> [c, Void]
+    | cycle@(While (exIf, exBody)) -> case eval(c, exIf) of
+        [c, 0] -> [c, Void]
+      | [c, _] -> case eval(c, exBody) of
+        [c, _] -> eval(c, cycle)
+      esac
+    esac
+    | If(exIf, exTrue, exFalse)    -> case eval(c, exIf) of
+        [c, 0] -> eval(c, exFalse)
+      | [c, _] -> eval(c, exTrue)
+    esac
+    | DoWhile (exBody, exIf)       -> case eval(c, exBody) of
+      [c, _] -> eval(c, While(exIf, exBody))
+    esac
+    | Var(v)                       -> [c, lookup(state, v)]
+    | Ref (x)                      -> [c, x]
+    | Const (n)                    -> [c, n]
+    | Binop (op, ex1, ex2)         -> case evalList(c, { ex1, ex2 }) of
+      [cc, { a, b }] -> [cc, evalOp(op, a, b)]
+    esac
+    | Ignore (ex)                  -> case eval(c, ex) of
+      [c, _] -> [c, Void]
+    esac
+    | Scope(defs, expr)            -> case enterScope(state) of
+      state -> case addDefinitions(state, defs) of
+        state -> case eval([state, world], expr) of
+          [[state, world], value] -> [[leaveScope(state), world], value]
+        esac
+      esac
+    esac
+    | Array(exprs)                 -> case evalList(c, exprs) of
+      [c, vals] -> [c, listArray(vals)]
+    esac
+    | Elem(name, index)            -> case evalList(c, { name, index }) of
+      [c, { name, index }] -> case name of
+          Sexp(_, name) -> [c, name[index]]
+        | _             -> [c, name[index]]
+      esac
+    esac
+    | ElemRef(name, index)         -> case evalList(c, { name, index }) of
+      [c, { name, index }] -> case name of
+          Sexp(_, name) -> [c, ElemRef(name, index)]
+        | _             -> [c, ElemRef(name, index)]
+      esac
+    esac
+    | String(s)                    -> [c, s]
+    | Sexp(name, exprs)            -> case evalList(c, exprs) of
+      [c, exprs] -> [c, Sexp(name, listArray(exprs))]
+    esac
+    | Call(name, args)             -> case lookup(state, name) of
+      Fun(funargs, body) -> case body of
+          External ->
+            case evalList(c, args) of
+              [[state, world], vals] -> case evalBuiltin(name, vals, world) of
+                [value, world] -> [[state, world], value]
+              esac
+            esac
+        | _        -> case evalList(c, args) of
+          [[stBefore, world], vals] -> case enterFunction(stBefore) of
+            stAfter -> case foldl(fun (state, [ref, value]) {
+              addName(state, ref, value)
+            }, stAfter, zip(funargs, vals)) of
+              stAfter -> case eval([stAfter, world], body) of
+                [[stAfter, world], value] -> [[leaveFunction(stBefore, getGlobal(stAfter)), world], value]
+              esac
+            esac
+          esac
+        esac
+      esac
+    esac
+  esac
 }
 
 
