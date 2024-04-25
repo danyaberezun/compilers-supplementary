@@ -94,7 +94,6 @@ fun eval (env, w, insns) {
     case loc of
       Arg (i) -> args[i]
     | Loc (i) -> locs[i]
-    | Loc (i) -> locs[i]
     | Glb (x) -> deref (globalState) (x)
     esac
   }
@@ -167,6 +166,24 @@ fun eval (env, w, insns) {
         s:ss -> [[stack, cf_stack, assign (state, x, s), w], None]
       esac
     | CONST (n) -> [[n:stack, cf_stack, state, w], None]
+    | STRING (s) -> [[s:stack, cf_stack, state, w], None]
+    | ARRAY (n) ->
+      case take (stack, n) of
+        [new_stack, arr] -> [[listArray (arr):new_stack, cf_stack, state, w], None]
+      esac
+    | SEXP (stag, n) ->
+      case take (stack, n) of
+        [new_stack, args] -> [[Ksexp (stag, listArray (args)):new_stack, cf_stack, state, w], None]
+      esac
+    | ELEM ->
+      case stack of
+        i:(Ksexp (stag, args)):ss -> [[args[i]:ss, cf_stack, state, w], None]
+      | i:a:ss -> [[a[i]:ss, cf_stack, state, w], None]
+      esac
+    | STA ->
+      case stack of
+        v:i:a:ss -> a[i] := v; [[v:ss, cf_stack, state, w], None]
+      esac
     | LABEL (_) -> [c, None]
     | JMP (label) -> [c, Some (fromLabel (env, label))]
     | CJMP (pred, label) ->
@@ -193,6 +210,13 @@ fun eval (env, w, insns) {
       esac
     | GLOBAL (x) -> [[stack, cf_stack, assign (state, Glb (x), 0), w], None]
     | CALL (fLabel, n) -> [[stack, [state, insn_tail]:cf_stack, state, w], Some (fromLabel (env, fLabel))]
+    | BUILTIN (fLabel, n) ->
+      case take (stack, n) of
+        [new_stack, args] ->
+          case evalBuiltin (fLabel, args, w) of
+            [v, w] -> [[v:new_stack, cf_stack, state, w], None]
+          esac
+      esac
     | BEGIN (f, a, l) ->
       case take (stack, a) of
         [new_stack, arg_stack] ->
@@ -278,7 +302,7 @@ fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
 
   -- Get functions and empty functions list
   fun getFuns () {
-    [functions, makeCompEnv (nLabels, scopeDepth, state, nArgs, nLocals, {})]
+    [functions, makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, {})]
   }
 
   -- Lookups variable
@@ -517,15 +541,33 @@ public fun compileSM (stmt) {
 
     case stmt of
     -- values
-      Var    (x) -> [false, env, singletonBuffer (LD (lookupVar (env, x)))]
-    | Ref    (x) -> [false, env, singletonBuffer (LDA (lookupVar (env, x)))]
-    | Const  (n) -> [false, env, singletonBuffer (CONST (n))]
+      Var    (x) -> [false, env, singletonBuffer $ LD (lookupVal (env, x))]
+    | Ref    (x) -> [false, env, singletonBuffer $ LDA (lookupVar (env, x))]
+    | Const  (n) -> [false, env, singletonBuffer $ CONST (n)]
     | Ignore (e) -> compileAndThen (env, e, emitInsn (DROP))
-    -- basic
+    | Set (x, e) -> compileAndThen (env, e, emitInsn (ST (lookupVal (env, x))))
+    | String (s) -> [false, env, singletonBuffer $ STRING (s)]
+    | Elem (arr, pos) ->
+      case (compileChain ({arr, pos})) (env) of
+        [_, env, code] -> [false, env, code <+ ELEM]
+      esac
+    | Array (arr) ->
+      case (compileChain (arr)) (env) of
+        [_, env, code] -> [false, env, code <+ ARRAY (size (arr))]
+      esac
+    | Sexp (stag, args) ->
+      case (compileChain (args)) (env) of
+        [_, env, code] -> [false, env, code <+ SEXP (stag, size (args))]
+      esac
     | Skip -> [false, env, emptyBuffer ()]
-    | Read  (x) -> [false, env, singletonBuffer (READ) <+ ST (lookupVar (env, x)) <+ DROP]
-    | Write (e) -> compileAndThen (env, e, emitInsn (WRITE))
-    | Assn  (x, e) -> compileAndThen (env, x, fun (env) {compileAndThen (env, e, emitInsn (STI))})
+    | Assn (x, e) ->
+      case x of
+        ElemRef (arr, pos) ->
+          case (compileChain ({arr, pos, e})) (env) of
+            [_, env, code] -> [false, env, code <+ STA]
+          esac
+      | _ -> compileAndThen (env, x, fun (env) {compileAndThen (env, e, emitInsn (STI))})
+      esac
     | Binop (op, e1, e2) -> compileAndThen (env, e2, fun (env) {compileAndThen (env, e1, emitInsn (BINOP (op)))})
     -- control flow, TODO: rewrite with compileAndThen helper
     | Seq (e1, e2) -> compileAndThen (env, e1, fun (env) {compile (lab, env, e2)})
@@ -591,8 +633,7 @@ public fun compileSM (stmt) {
         Fun (fLabel, nargs) ->
           if nargs == size (args) then
             case (compileChain (args)) (env) of
-              [_ , env, code] ->
-                [false, env, code <+ CALL (fLabel, nargs) ]
+              [_ , env, code] -> [false, env, code <+ if fLabel[0] == '$' then BUILTIN (fname, nargs) else CALL (fLabel, nargs) fi ]
             esac
           else
             failure ("unexpected number of arguments for function")
@@ -629,7 +670,8 @@ public fun compileSM (stmt) {
   }
 
   -- Global scope compilation
-  case initCompEnv ().addFun ("read"  , "$read"  , 0)
+  case initCompEnv ().beginScope
+                     .addFun ("read"  , "$read"  , 0)
                      .addFun ("write" , "$write" , 1)
                      .addFun ("length", "$length", 1)
                      .genLabel of

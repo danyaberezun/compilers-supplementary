@@ -73,27 +73,9 @@ fun evalList (c, exprs) {
 --        ElemRef (expr, expr)         |
 --        Builtin (string, expr list)
 
--- Helper function: checks that given name designates a regular variable in
--- a given state
-fun lookupVal (state, name) {
-  case state.lookup (name) of
-    x@Val (_) -> x
-  | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
-  esac
-}
-
--- Helper function: checks that given name designates a function in
--- a given state
-fun lookupFun (state, name) {
-  case state.lookup (name) of
-    x@Fun (_, _) -> x
-  | _            -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
-  esac
-}
-
 -- Helper function: adds a bunch of regular variables current scope
 fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
+  foldl (fun (s, name) {s.addName (name, Var (0))}, state, names)
 }
 
 -- Helper function: adds a function in current scope
@@ -102,6 +84,7 @@ fun addFunction (state, name, args, body) {
 }
 
 public fun valDecls (decls) {
+  -- TODO: process Val correctly
   flatten (map (fun (x) { case x of Fun (x, _, _) -> {} | Var (x) -> x esac }, decls))
 }
 
@@ -115,20 +98,19 @@ fun eval (c@[st, w], expr) {
     Assn (dest, src) ->
     case evalList (c, {dest, src}) of
       [[st, w], {Kref (dest), src}] -> [[st <- [dest, src], w], src]
+    | [[st, w], {Kref (arr, pos), src}] ->
+        arr[pos] := src;
+        [[st, w], src]
+    esac
+  | Set (dest, expr) ->
+    case eval (c, expr) of
+      [[st, w], v] -> [[st <- [dest, v], w], v]
     esac
   | Seq (stmt1, stmt2) ->
     case evalList (c, {stmt1, stmt2}) of
       [c, {_, v}] -> [c, v]
     esac
   | Skip -> [c, Kbot]
-  | Read (v) ->
-    case readWorld (w) of
-      [readed_val, w] -> [[st <- [v, readed_val], w], Kbot]
-    esac
-  | Write (e) ->
-    case eval (c, e) of
-     [[st, w], v] -> [[st, writeWorld (v, w)], Kbot]
-    esac
   | If (p, pb, nb) ->
     case eval (c, p) of
       [c, v] -> eval (c, if v == 0 then nb else pb fi)
@@ -145,9 +127,27 @@ fun eval (c@[st, w], expr) {
   | Var (s) -> [[st, w], lookup (st, s)]
   | Ref (x) -> [c, Kref (x)]
   | Const (x) -> [c, x]
+  | String (s) -> [c, s]
+  | Elem (arr, pos) ->
+    case evalList (c, {arr, pos}) of
+      [c, {Ksexp (stag, args), pos}] -> [c, args[pos]]
+    | [c, {arr, pos}] -> [c, arr[pos]]
+    esac
+  | ElemRef (arr, pos) ->
+    case evalList (c, {arr, pos}) of
+      [c, {arr, pos}] -> [c, Kref (arr, pos)]
+    esac
+  | Array (arr) ->
+    case evalList (c, arr) of
+      [c, arr] -> [c, listArray (arr)]
+    esac
+  | Sexp (stag, args) ->
+    case evalList (c, args) of
+      [c, args] -> [c, Ksexp (stag, listArray (args))]
+    esac
   | Binop (op, e1, e2) ->
     case evalList (c, {e1, e2}) of
-      [c, {v1, v2}] -> [c, evalOp(op, v1, v2)]
+      [c, {v1, v2}] -> [c, evalOp (op, v1, v2)]
     esac
   | Ignore (e) ->
     case eval (c, e) of
@@ -161,11 +161,15 @@ fun eval (c@[st, w], expr) {
         esac
     esac
   | Call (fname, args) ->
-    case lookup (st, fname) of
-      Fun (arg_names, body) ->
-        case evalList (c, args) of
-          [[st, w], args] ->
-            case foldl (fun (acc, [name, v]) { addName (acc, name) <- [name, v] }, enterFunction (st), zip (arg_names, args)) of
+    case evalList (c, args) of
+      [[st, w], args] ->
+        case lookup (st, fname) of
+          Fun (arg_names, External) ->
+            case evalBuiltin (fname, args, w) of
+              [v, w] -> [[st, w], v]
+            esac
+        | Fun (arg_names, body) ->
+            case foldl (fun (acc, [name, v]) { addName (acc, name, v) }, enterFunction (st), zip (arg_names, args)) of
               f_st ->
                 case eval ([f_st, w], body) of
                   [[f_st, w], v] -> [[leaveFunction (st, getGlobal (f_st)), w], v]
