@@ -37,34 +37,55 @@ public fun evalOp (op, l, r) {
 -- Evaluates an expression "expr" in a configuration "c".
 -- A configuration is a pair of a state "s" and a world "w".
 -- Returns a final configuration (if any)
---
+
 -- A expression is represented by a data structure of the following shape:
 --
--- expr = Assn    (expr, expr)         |
---        Set     (string, expr)       |
---        Seq     (expr, expr)         |
---        Skip                         |
---        if      (expr, expr, expr)   |
---        While   (expr, expr)         |
---        Repeat  (expr, expr)         |
---        Var     (string)             |
---        Ref     (string)             |
---        Const   (int)                |
---        Binop   (string, expr, expr) |
---        Call    (string, expr list)  |
---        Ignore  (expr)               |
---        String  (string)             |
---        Array   (expr list)          |
---        Elem    (expr, expr)         |
---        ElemRef (expr, expr)         |
---        Builtin (string, expr list)
+-- Expr = Assn (Expr, Expr)         
+--      | Set (String, Expr)       
+--      | Seq (Expr, Expr)         
+--      | Skip                         
+--      | If (Expr, Expr, Expr)   
+--      | While (Expr, Expr)         
+--      | DoWhile (Expr, Expr)         
+--      | Var (String)             
+--      | Ref (String)             
+--      | Const (Int)                
+--      | Binop (String, Expr, Expr) 
+--      | Scope ([Def], Expr)    
+--      | Call (String, [Expr])  
+--      | Ignore (Expr)               
+--      | String (String)             
+--      | Array ([Expr])          
+--      | Sexp (String, [Expr])  
+--      | Elem (Expr, Expr)         
+--      | ElemRef (Expr, Expr)      
+--      | Case (Expr, [Pattern, Expr])
+--
+-- Def = Var ([String])                
+--     | Val ([String])
+--     | Fun (String, [String], Expr)
+--
+-- Pattern = Int
+--         | Wildcard
+--         | Array [Pattern]
+--         | Sexp (String, [Pattern]) -- S-expression
+--         | Named (String, Pattern) -- named pattern
 
--- Helper function: checks that given name designates a regular variable in
--- a given state
-fun lookupVal (state, name) {
-  case state.lookup (name) of
-    x@Val (_) -> x
-  | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
+-- Interpretator:
+
+-- Value = Int
+--       | String
+--       | Value[]
+--       | Sexp (Uident, Value[])
+--       | Fun (params, body)
+
+-- Ref = VarRef (identifier)
+--     | ElemRef (array, index)
+
+fun lookupVar (state, identifier) {
+  case lookup (state, identifier) of
+    x@Var (_) -> x
+  | _ -> failure ("""%s"" does not refer to a variable", identifier)
   esac
 }
 
@@ -77,9 +98,15 @@ fun lookupFun (state, name) {
   esac
 }
 
--- Helper function: adds a bunch of regular variables current scope
-fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
+-- Helper function: adds a bunch of vars or vals in current scope
+fun addNames (state, names, constructor) {
+  foldl (
+    fun (s, name) {
+      s.addName (name, constructor (0))
+    },
+    state,
+    names
+  )
 }
 
 -- Helper function: adds a function in current scope
@@ -87,12 +114,12 @@ fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
                                         
--- Evaluates a list of expressions, properly threading a configurations.
+-- Evaluates a list of expressions, properly threading configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
   case foldl (fun ([c, vals], e) {
                 case eval (c, e) of
-                  [c, vl] -> [c, vl : vals]
+                  [c, v] -> [c, v : vals]
                 esac
               },
               [c, {}],
@@ -101,16 +128,251 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+-- Adds a definition to the current state.
+-- \param state : State -- state before the definitions
+-- \param def : Def -- the definiton to add
+-- \return State -- new state
+fun addDef (state, def) {
+  case def of
+    Var (names) ->
+      addNames (state, names, eta (Var))
+  | Val (names) ->
+      addNames (state, names, eta (Val))
+  | Fun (name, parameterNames, bodyE) ->
+      addFunction (state, name, parameterNames, bodyE)
+  esac
 }
 
+-- Adds a list of definition to the current state.
+-- \param state state before the definitions
+-- \param defs a list of definitions to add
+-- \return new state
+fun addDefs (state, defs) {
+  foldl (addDef, state, defs)
+}
+
+-- Helper function: adds a bunch of vals
+-- and initialize them with corresponding values in the current scope.
+fun initializeVals (state, pairs) {
+  foldl (fun (s, [name, value]) { addName (s, name, value, eta (Val)) }, state, pairs)
+}
+
+fun evalCond (condVal) {
+  case condVal of
+    n@#val -> n
+  | _ -> failure ("Cannot have a non-number as a condition\n")
+  esac
+}
+
+-- \return Ok (bindings) on successful match, Fail otherwise
+fun matchArray (patterns@#array, values@#array) {
+  if length (patterns) != length (values) then
+    Fail
+  else
+    var bindings = [];
+    for var i; i := 0, i < length (patterns), i := i + 1 do
+      case match1 (values [i], patterns [i]) of
+        Fail -> Fail
+      | Ok (newBindings) ->
+        bindings := newBindings +++ bindings
+      esac
+    od;
+    Ok (bindings)
+  fi
+}
+
+-- \return Ok (binding) on successful match, Fail otherwise
+fun match1 (argumentValue, pattern) {
+  case pattern of
+    patternInt@#val ->
+      if argumentValue == patternInt then
+        Ok ([])
+      else
+        Fail
+      fi
+  | Wildcard -> Ok ([])
+  | Array (patterns) ->
+      case argumentValue of
+        argumentArray@#array ->
+          matchArray (patterns, argumentArray)
+      | _ -> Fail
+      esac
+  | Sexp (patternUident, patterns) -> 
+      case argumentValue of
+        Sexp (argumentUident, argumentValues@#array) ->
+          if argumentUident != patternUident then
+            Fail
+          else
+            matchArray (patterns, argumentValues)
+          fi
+      | _ -> Fail
+      esac
+  | Named (identifier, pattern) ->
+      case match1 (argumentValue, pattern) of
+        Fail -> Fail
+      | Ok (bindings) -> [identifier, argumentValue] : bindings
+      esac
+  | _ -> 0
+  esac
+}
+
+-- \return Ok (bindings, resultExpr) on successful match
+-- \return Fail, otherwise
+fun match (argumentValue, branches) {
+  case branches of
+    [] -> 0
+  | [pattern, resultExpr] : branches -> 
+      case match1 (argumentValue, pattern) of
+        Fail ->
+          match (argumentValue, branches)
+      | Ok (bindings) ->
+          Ok (bindings, resultExpr)
+      esac
+  esac
+}
+
+fun eval (c@[s, w], expr) {
+  --printf ("Expr.eval %s\n", expr.string);
+  case expr of
+    Assn (lhs, rhs) ->
+      case evalList (c, {lhs, rhs}) of
+        [c@[s, w], {ref, value}] ->
+          case ref of
+            VarRef (identifier) ->
+              var check = lookupVar (s, identifier);
+              var c = [s <- [identifier, value], w];
+              [c, value]
+          | ElemRef (arr, index) ->
+              arr [index] := value;
+              [c, value]
+          esac
+      | _ -> failure ("AST ain't well-formed\n")
+      esac
+  | Set (identifier, eValue) ->
+      case eval (c, eValue) of [[s, w], value] ->
+        [[s <- [identifier, Var (value)], w], 0]
+      esac
+  | Seq (e1, e2) ->
+      case evalList (c, {e1, e2}) of [c, {_, v2}] ->
+        [c, v2]
+      esac
+  | Skip -> [c, 0]
+  | If (condE, thenE, elseE) ->
+      case eval (c, condE) of [c, condV] ->
+        if evalCond (condV)
+          then eval (c, thenE)
+          else eval (c, elseE)
+        fi
+      esac
+  | While (condE, bodyE) ->
+      var currentC = c;
+      while (
+        case eval (currentC, condE) of [newC, value] ->
+          currentC := newC;
+          evalCond (value)
+        esac
+      ) do
+        case eval (currentC, bodyE) of
+          [newC, 0] -> currentC := newC
+        | _ -> failure ("While body must be Void")
+        esac
+      od;
+      [currentC, 0]
+  | DoWhile (bodyE, condE) ->
+      var currentC = c;
+      do
+        case eval (currentC, bodyE) of
+          [newC, 0] -> currentC := newC
+        | _ -> failure ("DoWhile body must be Void")
+        esac
+      while (
+        case eval (currentC, condE) of [newC, value] ->
+          currentC := newC;
+          evalCond (value)
+        esac
+      ) od;
+      [currentC, 0]
+  | Var (identifier) ->
+    case lookupVar (s, identifier) of Var (value) ->
+      [c, value]
+    esac
+  | Ref (v) -> [c, VarRef (v)]
+  | Const (n) -> [c, n]
+  | Binop (op, lhsE, rhsE) ->
+      case evalList (c, {lhsE, rhsE}) of [c, {l@#val, r@#val}] ->
+        [c, evalOp (op, l, r)]
+      esac
+  | Scope (defs, bodyE) ->
+      case addDefs (enterScope (s), defs) of s ->
+        case eval ([s, w], bodyE) of [[s, w], value] ->
+          [[leaveScope (s), w], value]
+        esac
+      esac
+  | Call (name, e_args) ->
+      case evalList (c, e_args) of [[s, w], v_args] ->
+        case lookup (s, name) of 
+          Fun (params, External) ->
+            case evalBuiltin (name, v_args, w) of [result, w] ->
+              [[s, w], result]
+            esac
+        | Fun (params, e_body) ->
+            var inFuncSt = initializeVals (enterFunction (s), zip (params, v_args));
+            case eval ([inFuncSt, w], e_body) of [[inFuncSt, w], w_result] ->
+              [[leaveFunction (s, getGlobal (inFuncSt)), w], w_result]
+            esac
+        esac
+      esac
+  | Ignore (e) ->
+      case eval (c, e) of [c, _] ->
+        [c, 0]
+      esac
+  | String (s) -> [c, s]
+  | Array (exprList) ->
+      case evalList (c, exprList) of [c, values] ->
+        [c, listArray (values)]
+      esac
+  | Sexp (uident, exprList) ->
+      case evalList (c, exprList) of [c, values] ->
+        [c, Sexp (uident, listArray (values))]
+      esac
+  | Elem (e_container, e_index) ->
+      case evalList (c, {e_container, e_index}) of [c, {container, index@#val}] ->
+        var result = case container of
+          arr@#array -> arr [index]
+        | s@#str -> s [index]
+        | Sexp (_, elements) -> elements [index]
+        esac;
+        [c, result]
+      esac
+  | ElemRef (e_container, e_index) ->
+      case evalList (c, {e_container, e_index}) of [c, {container, index@#val}] ->
+        var arrayRef = case container of
+          Sexp (_, elements) -> elements
+        | r -> r
+        esac;
+        [c, ElemRef (arrayRef, index)]
+      esac
+  | Case (argumentExpr, branches) ->
+    case eval (c, argumentExpr) of [c, argumentValue] ->
+      case match (argumentValue, branches) of
+        Ok ([bindings, resultExpr]) ->
+          case initializeVals (s, bindings) of s ->
+            eval ([s, w], resultExpr)
+          esac
+      | Fail -> failure ("Pattern-matching fail")
+      esac
+    esac
+  | _ -> failure ("AST ain't well-formed\n")
+  esac
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
+  --printf ("Expr.evalExpr progrum: %s\n", expr.string);
   case eval ([emptyState ().enterScope.addName ("read",   Fun ({}, External))
                                       .addName ("write",  Fun ({"a"}, External))
                                       .addName ("length", Fun ({"a"}, External)), createWorld (input)], expr) of
     [c, _] -> c.snd.getOutput
   esac
 }
+
