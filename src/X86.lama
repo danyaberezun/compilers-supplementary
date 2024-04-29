@@ -484,6 +484,51 @@ fun toFixedNum (r) {
   singletonBuffer (Sal1 (r)) <+ Or1 (r)
 }
 
+fun compileCall (env, name, a, extra) {
+  var regs = liveRegisters (env, a);
+  var code = foldl (fun (code, reg) {
+    code <+ Push (reg)
+  }, emptyBuffer (), regs);
+  for var i; i := a, i > 0, i := i - 1 do
+    case pop (env) of
+      [arg, newEnv] ->
+        code := code <+ Push (arg);
+        env := newEnv
+    esac
+  od;
+  code := foldl (fun (code, arg) {
+    code <+ Push (arg)
+  }, code, extra);
+  code := code <+ Call (name) <+ Binop ("+", L (wordSize * (a + size (extra))), esp);
+  code := foldr (fun (code, reg) {
+    code <+ Pop (reg)
+  }, code, regs);
+  case allocate (env) of 
+    [s, env] -> [env, code <+> move (eax, s)]
+  esac
+}
+
+fun opType (op) {
+  case op of
+    "+" -> Arithm
+  | "-" -> Arithm
+  | "*" -> Arithm
+  | "/" -> Div
+  | "%" -> Mod
+  | "<" -> Comp
+  | "<=" -> Comp
+  | "==" -> Comp
+  | "!=" -> Comp
+  | ">=" -> Comp
+  | ">"  -> Comp
+  | "&&" -> Logic
+  | "!!" -> Logic
+  esac
+}
+
+fun clear (reg) {
+  Binop ("^", reg, reg)
+}
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
@@ -533,14 +578,109 @@ fun compile (args, env, code) {
            -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
            --    env.enterFunction to create a proper environment;
            -- 2. generate epilogue for END instruction.
-               
-          | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+          | BINOP (op) ->
+            case pop2 (env) of
+              [y, x, env] ->
+                case allocate (env) of
+                  [z, env] ->
+                    var new = case opType(op) of
+                        Arithm -> code <+ Sar1 (y) <+ Sar1 (x) <+> move (x, eax) <+ Binop (op, y, eax) <+> move (eax, z) <+> toFixedNum (z)
+                      | Div -> code <+ Sar1 (y) <+ Sar1 (x) <+> move (x, eax) <+ Cltd <+ IDiv (y) <+> move (eax, z) <+> toFixedNum (z)
+                      | Mod -> code <+ Sar1 (y) <+ Sar1 (x) <+> move (x, eax) <+ Cltd <+ IDiv (y) <+> move (edx, z) <+> toFixedNum (z)
+                      | Comp -> code <+ Sar1 (y) <+ Sar1 (x) <+ clear (eax) <+> move (x, edx) <+ Binop ("cmp", y, edx) <+ Set (suffix (op), "%al") <+> move (eax, z) <+> toFixedNum (z)
+                      | Logic -> code <+ Sar1 (y) <+ Sar1 (x) <+ clear (eax) <+ Binop ("cmp", L (0), x) <+ Set (suffix ("!="), "%al") <+> move (eax, z) <+ clear (eax) <+ Binop ("cmp", L (0), y) <+ Set (suffix ("!="), "%al") <+ Binop (op, eax, z) <+> toFixedNum (z)
+                    esac;
+                    [env, new]
+                esac
+            esac
+          | LD (x) ->
+            case allocate (env) of
+              [s, env] -> [env, code <+> move (loc (env, x), s)]
+            esac
+          | LDA (x) ->
+            case allocate (env) of 
+              [s1, env] -> case allocate (env) of
+                [s2, env] -> [env, code <+ Lea (loc (env, x), eax) <+> move (eax, s2) <+> move (eax, s1)]
+              esac
+            esac
+          | ST (x) ->
+            case peek (env) of
+              s -> [env, code <+> move (s, loc (env, x))]
+            esac
+          | STI ->
+            case pop2 (env) of
+              [y, x, env] ->
+                case allocate (env) of
+                  [s, env] -> [env, code <+> move (y, I (0, x)) <+> move (y, s)]
+                esac
+            esac
+          | SEXP (name, n) ->
+            case allocate (env) of
+              [s, env] -> case compileCall (env, "Bsexp", n + 1, {L (makeBox (n + 1))}) of 
+                [env, cCode] -> [env, code <+> move (L (makeBox (tagHash (name))), s) <+> cCode]
+              esac
+            esac
+          | CONST (n) -> 
+            case allocate (env) of 
+              [s, env] -> [env, code <+ Mov (L (makeBox (n)), s)]
+            esac
+          | LABEL (lab, _) -> [if isBarrier (env) then retrieveStack (env, lab) else env fi, code <+ Label (lab)]
+          | JMP (lab) -> [setBarrier (setStack (env, lab)), code <+ Jmp (lab)]
+          | CJMP (s, lab) ->
+            case pop (env) of
+              [x, env] -> [setStack (env, lab), code <+ Binop ("cmp", L (makeBox (0)), x) <+ CJmp (s, lab)]
+            esac
+          | DROP ->
+            case pop (env) of
+              [_, env] -> [env, code]
+            esac
+          | CALL (name, a) ->
+            case compileCall (env, name, a, {}) of 
+              [env, cCode] -> [env, code <+> cCode]
+            esac
+          | BEGIN (name, _, l) -> [enterFunction (env, name, l), code <+> prologue (name)] 
+          | GLOBAL (name) -> [addGlobal (env, name), code]
+          | END -> case epilogue (env) of [env, eCode] -> [env, code <+> eCode] esac
+          | DUP ->
+            case peek (env) of
+              x -> case allocate (env) of
+                [s, env] -> [env, code <+> move (x, s)]
+              esac
+            esac
+          | STRING (s) -> 
+            case addString (env, s) of
+              [env, name] -> case compileCall(env, "Bstring", 0, {M ("$" ++ name)}) of
+                [env, cCode] -> [env, code <+> cCode]
+              esac
+            esac
+          | ARRAY (n) ->
+            case compileCall (env, "Barray", n, {L (makeBox (n))}) of
+              [env, cCode] -> [env, code <+> cCode]
+            esac     
+          | STA -> 
+            case compileCall (env, "Bsta", 3, {}) of
+              [env, cCode] -> [env, code <+> cCode]
+            esac 
+          | ELEM ->
+            case compileCall (env, "Belem", 2, {}) of
+              [env, cCode] -> [env, code <+> cCode]
+            esac 
+          | BUILTIN (name, a) -> 
+            case compileCall (env, "L" ++ name, a, {})  of
+              [env, cCode] -> [env, code <+> cCode]
+            esac           
+          | PATT  ([p, n]) -> 
+            case allocate (env) of
+              [s1, env] -> case allocate (env) of
+                [s2, env] -> case compileCall (env, "Btag", 3, {}) of
+                  [env, cCode] -> [env, code <+> move (L (makeBox (tagHash (p))), s1) <+> move (L (makeBox (n)), s2) <+> cCode]
+                esac
+              esac
+            esac
           esac
         fi
       }, [env, emptyBuffer ()], code)
   }
-
-  -- printf ("%s\n", showSM (code));
 
   compile (env, code) 
 }
