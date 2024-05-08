@@ -621,14 +621,24 @@ typedef struct
 
 static pool from_space; // From-space (active ) semi-heap
 static pool to_space;   // To-space   (passive) semi-heap
+static size_t* next_unchecked;
 
-const int WORD = sizeof(int);
+static const int WORD = sizeof(int);
 
 // initial semi-space size
 static size_t SPACE_SIZE = 1 * WORD; // Less than PAGE_SIZE will be rounded to PAGE_SIZE in mmap
                                      // Small SPACE_SIZE for at least one gc call in tests
 
-void init_space(pool* space);
+static void clear_space(pool* space) {
+  space->current = space->begin;
+  space->end = space->begin + SPACE_SIZE / WORD;
+  space->size = SPACE_SIZE;
+}
+
+static void init_space(pool* space) {
+  space->begin = mmap(NULL, SPACE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+  clear_space(space);
+}
 
 // @free_pool frees memory pool p
 int free_pool(pool *p) {
@@ -674,17 +684,6 @@ static void extend_spaces(void)
   }
 }
 
-void clear_space(pool* space) {
-  space->current = space->begin;
-  space->end = space->begin + SPACE_SIZE / WORD;
-  space->size = SPACE_SIZE;
-}
-
-void init_space(pool* space) {
-  space->begin = mmap(NULL, SPACE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-  clear_space(space);
-}
-
 // @init_pool is a memory pools initialization function
 //   (is called by L__gc_init from runtime/gc_runtime.s)
 // two diffent mmaps for flexibility:
@@ -694,13 +693,12 @@ extern void init_pool(void) {
   init_space(&to_space);
 }
 
-size_t round_word(size_t num) {
+static size_t round_word(size_t num) {
   return (num + WORD - 1) / WORD;
 }
 
-void gc_test_and_copy_root(size_t** root);
-
-void *gc_copy(size_t *p) {
+// p in from_space, return pointer in to_space
+static void *gc_copy_unchecked(size_t *p) {
   data* obj = TO_DATA(p);
   if (IS_FORWARD_PTR((size_t*)obj->tag)) {
     return (void*)obj->tag;
@@ -712,23 +710,18 @@ void *gc_copy(size_t *p) {
       size_t* pos = to_space.current + 1;
       obj->tag = (int)pos;
       to_space.current += 1 + len;
-      size_t* first = pos;
-      for (size_t* it = first; it < first + len; ++it) {
-        gc_test_and_copy_root((size_t**)it);
-      }
       return pos;
     }
     case SEXP_TAG: {
       sexp* s = TO_SEXP(p);
       size_t len = LEN(obj->tag);
       memcpy((void*)to_space.current, (void*)s, (len + 2) * WORD);
+      // Swap to distinguish SEXP on checked step
+      *(to_space.current + 1) = s->tag;
+      *(to_space.current) = obj->tag;
       size_t* pos = to_space.current + 2;
       obj->tag = (int)pos;
       to_space.current += 2 + len;
-      size_t* first = pos;
-      for (size_t* it = first; it < first + len; ++it) {
-        gc_test_and_copy_root((size_t**)it);
-      }
       return pos;
     }
     case STRING_TAG: {
@@ -745,9 +738,41 @@ void *gc_copy(size_t *p) {
   }
 }
 
-void gc_test_and_copy_root(size_t **root) {
+static void gc_test_and_copy(size_t **root) {
   if (IS_VALID_HEAP_POINTER(*root)) {
-    *root = gc_copy(*root);
+    *root = gc_copy_unchecked(*root);
+  }
+}
+
+// p in to_space, return pointer to next object
+static size_t* gc_check(size_t *p) {
+  // fprintf(stderr, "gc_check on 0x%x\n", p);
+  data* obj = p;
+  size_t len = LEN(obj->tag);
+  switch(TAG(obj->tag)) {
+    case ARRAY_TAG: {
+      size_t* first = p + 1;
+      for (size_t* it = first; it < first + len; ++it) {
+        gc_test_and_copy(it);
+      }
+      return p + 1 + len;
+    }
+    case SEXP_TAG: {
+      // Swap back
+      size_t tag = *(p + 1);
+      *(p + 1) = obj->tag;
+      *p = tag;
+      size_t* first = p + 2;
+      for (size_t* it = first; it < first + len; ++it) {
+        gc_test_and_copy(it);
+      }
+      return p + 2 + len;
+    }
+    case STRING_TAG: {
+      return p + 1 + round_word(len);
+    }
+    default:
+      failure("gc copy: tag: 0x%x\n",TAG(obj->tag));
   }
 }
 
@@ -756,18 +781,24 @@ void gc_test_and_copy_root(size_t **root) {
 // @size is a size of the block that @alloc failed to allocate
 static void gc(size_t size) {
   // fprintf(stderr, "gc called on %d\n", size);
+  next_unchecked = to_space.begin;
   // Static data
   for (size_t* i = (size_t*)&__gc_data_start; i < &__gc_data_end; i++) {
-    gc_test_and_copy_root((size_t**)i);
+    gc_test_and_copy((size_t**)i);
   }
   // Stack
   for (size_t* i = (size_t*)__gc_stack_top; i < __gc_stack_bottom; i++) {
-    gc_test_and_copy_root((size_t**)i);
+    gc_test_and_copy((size_t**)i);
   }
   // Extra roots
   for (int i = 0; i < extra_roots.current_free; ++i) {
-    gc_test_and_copy_root((size_t**)extra_roots.roots[i]);
+    gc_test_and_copy((size_t**)extra_roots.roots[i]);
   }
+
+  while (next_unchecked != to_space.current) {
+    next_unchecked = gc_check(next_unchecked);
+  }
+
   // Equal to avoid empty arrays and sexps (their content == space.end)
   while (to_space.end - to_space.current <= size) {
     extend_spaces();
