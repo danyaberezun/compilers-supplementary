@@ -154,15 +154,7 @@ fun eval (env, w, insns) {
     -- fprintf(stderr, "cf_stack: %s\n", string (cf_stack));
     -- fprintf(stderr, "state: %s\n", string (state));
     case insn of
-      READ ->
-      case readWorld (w) of
-        [new_val, w] -> [[new_val:stack, cf_stack, state, w], None]
-      esac
-    | WRITE ->
-      case stack of
-        s:ss -> [[ss, cf_stack, state, writeWorld (s, w)], None]
-      esac
-    | BINOP (op) ->
+      BINOP (op) ->
       case stack of
         s1:s2:ss -> [[evalOp (op, s1, s2):ss, cf_stack, state, w], None]
       esac
@@ -195,7 +187,36 @@ fun eval (env, w, insns) {
           | x -> [[v:ss, cf_stack, assign (state, a, v), w], None]
           esac
       esac
+    | LDA (x) -> [[x:stack, cf_stack, state, w], None]
+    | PATT (p) ->
+      case stack of
+        v:ss ->
+          var isMatched =
+            case p of
+              PTag (ptag, pn) ->
+                case v of
+                  Ksexp (stag, sn) -> compare (ptag, stag) == 0 && pn == length (sn)
+                | _ -> false
+                esac
+            | PArray (n) ->
+                case v of
+                  v@#array -> length (v) == n
+                | _ -> false
+                esac
+            esac;
+          [[isMatched:ss, cf_stack, state, w], None]
+      esac
+    | META (errmsg) -> failure ("Runtime error: " ++ errmsg ++ "\n")
     | LABEL (_) -> [c, None]
+    | DROP ->
+      case stack of
+        s:ss -> [[ss, cf_stack, state, w], None]
+      esac
+    | DUP ->
+      case stack of
+        s1:ss -> [[s1:s1:ss, cf_stack, state, w], None]
+      esac
+    | GLOBAL (x) -> [[stack, cf_stack, assign (state, Glb (x), 0), w], None]
     | JMP (label) -> [c, Some (fromLabel (env, label))]
     | CJMP (pred, label) ->
       case stack of
@@ -206,21 +227,6 @@ fun eval (env, w, insns) {
             [[ss, cf_stack, state, w], None]
           fi
       esac
-    | LDA (x) -> [[x:stack, cf_stack, state, w], None]
-    -- Not emitted now
-    -- | STI ->
-    --   case stack of
-    --     v:x:ss -> [[v:ss, cf_stack, assign (state, x, v), w], None]
-    --   esac
-    | DROP ->
-      case stack of
-        s:ss -> [[ss, cf_stack, state, w], None]
-      esac
-    | DUP ->
-      case stack of
-        s1:ss -> [[s1:s1:ss, cf_stack, state, w], None]
-      esac
-    | GLOBAL (x) -> [[stack, cf_stack, assign (state, Glb (x), 0), w], None]
     | CALL (fLabel, n) -> [[stack, [state, insn_tail]:cf_stack, state, w], Some (fromLabel (env, fLabel))]
     | BUILTIN (fLabel, n) ->
       case take (stack, n) of
@@ -567,8 +573,88 @@ public fun compileSM (stmt) {
           )
       esac
     }
+
+    -- Helper functions for Case codegen
+    fun genCaseBranchCode ([env, code], [pat, br]) {
+      case genLabels (env, 3) of
+        [matchEndLab, brEndLab, nextBrLab, env] ->
+          case matchST (matchEndLab, env, pat) of
+            [matchEndLabUsed, env, matchCode] ->
+              case compile (brEndLab, env, br) of
+                [brEndLabUsed, env, brCode] ->
+                  [env, code
+                    <+> matchCode
+                    <+> label (matchEndLab, matchEndLabUsed)
+                    <+  CJMP ("z", nextBrLab)
+                    <+  DROP -- scrutenee that loaded before all branches of case
+                    <+> brCode
+                    <+> label (brEndLab, brEndLabUsed)
+                    <+  JMP (lab)
+                    <+> label (nextBrLab, true)
+                  ]
+              esac
+          esac
+      esac
+    }
+
+    -- Generate single pattern-match code for stack top value
+    -- top value preserved on the stack, on stack generated integer
+    -- that represent if match is succeeded
+    -- returns [isOutLabUsed, env, code]
+    fun matchST (outLab, env, pat) {
+      case pat of
+        Const (n) -> [false, env, singletonBuffer (DUP) <+ CONST (n) <+ BINOP ("==")]
+      | Wildcard -> [false, env, singletonBuffer (CONST (1))]
+      | Named (_, in_pat) -> matchST (outLab, env, in_pat)
+      | Array (ps) -> matchComplex (outLab, env, ps, PArray (ps.size))
+      | Sexp (pstag, ps) -> matchComplex (outLab, env, ps, PTag (pstag, ps.size))
+      esac
+    }
+
+    fun matchComplex (outLab, env, ps, headPat) {
+        case genLabel (env) of
+          [failLab, env] ->
+            fun matchSubpat ([env, idx, code], pat) {
+              case genLabel (env) of
+                [submatchEndLab, env] ->
+                  case matchST (submatchEndLab, env, pat) of
+                    [submatchEndLabUsed, env, submatchCode] ->
+                      [env, idx + 1, code
+                        <+  DUP
+                        <+  CONST (idx)
+                        -- value which loaded by this elem should be dropped before next
+                        -- submatch or before exit from match block, see DROPS, marked (1) (2)
+                        <+  ELEM
+                        <+> submatchCode
+                        <+> label (submatchEndLab, submatchEndLabUsed)
+                        <+  CJMP ("z", failLab)
+                        <+  DROP -- (1)
+                      ]
+                  esac
+              esac
+            }
+            case foldl (matchSubpat, [env, 0, emptyBuffer ()], ps) of
+              [env, _, matchElementsCode] ->
+                [true, env, emptyBuffer ()
+                  <+  DUP -- suspicious element to satisfy failLab invariant
+                  <+  DUP
+                  <+  PATT (headPat)
+                  <+  CJMP ("z", failLab)
+                  <+  DROP -- drop suspicious element
+                  <+> matchElementsCode
+                  <+  CONST (1)
+                  <+  JMP (outLab)
+                  <+> label (failLab, true)
+                  <+  DROP -- (2)
+                  <+  CONST (0)
+                ]
+            esac
+        esac
+    }
+
+    -- fprintf (stderr, "%s\n", string(stmt));
     case stmt of
-    -- values
+    -- TODO: now it adds all vals/vars to environment as vars
       Var    (x) -> [false, env, singletonBuffer $ LD (lookupVal (env, x))]
     | Ref    (x) -> [false, env, singletonBuffer (LDA (lookupVar (env, x))) <+ LDA (lookupVar (env, x))]
     | Const  (n) -> [false, env, singletonBuffer $ CONST (n)]
@@ -618,6 +704,10 @@ public fun compileSM (stmt) {
                   esac
               esac
           esac
+      esac
+    | Case (scrut_name, brs) ->
+      case foldl (genCaseBranchCode, [env, singletonBuffer (LD (lookupVal (env, scrut_name)))], brs) of
+        [env, code] -> [true, env, code <+ META ("suitable pattern not found") ]
       esac
     | While (pred, body) ->
       case genLabels (env, 3) of
@@ -680,7 +770,6 @@ public fun compileSM (stmt) {
                   [new_env, nestedFuncsCode] ->
                     [
                       new_env,
-                      -- Compiled code
                       nestedFuncsCode
                       <+> label (fLabel, true)
                       <+ BEGIN (fLabel, size (args), getLocals (env))
