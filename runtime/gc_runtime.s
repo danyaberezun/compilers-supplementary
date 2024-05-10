@@ -27,12 +27,18 @@ L__gc_init:		movl	%esp, __gc_stack_bottom
 // if    @__gc_stack_top is equal to 0
 // then  set @__gc_stack_top to %ebp
 // else  return
-__pre_gc:
-			call nimpl
+__pre_gc:		movl	__gc_stack_top, %eax
+			testl	%eax, %eax
+			jnz	__pre_gc_return
+			movl	%ebp, __gc_stack_top
+__pre_gc_return:	ret
 
 // ==================================================
 // if __gc_stack_top was set by one of the callers
 // then return
 // else set __gc_stack_top to 0
-__post_gc:
-			call nimpl
+__post_gc:		movl	__gc_stack_top, %eax
+			cmpl	%ebp, %eax
+			jl	__post_gc_return
+			movl	$0, __gc_stack_top
+__post_gc_return:	ret
