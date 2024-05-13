@@ -182,6 +182,13 @@ fun reifyPatternBindings (matched, brs) {
   )
 }
 
+var elseBranch = memo $ eta syntax (
+  loc=pos kFi                            {fun (a) { assertVoid(a, returnST $ Skip, loc) } }
+  | loc=pos kElse e=scopeExpr kFi                {fun (a) { e(a)} }
+  | kElif e=exp kThen e1=scopeExpr e2=elseBranch {fun (a) { e(Val) =>> fun (e) { e1(a) =>> fun (e1) { e2(a) => fun (e2) { If (e, e1, e2) } } } } }
+);
+
+
 var
   primary = memo $ eta syntax (
     -- array constant
@@ -225,9 +232,100 @@ var
                         | Some (args) -> chainST (args) => fun (args) {Sexp (x, args)}
                         esac, loc)}
     } |
-  
-    $(failure ("the rest of primary parsing in not implemented\n"))),
+    loc=pos e=inbr[s("("), scopeExpr, s(")")] { fun(a) {e(a)} } | 
+    loc=pos kIf e=exp kThen e1=scopeExpr e2=elseBranch     {fun (a) {
+      e(Val) =>> fun (e) {
+        e1(a) =>> fun (e1) {
+          e2(a) => fun (e2) {
+            If (e, e1, e2)
+          }
+        }
+      } } } | 
+    loc=pos kSkip { fun(a) { assertVoid(a, returnST $ Skip, loc )} } |
+
+    loc=pos kWhile cond=exp kDo body=scopeExpr kOd { 
+      fun(a) {
+        assertVoid(a, 
+          cond(Val) =>> fun(cond) {
+            body(Void) => fun(body) {
+              While(cond, body)
+            }
+          }, loc)
+      }
+    } | 
+    loc=pos kDo body=scopeExpr kWhile cond=exp kOd { 
+      fun(a) { 
+        assertVoid(a, 
+          cond(Val) =>> fun(cond) {
+            body(Void) => fun(body) {
+              distributeScope(body, fun (sBody) {DoWhile(sBody, cond)})
+            }
+          }, loc)
+      } 
+    } | 
+
+    loc=pos kFor init=scopeExpr s[","] cond=exp s[","] succ=exp kDo body=scopeExpr kOd {
+      fun(a) {
+        assertVoid(a, 
+          init(Void) =>> fun(init) {
+            cond(Val) =>> fun(cond) {
+              body(Void) =>> fun(body) {
+                succ(Void) => fun(succ) {
+                  distributeScope(init, fun (sInit) {Seq(sInit, While(cond, Seq(body, succ)))})
+                }
+              }
+            }
+          }, loc)
+      }
+    } | 
+    
+    loc=pos kCase e=expr kOf brs=branches kEsac {
+      fun(a) {
+        e(Val) =>> fun(e) {
+          freshName =>> fun(name) {
+            brs(a) => fun(brs) {
+              Scope({ Var({name}) }, 
+                Seq(Ignore(Assn(Ref(name), e)), Case (name, reifyPatternBindings(name, brs)))
+              )
+           }
+          }
+        }
+      }
+    }
+    ),
    
+  pattern = memo $ eta syntax (
+    
+    inbr[s("("), pattern, s(")")] | 
+    
+    loc=pos s["_"] { fun(a) {returnST $ Wildcard} } | 
+    
+    loc=pos name=lident { fun(a) {returnST $ Named(name, Wildcard)} } | 
+    loc=pos name=lident p=(-s["@"] pattern) { fun(a) { p(Val) => fun(p) {returnST $ Named(name, p)} } } | 
+
+    loc=pos x=decimal { fun(a) { assertValue(a, returnST $ Const (stringInt (x)) , loc) } } | 
+
+    loc=pos x=inbr[s("["), list0(syntax (e=pattern {e(Val)})), s("]")] { fun(a) {assertValue(a, chainST(x) => fun(x) {Array(x)}, loc)} } | 
+
+    loc=pos x=uident args=inbr[s ("("), list0(syntax(p=pattern { p (Val) })), s (")")]? { 
+      fun(a) {
+        assertValue(a, 
+          case args of 
+            None -> returnST $ Sexp(x, {})
+          | Some (args) -> chainST(args) => fun(args) { Sexp(x, args) }
+          esac,
+          loc
+        )
+      }
+    }
+  ), 
+
+  branch = memo $ eta syntax (
+    loc=pos p=pattern s["->"] s=scopeExpr { fun(a) { p(a) =>> fun(p) { s(a) => fun(s) { returnST $ [p, s] } } } }
+  ),
+  branches = memo $ eta syntax (
+    loc=pos brs=listBy[branch, s("|")] { fun(a) { chainST(map(fun(br) {br(a)}, brs)) } }
+  ),
 
   basic = memo $ eta (
     expr ({[Right, {[s (":="), fun (l, loc, r) {

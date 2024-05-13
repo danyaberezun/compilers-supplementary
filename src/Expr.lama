@@ -82,6 +82,10 @@ fun addNames (state, names) {
   foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
 }
 
+fun addNamesVals (state, names, args) {
+  foldl (fun (s, [name, arg]) {s.addName (name, arg)}, state, zip(names, args))
+}
+
 -- Helper function: adds a function in current scope
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
@@ -101,10 +105,165 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun addDefs (state, defs) {
+  foldl( fun (s, def) {
+    case def of
+        Fun (name, args, body) -> addFunction(s, name, args, body)
+      | Var (vars) -> addNames(s, vars)
+    esac
+  }, state, defs)
 }
 
+fun eval (c@[s, w], expr) {
+  case expr of
+    Skip -> [c, None]
+  | Ignore(e) -> case eval(c, e) of 
+      [c, _] -> [c, None]  
+    esac
+  | Const(n) -> [c, n]
+  | Var(x) -> [c, lookup(s, x)]
+  | Ref(x) -> [c, Ref(x)]
+  | Binop(op, l, r) -> 
+    case evalList(c, {l, r}) of 
+      [c, {lRes, rRes}] -> 
+        [c, evalOp(op, lRes, rRes)]
+    esac
+  | Seq(l, r) -> 
+    case evalList(c, {l, r}) of 
+      [c, {_, rRes}] -> [c, rRes]
+    esac
+  | Read(x) -> 
+    case readWorld(w) of 
+      [res, w] -> [[s <- [x, res], w], None]
+    esac
+  | Write(e) -> 
+    case eval(c, e) of 
+      [c@[s, w], res] -> [[s, writeWorld(res, w)], None]    
+    esac
+  | If(cond, l, r) -> 
+    case eval(c, cond) of 
+      [c, resCond] -> eval(c, if resCond then l else r fi)
+    esac 
+  | While(cond, body) -> 
+    case eval(c, cond) of 
+      [c, resCond] -> if resCond then eval(c, Seq(body, expr)) else [c, None] fi 
+    esac
+  | DoWhile(body, cond) -> 
+    case eval(c, body) of 
+      [c, _] -> eval(c, While(cond, body))
+    esac
+  | Scope(defs, body) -> 
+    case enterScope(s) of 
+      s -> 
+        case addDefs(s, defs) of 
+          s -> 
+            case eval([s, w], body) of 
+              [[sr, wr], res] -> 
+                [[leaveScope(sr), wr], res]
+            esac
+        esac
+    esac   
+  | Call(name, args) -> 
+    case lookup(s, name) of 
+      Fun (names, body) -> 
+        case evalList(c, args) of
+          [[s, w], vals] -> 
+            case body of 
+              External -> 
+                case evalBuiltin(name, vals, w) of 
+                  [res, w] -> [[s, w], res]
+                esac
+              | _ -> 
+                case eval([addNamesVals(enterFunction(s), names, vals), w], body) of 
+                  [[sr, wr], res] -> 
+                    [[leaveFunction(s, getGlobal(sr)), wr], res]
+                esac
+            esac
+      esac
+    esac
+  | Assn(x, e) ->  -- ? 
+    case evalList(c, {x, e}) of 
+      [c@[s, w], {l, r}] -> 
+        case l of 
+          ElemRef(a, i) -> 
+            [[s, w], a[i] := r]
+          | Ref(l) -> 
+            [[s <- [l, r], w], r]
+        esac
+    esac
+  | Set(x, expr) -> eval(c, Assn(Ref(x), expr))
+  | String(s) -> 
+    [c, s]
+  | Array (elems) -> 
+    case evalList(c, elems) of
+      [c, vals] -> [c, listArray(vals)]
+    esac
+  | Sexp(name, elems) -> 
+    case evalList(c, elems) of 
+      [c, vals] -> [c, Sexp(name, listArray(vals))]
+    esac
+  | Elem(a, i) -> 
+    case evalList(c, {a, i}) of
+      [c, {a, i}] ->
+        case a of
+            Sexp(_, a) -> [c, a[i]]
+          | _          -> [c, a[i]]
+        esac
+    esac
+  | ElemRef(a, i) -> 
+    case evalList(c, {a, i}) of
+      [c, {a, i}] ->
+        case a of
+            Sexp(_, a) -> [c, ElemRef(a, i)]
+          | _          -> [c, ElemRef(a, i)]
+        esac
+    esac
+  | Case(name, branches) -> 
+    case lookup(s, name) of 
+      x -> chooseBranch(c, x, branches)
+    esac
+  esac
+}
+
+fun chooseBranch(c, x, [p, code] : branches) {
+  if (matches(lookup(c, x), p)) 
+    then eval(c, code)
+    else chooseBranch(c, x, branches)
+  fi
+}
+
+fun matches(value, pat) {
+  fun matchList(values, patterns) {
+    case values of 
+      v : values -> 
+        case patterns of 
+          p : patterns -> 
+            if matches(v, p) then matchList(values, patterns) else 0 fi       
+        esac
+    | [] -> 1
+    esac
+  }
+  case pat of 
+    Wildcard -> true  
+    | Named(_, pat) -> matches(value, pat)
+    | Const(value) -> true
+    | Sexp(ptag, pats) -> 
+      case value of 
+        Sexp(vtag, vals) -> 
+          case arrayList(vals) of 
+            vals -> 
+              (compare(ptag, vtag) == 0) && pats.size == vals.size && matchList(vals, pats)
+          esac
+        | _ -> false
+       esac
+    | Array(pats) -> 
+      case value of 
+        Array(vals) -> 
+          pats.size == vals.size && matchList(vals, pats)
+      | _ -> false
+      esac
+  esac
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
