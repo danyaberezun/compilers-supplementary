@@ -12,7 +12,7 @@ import Manifest;
 var regs = ["%ebx", "%ecx", "%esi", "%edi", "%eax", "%edx", "%ebp", "%esp"];
 
 -- We can not freely operate with all register; only with 4 by now
-var nRegs = regs.length - 5;
+var nRegs = length(regs) - 5;
 
 -- For convenience we define the following synonyms for the registers: 
 var ebx = R (0),
@@ -106,7 +106,7 @@ fun makeEnv (stack, stackSlots, globals) {
 
   -- Returns a string representation of the environment
   fun envString () {
-    sprintf ("Stack     : %s\nStackSlots: %d\nGlobals   : %s\n", stack.string, stackSlots, elements (globals).string)
+    sprintf ("Stack     : %s\nStackSlots: %d\nGlobals   : %s\n", string(stack), stackSlots, elements (globals).string)
   }
   
   -- Allocates a new position on the symbolic stack;
@@ -156,7 +156,7 @@ fun makeEnv (stack, stackSlots, globals) {
   
   -- Gets a list of global variables from the environment
   fun getGlobals () {
-    globals.elements
+    elements(globals)
   }
 
   -- Gets a maximal stack size from the environment
@@ -302,20 +302,97 @@ fun suffix (op) {
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
+  fun compileMul (s1, s2, env, code, op) {
+    if (stackOpnd(s1) && stackOpnd(s2))
+      then [push(env, s2), code <+ Mov (s2, edx) <+ Binop (op, s1, edx)]
+      elif (stackOpnd(s2)) then [push(env, s1), code <+ Binop (op, s2, s1)]
+      else [push(env, s2), code <+ Binop (op, s1, s2)]
+    fi
+  }
+
+  fun compileBinop (s1, s2, env, code, op) {
+    if (stackOpnd(s1) && stackOpnd(s2)) then [push(env, s2), code <+ Mov (s1, eax) <+ Binop (op, eax, s2)]
+      else [push(env, s2), code <+ Binop(op, s1, s2)]
+    fi
+  }
+
+  fun compileDiv (s1, s2, env, code, op) {
+    case op of
+        "/" -> [push(env, s1), code <+ Mov (s2, eax) <+ Cltd <+ IDiv(s1) <+ Mov (eax, s1)]
+      | "%" -> [push(env, s1), code <+ Mov (s2, eax) <+ Cltd <+ IDiv(s1) <+ Mov (edx, s1)]
+    esac
+  }
+
+  fun compileCompare (s1, s2, env, code, op) {
+    if (stackOpnd(s1) && stackOpnd(s2))
+      then [push(env, s2), code <+ Mov (s1, eax) <+ Binop ("^", edx, edx)
+        <+ Binop ("cmp", eax, s2) <+ Set (suffix(op), "%dl")
+        <+ Mov (edx, s2)]
+      else [push(env, s2), code <+ Binop ("^", edx, edx) <+ Binop ("cmp", s1, s2)
+        <+ Set (suffix(op), "%dl") <+ Mov (edx, s2)]
+    fi
+  }
+
+  fun compileLogical (s1, s2, env, code, op) {
+    [push(env, s2), code <+ Binop ("^", eax, eax)
+      <+ Binop ("^", edx, edx)
+      <+ Binop("cmp", L(0), s1)
+      <+ Set(suffix("!="), "%al")
+      <+ Binop("cmp", L(0), s2)
+      <+ Set(suffix("!="), "%dl")
+      <+ Binop(op, eax, edx)
+      <+ Mov(edx, s2)]
+  }
+
+  fun opType (op) {
+    case op of
+        "*" -> MUL
+      | "+" -> SIMPLE
+      | "-" -> SIMPLE
+      | "/" -> DIV
+      | "%" -> DIV
+      | "&&" -> LOGIC
+      | "!!" -> LOGIC
+      | "<"  -> COMPARE
+      | ">"  -> COMPARE
+      | "<=" -> COMPARE
+      | ">=" -> COMPARE
+      | "==" -> COMPARE
+      | "!=" -> COMPARE
+      | _   -> failure ("codegeneration for instruction %s is not yet implemented\n", op)
+    esac
+  }
+
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of
         READ ->
-          case env.allocate of
+          case allocate(env) of
             [s, env] -> [env, code <+> genCallF(env, "Lread", emptyBuffer(), emptyBuffer()) <+ Mov (eax, s)]
           esac             
       | WRITE ->
-          case env.pop of
+          case pop(env) of
             [s, env] -> [env, code <+> genCallF(env, "Lwrite", singletonBuffer(Push(s)), singletonBuffer(Pop (eax)))]
           esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
+      | LD (x) -> case env.addGlobal (x).allocate of [s, env] -> [env, code <+> move (env.loc (x), s)] esac
+      | ST (x) -> case env.addGlobal (x).pop of [s, env] -> [env, code <+> move (s, env.loc (x))] esac
+      | CONST (x) -> case env.allocate of [s, env] -> [env, code <+> move (L (x), s)] esac
+      | BINOP (op) ->
+          case pop2(env) of [s1, s2, env] ->
+            case opType (op) of
+              SIMPLE  -> compileBinop(s1, s2, env, code, op)
+            | MUL     -> compileMul(s1, s2, env, code, op)
+            | DIV     -> compileDiv(s1, s2, env, code, op)
+            | COMPARE -> compileCompare(s1, s2, env, code, op)
+            | LOGIC   -> compileLogical(s1, s2, env, code, op)
+            esac
+          esac
+      | LABEL (lab) -> [env, code <+ Label (lab)]
+      | JMP (lab) -> [env, code <+ Jmp (lab)]
+      | CJMP (mod, lab) -> case pop(env) of [s, env] -> [env, code <+ Mov (s, eax) <+ Binop ("cmp", L (0), eax) <+ CJmp (mod, lab)] esac
+      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", string(i))
+      esac
     }, [env, emptyBuffer ()], code)}
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
@@ -323,7 +400,7 @@ fun compile (env, code) {
 public fun compileX86 (args, code) {
   case compile (initEnv (), code) of
     [env, code] ->
-       var asmFile = args.getBaseName ++ ".s",
+       var asmFile = getBaseName(args) ++ ".s",
            runtime = case getEnv ("LAMA_RUNTIME") of
                        #val -> "../runtime/"
                      | path     -> path
@@ -342,6 +419,6 @@ public fun compileX86 (args, code) {
                     )
                    ).stringcat);
                     
-       system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
+       system (stringcat({"gcc -g -m32 -o ", getBaseName(args), " ", runtime, " ", asmFile}))
   esac
 }
