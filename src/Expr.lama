@@ -82,6 +82,20 @@ fun addNames (state, names) {
   foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
 }
 
+fun addNamesVals(state, names, vals) {
+  foldl (fun (s, [name, value]) {s.addName(name, value)}, state, zip(names, vals))
+}
+
+fun addDefs(state, defs) {
+  foldl(fun (st, def) {
+                case def of 
+                  Fun(name, args, body) -> addFunction(st, name, args, body)
+                  | Var (v) -> addNames(st, v)
+                  | Val (v) -> addNames(st, v)
+                esac
+              }, state, defs)
+}
+
 -- Helper function: adds a function in current scope
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
@@ -102,7 +116,126 @@ fun evalList (c, exprs) {
 }
 
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun set(c@[s, w], name, value) {
+    [[s <- [name, value], w], value]
+  }
+
+  case expr of 
+    Assn (l, r) -> 
+      case evalList(c, {l, r}) of 
+        [c, {l, r}] -> case l of
+                          ElemRef (arr, ind) -> [c, arr[ind] := r]
+                        | _ -> set(c, l, r)
+                       esac
+      esac
+  | Set (name, expr) -> 
+      case eval(c, expr) of 
+        [c, value] -> set(c, name, value)
+      esac 
+  | Seq (e1, e2) -> eval(eval(c, e1)[0], e2)
+  | Skip -> [c, T]
+  | If (cond, thn, els) ->
+      case eval(c, cond) of
+        [c, v] -> if v 
+                  then eval(c, thn)
+                  else eval(c, els)
+                  fi
+      esac
+  | While (cond, body) ->
+      case eval(c, cond) of 
+        [c, v] -> if v != 0
+                  then eval(c, Seq(body, expr))
+                  else [c, T]
+                  fi
+      esac
+  | DoWhile (body, cond) -> eval(eval(c, body)[0], While(cond, body))
+  | Var (vr) -> [c, lookup(s, vr)]
+  | Ref (vr) -> [c, vr]
+  | Const (int) -> [c, int]
+  | Binop (op, l, r) -> 
+      case evalList(c, {l, r}) of
+        [c, w : v : _] -> [c, evalOp(op, w, v)]
+      esac
+  | Ignore (exp) -> [eval(c, exp)[0], T]
+  | Call (f, args) -> 
+      case lookup(s, f) of 
+        Fun (_, External) -> eval(c, Builtin(f, args))
+      | Fun(locs, body) -> 
+          case evalList(c, args) of 
+            [[st, w], vals] -> 
+              case eval([addNamesVals(enterFunction(st), locs, vals), w], body) of 
+                [[ss, w], v] -> [[leaveFunction(s, getGlobal(ss)), w], v]
+              esac
+          esac
+      esac
+  | Scope (d, e) -> 
+      case enterScope(s) of 
+          st -> case eval([addDefs(st, d), w], e) of 
+            [[st, w], v] -> [[leaveScope(st), w], v]
+          esac
+      esac
+  | Array (elems) -> 
+    case evalList(c, elems) of 
+      [c, vals] -> [c, listArray(vals)]
+    esac
+  | Sexp (tag, elems) -> 
+    case evalList(c, elems) of 
+      [c, vals] -> [c, Sexp(tag, listArray(vals))]
+    esac
+  | Elem (arrExpr, indExpr) -> 
+    case evalList(c, {arrExpr, indExpr}) of
+      [c, {arr, ind}] -> case arr of 
+                            Sexp (_, args) -> [c, args[ind]]
+                          | _              -> [c, arr[ind]]
+                        esac
+    esac
+  | ElemRef (arrExpr, indExpr) ->
+    case evalList(c, {arrExpr, indExpr}) of 
+      [c, {arr, ind}] -> case arr of
+                            Sexp (_, args) -> [c, ElemRef(args, ind)]
+                          | _              -> [c, ElemRef(arr, ind)]
+                         esac
+    esac 
+  | Builtin (name, args) -> 
+    case evalList(c, args) of
+      [[s, w], vals] -> case evalBuiltin(name, vals, w) of
+                          [res, w] -> [[s, w], res]
+                        esac
+    esac
+  | String (strng) -> [c, strng] 
+  | Case (name, branches) -> evalBranches(c, lookup(s, name), branches)
+  esac
+}
+
+fun evalBranches(c, value, [pattern, branch] : branches) {
+  fun match(value, pattern) {
+    case pattern of 
+        Wildcard -> true 
+      | Const (v) -> v == value
+      | Array (args) -> 
+        case value of 
+            Array (valueArgs) -> matchLists(args, arrayList(valueArgs))
+          | _ -> false
+        esac
+      | Sexp (tag, args) ->
+        case value of 
+            Sexp (valueTag, valueArgs) -> compare(tag, valueTag) == 0 && matchLists(args, arrayList(valueArgs))
+          | _ -> false
+        esac
+      | Named (name, pattern) -> match(value, pattern)
+      | _ -> failure("No match for pattern %s", pattern.string)
+    esac
+  }
+
+  fun matchLists(patterns, values) {
+    if (patterns.size != values.size) then 
+      false 
+    else 
+      foldl (fun (res, [v, p]) { res && match(v, p) }, true, zip(values, patterns)) 
+    fi
+  }
+
+  if (match(value, pattern)) then eval(c, branch) else evalBranches(c, value, branches) fi
 }
 
 
