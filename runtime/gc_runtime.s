@@ -28,11 +28,19 @@ L__gc_init:		movl	%esp, __gc_stack_bottom
 // then  set @__gc_stack_top to %ebp
 // else  return
 __pre_gc:
-			call nimpl
+			cmpl    $0, __gc_stack_top
+			jne     __exit_pre_gc
+			movl    %ebp, __gc_stack_top
+__exit_pre_gc:
+			ret
 
 // ==================================================
 // if __gc_stack_top was set by one of the callers
 // then return
 // else set __gc_stack_top to 0
 __post_gc:
-			call nimpl
+			cmpl    __gc_stack_top, %ebp
+			jne     __exit_post_gc
+			movl    $0, __gc_stack_top
+__exit_post_gc:
+			ret
