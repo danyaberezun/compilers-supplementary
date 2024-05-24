@@ -393,9 +393,9 @@ extern void Lfailure (char *s, ...) {
   vfailure    (s, args);
 }
 
-extern void Bmatch_failure (void *v, char *fname, int line, int col) {
+extern void Bmatch_failure (void *v, int line, int col) {
   createStringBuf ();
   printValue (v);
-  failure ("match failure at %s:%d:%d, value '%s'\n",
-	   fname, UNBOX(line), UNBOX(col), stringBuf.contents);
+  failure ("match failure at %d:%d, value '%s'\n", 
+  UNBOX(line), UNBOX(col), stringBuf.contents);
 }
