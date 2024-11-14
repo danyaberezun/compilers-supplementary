@@ -15,7 +15,7 @@ $(TESTS): %: %.lama
 	$(RM) tmp.lama
 	cat $@.input | ./$@ -i > $@.log && diff $@.log orig/$@.log
 	cat $@.input | ./$@ -s > $@.log && diff $@.log orig/$@.log
-	./$@ > $@.s && gcc -g -o $@.run ../runtime/runtime64.o $@.s && cat $@.input | ./$@.run > $@.log && diff $@.log orig/$@.log
+	./$@ > $@.s && gcc -g -o $@.run ../runtime64/runtime.o $@.s && cat $@.input | ./$@.run > $@.log && diff $@.log orig/$@.log
 
 clean:
 	$(RM) *.s *.i *.sm *~ $(LOGS) $(TESTS)
