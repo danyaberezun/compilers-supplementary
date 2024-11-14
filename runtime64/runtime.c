@@ -7,7 +7,7 @@ void Lwrite (long x) {
 long Lread () {
   long result;
 
-  scanf  ("%ld", &result);
+  scanf ("%ld", &result);
   
   return result;
 }
