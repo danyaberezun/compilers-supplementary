@@ -16,7 +16,7 @@ var regs = ["%rbx", "%rcx", "%rsi", "%rdi",
 	    "%rax", "%rdx", "%rbp", "%rsp"];
 
 -- We can not freely operate with all register; only with 4 by now
-var nRegs = regs.length - 5;
+var nRegs = regs.length - 6;
 
 -- For convenience we define the following synonyms for the registers: 
 var rbx = R (0),
@@ -98,6 +98,7 @@ fun insnString (insn) {
   | IDiv  (s1)         -> sprintf ("\tidivq\t%s\n", opndString (s1))
   | Binop (op, s1, s2) -> sprintf ("\t%s\t%s,\t%s\n", binopString (op), opndString (s1), opndString (s2))
   | Mov   (s1, s2)     -> sprintf ("\tmovq\t%s,\t%s\n", opndString (s1), opndString (s2))
+  | CMov  (c, s1, s2)  -> sprintf ("\tcmov%s\t%s,\t%s\n", c, opndString(s1), opndString(s2))
   | Lea   (s1, s2)     -> sprintf ("\tleaq\t%s,\t%s\n", opndString (s1), opndString (s2))
   | Push  (s)          -> sprintf ("\tpushq\t%s\n", opndString (s))
   | Pop   (s)          -> sprintf ("\tpopq\t%s\n", opndString (s))
@@ -361,15 +362,68 @@ fun suffix (op) {
   esac
 }
 
+fun myCompare(l, r){
+  if compare(l,r) == 0 then
+    true
+  else
+    false
+  fi
+}
+
+-- fun pop (env) {
+ --fun move (from, to) 
+fun  createBinop(op, code, env){
+  case env.pop2 of
+    [l, r, env] -> 
+      case env.allocate of 
+        [s, env] -> [
+          env,
+          if myCompare(op , "+") then
+            code <+ Mov(l, rax) <+ Binop(op,r,rax) <+ Mov(rax, s)
+          elif myCompare(op , "-") then
+            code <+ Mov(l, rax) <+ Binop(op,r,rax) <+ Mov(rax, s)
+          elif compare(op,"*") == 0 then
+            code <+ Mov(l, rax) <+ Binop(op,r,rax) <+ Mov(rax, s)
+          elif myCompare(op , "/") then
+            code <+ Mov(l, rax) <+ Cltd <+ IDiv(r)  <+ Mov (rax, s)
+          elif myCompare(op , "%") then
+            code <+ Mov(l, rax) <+ Cltd <+ IDiv(r) <+ Mov (rdx, rax) <+ Mov (rax, s)
+          elif myCompare(op , "!!") then
+            code <+ Mov (L(1), r15)  <+ Mov(L(0), rax)
+                <+ Mov (l, rdx)  <+ Binop("cmp", L(0), rdx) <+ CMov("nz", r15, rax)
+                <+ Mov (r, rdx) <+ Binop("cmp", L(0), rdx) <+ CMov("nz", r15, rax) <+ Mov(rax, s)
+          elif myCompare(op, "&&") then
+            code <+ Mov (L(0), r15)  <+ Mov(L(1), rax)
+                <+ Mov (l, rdx)  <+ Binop("cmp", L(0), rdx) <+ CMov("z", r15, rax)
+                <+ Mov (r, rdx) <+ Binop("cmp", L(0), rdx) <+ CMov("z", r15, rax) <+ Mov(rax, s)
+          elif myCompare(op , "<") then
+            code <+ Binop("cmp", r, l) <+ Set(suffix (op), "%al") <+ Binop("&&", L(1), rax) <+ Mov(rax, s)
+          elif myCompare(op , ">") then
+            code <+ Binop("cmp", r, l) <+ Set(suffix (op), "%al") <+ Binop("&&", L(1), rax) <+ Mov(rax, s)
+          elif myCompare(op , "<=") then
+            code <+ Binop("cmp", r, l) <+ Set(suffix (op), "%al") <+ Binop("&&", L(1), rax) <+ Mov(rax, s)
+          elif myCompare(op , ">=") then
+            code <+ Binop("cmp", r, l) <+ Set(suffix (op), "%al") <+ Binop("&&", L(1), rax) <+ Mov(rax, s)
+          elif myCompare(op , "==")then
+            code <+ Binop("cmp", r, l) <+ Set(suffix (op), "%al") <+ Binop("&&", L(1), rax) <+ Mov(rax, s)
+          elif myCompare(op , "!=") then
+            code <+ Binop("cmp", r, l) <+ Set(suffix (op), "%al") <+ Binop("&&", L(1), rax) <+ Mov(rax, s)
+          else
+            failure ("error operand"++op)
+          fi 
+        ]
+      esac
+  esac
+
+}
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  foldl (
-    fun ([env, scode], i) {
-      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+   foldl(fun ([env, scode], i) {
+        var code = scode <+ Meta("# " ++ showSMInsn(i) ++ "\n");
         
-      case i of
-        READ ->
+        case i of
+       READ ->
           case env.allocate of
             [s, env] -> [env, code <+ Call ("Lread") <+ Mov (rax, s)]
           esac             
@@ -377,35 +431,65 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
           esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      | LD(x) ->
+        case env.allocate of 
+          [s, env] -> [env, code <+> move(env.loc(x), s)]
         esac
-    }, [env, emptyBuffer ()], code)
-}
+      | ST(x) ->
+          let s = env.peek in
+          [env.addGlobal(x), code <+> move(s, env.loc(x))]
 
+
+      | STI ->
+          let [value, env] = env.pop in
+          let [addr, env] = env.pop in
+          let env = env.push(value) in
+          [env, code <+> move(value, I(0, addr))]
+      | LDA(x) ->
+          let [s, env] = env.allocate in
+          [env, code <+ Lea(env.loc(x), s)]
+      | CONST(vr) ->  
+          case env.allocate of
+            [s, env] -> [env, code <+> move (L(vr), s)]
+          esac
+
+      | BINOP(op) ->
+        createBinop(op, code, env)
+      | LABEL(x) ->
+          let env = if env.isBarrier then env.retrieveStack(x) else env fi in
+          [env, code <+ Label(x)]
+      | JMP(x) ->
+          case  env.setStack(x) of
+            env ->
+            let env = env.setBarrier in
+            [env, code <+ Jmp(x)]
+          esac
+      | CJMP(c, x) ->
+          let [k, env] = env.pop in
+          let env = env.setStack(x) in
+          [env, code <+ Binop("cmp", L(0), k) <+ CJmp(c, x)]
+      | DROP ->
+          let [s, env] = env.pop in
+          [env, scode]
+      esac
+     }, [env, emptyBuffer()], code)
+}
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
 public fun compileX86 (args, code) {
-  case compile (initEnv (), code) of
-    [env, code] ->
-       var asmFile = args.getBaseName ++ ".s",
-           runtime = case getEnv ("LAMA_RUNTIME") of
-                       #val  -> "../runtime64/"
-                     | path  -> path
-                     esac ++ "/runtime.o";
-       
-       fwrite (asmFile,
-               map (insnString, 
-                    getBuffer $
-                      singletonBuffer (Meta ("\t.global\tmain\n")) <+>
-                      dataSection (listBuffer $ map (dataDef, getGlobals (env))) <+>
-                      codeSection (
-                        singletonBuffer (Meta ("main:\n")) <+>
-                        prologue (getStackSize (env)) <+>
-                        code <+>
-                        epilogue ()
-                      )
-                    ).stringcat);
+   case compile(initEnv(), code) of
+     [env, code] -> var asmFile = args.getBaseName ++ ".s", runtime = case getEnv("LAMA_RUNTIME") of
+                                                                        #val -> "../runtime64/"
+                                                                      | path -> path
+                                                                      esac ++ "/runtime.o";
                     
-       system ({"gcc -g -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
-  esac
+                    fwrite(asmFile, map(insnString,
+                                    getBuffer $ singletonBuffer(Meta("\t.global\tmain\n")) <+> dataSection(listBuffer $
+                                      map(dataDef, getGlobals(env))) <+> codeSection(singletonBuffer(Meta("main:\n")) <+>
+                                      prologue(getStackSize(env)) <+>
+                                      code <+>
+                                      epilogue()))
+                                  .stringcat);
+                    system({"gcc -g -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
+   esac
 }
