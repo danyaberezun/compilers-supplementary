@@ -15,7 +15,7 @@ var regs = ["%rbx", "%rcx", "%rsi", "%rdi",
 	    "%r12", "%r13", "%r14", "%r15",
 	    "%rax", "%rdx", "%rbp", "%rsp"];
 
--- We can not freely operate with all register; only with 4 by now
+-- We can not freely operate with all register; only with 12 by now
 var nRegs = regs.length - 5;
 
 -- For convenience we define the following synonyms for the registers: 
@@ -50,13 +50,10 @@ var wordSize = 8;
 --   Binop (string, opnd, opnd) -- makes a binary operation; note, the first operand   
 --                                 designates x86 operator, not the source language one
 --   IDiv  (opnd)               -- x86 integer division, see instruction set reference 
---   Cltd                       -- see instruction set reference           
+--   Cqo                       -- see instruction set reference           
 --   Set   (string, string)     -- sets a value from flags; the first operand is the   
 --                                 suffix, which determines the value being set, the
 --                                 the second --- (sub)register name
---   Jmp   (string)             -- unconditional jump to a label
---   CJmp  (string, string)     -- conditional jump to a label
---   Label (string)             -- a label
 --   Push  (opnd)               -- pushes the operand on the hardware stack
 --   Pop   (opnd)               -- pops from the hardware stack to the operand
 --   Call  (string)             -- calls a function by its name 
@@ -88,7 +85,7 @@ fun insnString (insn) {
   }
   
   case insn of
-    Cltd               -> "\tcqo\n"
+    Cqo               -> "\tcqo\n"
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
   | Sal   (s)          -> sprintf ("\tsalq\t%s\n", s)
   | IDiv  (s1)         -> sprintf ("\tidivq\t%s\n", opndString (s1))
@@ -98,9 +95,6 @@ fun insnString (insn) {
   | Pop   (s)          -> sprintf ("\tpopq\t%s\n", opndString (s))
   | Ret                -> "\tret\n"
   | Call  (p)          -> sprintf ("\tcall\t%s\n", p)
-  | Label (l)          -> sprintf ("%s:\n", l)
-  | Jmp   (l)          -> sprintf ("\tjmp\t%s\n", l)
-  | CJmp  (c, l)       -> sprintf ("\tj%s\t%s\n", c, l)
   | Meta  (m)          -> m
   esac
 }
@@ -292,6 +286,37 @@ fun suffix (op) {
   esac
 }
 
+fun compileArithBinop (op, left, right, result, env, code) {
+  [env, code <+ Binop (op, right, left) <+> move (left, result)]
+}
+
+fun divResultReg (op) {
+  case op of
+    "/" -> rax
+  | "%" -> rdx
+  esac
+}
+
+fun compileDivBinop (op, left, right, result, env, code) {
+  [env, code <+ Mov (left, rax) <+ Cqo <+ IDiv (right) <+ Mov (divResultReg (op), result)]
+}
+
+fun setTo (suf, dest) {
+  singletonBuffer (Mov (L (0), rax)) <+ Set (suf, "%al") <+ Mov (rax, dest)
+}
+
+fun compileCmpBinop (op, left, right, result, env, code) {
+  [env, code <+ Binop ("cmp", right, left) <+> setTo (suffix (op), result)]
+}
+
+fun toBool (v) {
+  singletonBuffer (Binop ("&&", v, v)) <+> setTo ("nz", v)
+}
+
+fun compileBoolBinop (op, left, right, result, env, code) {
+  [env, code <+> toBool (left) <+> toBool (right) <+ Binop (op, right, left) <+ Mov (left, result)]
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -307,13 +332,48 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
           esac
+      | LD (x) ->
+          case env.addGlobal (x).allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac
+      | ST (x) ->
+          case env.addGlobal (x).pop of
+            [s, env] -> [env, code <+> move (s, env.loc (x))]
+          esac
+      | CONST (v) -> 
+          case env.allocate of
+            [s, env] -> [env, code <+ Mov (L (v), s)]
+          esac
+      | BINOP (op) -> 
+          case env.pop2 of
+            [right, left, env] -> 
+              case env.allocate of
+                [result, env] -> 
+                  case op of
+                    "+"  -> compileArithBinop (op, left, right, result, env, code)
+                  | "-"  -> compileArithBinop (op, left, right, result, env, code)
+                  | "*"  -> compileArithBinop (op, left, right, result, env, code)
+                  | "/"  -> compileDivBinop (op, left, right, result, env, code)
+                  | "%"  -> compileDivBinop (op, left, right, result, env, code)
+                  | "==" -> compileCmpBinop (op, left, right, result, env, code)
+                  | "!=" -> compileCmpBinop (op, left, right, result, env, code)
+                  | "<"  -> compileCmpBinop (op, left, right, result, env, code)
+                  | "<=" -> compileCmpBinop (op, left, right, result, env, code)
+                  | ">"  -> compileCmpBinop (op, left, right, result, env, code)
+                  | ">=" -> compileCmpBinop (op, left, right, result, env, code)
+                  | "&&" -> compileBoolBinop (op, left, right, result, env, code)
+                  | "!!" -> compileBoolBinop (op, left, right, result, env, code)
+                  | "^"  -> compileBoolBinop (op, left, right, result, env, code)
+                  esac
+              esac
+          esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
 }
 
--- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
--- compiles the program into machine code, and compiles the machine code into an executable
+-- A top-level codegeneration function. Takes a stack machine program
+-- and returns x86 listing as a string
 public fun compileX86 (args, code) {
   case compile (initEnv (), code) of
     [env, code] ->
