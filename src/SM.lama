@@ -57,10 +57,57 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+fun shouldJump (c, value) {
+  case c of
+    "z" -> value == 0
+  | "nz" -> value != 0
+  esac
+}
+
+fun evalStep (env, c, inst, rest) {
+  case c of
+    [stack, state, world] -> case inst of
+      READ -> case readWorld (world) of
+        [value, nextWorld] -> [[value : stack, state, nextWorld], rest]
+      esac
+    | WRITE -> case stack of
+        value : newStack -> [[newStack, state, writeWorld (value, world)], rest]
+      esac
+    | BINOP (op) -> case stack of
+        right : left : newStack -> [[evalOp (op, left, right) : newStack, state, world], rest]
+      esac
+    | LD (varName) -> [[state (varName) : stack, state, world], rest]
+    | LDA (varName) ->  [[Ref (varName) : stack, state, world], rest]
+    | ST (varName) -> case stack of
+        value : newStack -> [[stack, state <- [varName, value], world], rest]
+      esac
+    | STI -> case stack of
+        value : Ref (varName): restStack -> [[value : restStack, state <- [varName, value], world], rest]
+      esac
+    | CONST (value) -> [[value : stack, state, world], rest]
+    | LABEL (lab) -> [c, rest]
+    | JMP (lab) -> case fromLabel (env, lab) of
+        code -> [c, code]
+      esac
+    | CJMP (c, lab) -> case stack of
+        value : stack -> [[stack, state, world], if shouldJump (c, value) then fromLabel (env, lab) else rest fi]
+      esac
+    | DROP -> case stack of 
+        _ : stack -> [[stack, state, world], rest]
+      esac
+    esac
+  esac
+}
+
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+  case insns of
+    {} -> c
+  | inst : rest -> case evalStep (env, c, inst, rest) of
+      [c, rest] -> eval (env, c, rest)
+    esac
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -115,7 +162,80 @@ public fun compileSM (stmt) {
     | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
     | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 ->  failure ("compileSM not implemented\n")
+    | Assn (Ref (x), e) -> case env.genLabel of 
+        [assnLab, env] -> case compile (assnLab, env, e) of 
+          [assnLabUsed, env, exprCode] -> [false, env, exprCode <+> label (assnLab, assnLabUsed) <+ ST (x)] 
+        esac
+      esac
+    | Assn (e1, e2) -> case env.genLabel of
+        [exprLab, env] -> case env.genLabel of
+          [assnLab, env] -> case compile (exprLab, env, e1) of
+            [exprLabUsed, env, targetCode] -> case compile (assnLab, env, e2) of
+              [assnLabUsed, env, exprCode] -> [false, env, targetCode <+> label (exprLab, exprLabUsed) <+> exprCode <+> label (assnLab, assnLabUsed) <+ STI]
+            esac
+          esac
+        esac
+      esac
+    | Seq (e1, e2) -> case env.genLabel of
+        [e2Lab, env] -> case compile (e2Lab, env, e1) of
+          [e2LabUsed, env, e1Code] -> case compile (lab, env, e2) of
+            [labUsed, env, e2Code] -> [labUsed, env, e1Code <+> label (e2Lab, e2LabUsed) <+> e2Code]
+          esac
+        esac
+      esac
+    | Read (x) -> [false, env, singletonBuffer (READ) <+ ST (x)]
+    | Write (e) -> case env.genLabel of
+        [writeLab, env] -> case compile (writeLab, env, e) of
+          [writeLabUsed, env, eCode] -> [false, env, eCode <+> label (writeLab, writeLabUsed) <+ WRITE]
+        esac
+      esac
+    | If (cond, thenBody, elseBody) -> case env.genLabel of
+        [elseLab, env] -> case env.genLabel of
+          [jmpLab, env] -> case compile (lab, env, thenBody) of
+            [thenLabUsed, env, thenCode] -> case compile (lab, env, elseBody) of
+              [elseLabUsed, env, elseCode] -> case compile (jmpLab, env, cond) of
+                [jmpLabUsed, env, condCode] -> [true, env, condCode <+> label (jmpLab, jmpLabUsed) <+> CJMP ("z", elseLab) <+> thenCode <+ JMP (lab) <+ LABEL (elseLab) <+> elseCode]
+              esac
+            esac
+          esac
+        esac
+      esac
+    | While (cond, body) -> case env.genLabel of
+        [startLab, env] -> case env.genLabel of
+          [condLab, env] -> case env.genLabel of
+            [jmpLab, env] -> case compile (condLab, env, body) of
+              [condLabUsed, env, bodyCode] -> case compile (jmpLab, env, cond) of
+                [jmpLabUsed, env, condCode] -> [false, env, singletonBuffer (JMP (condLab)) <+ LABEL (startLab) <+> bodyCode <+ LABEL (condLab) <+> condCode <+> label (jmpLab, jmpLabUsed) <+ CJMP ("nz", startLab)]
+              esac
+            esac
+          esac
+        esac
+      esac
+    | DoWhile (body, cond) -> case env.genLabel of
+        [startLab, env] -> case env.genLabel of
+          [condLab, env] -> case env.genLabel of
+            [jmpLab, env] -> case compile (condLab, env, body) of
+              [condLabUsed, env, bodyCode] -> case compile (jmpLab, env, cond) of
+                [jmpLabUsed, env, condCode] -> [false, env, singletonBuffer (LABEL (startLab)) <+> bodyCode <+ label (condLab, condLabUsed) <+> condCode <+> label (jmpLab, jmpLabUsed) <+ CJMP ("nz", startLab)]
+              esac
+            esac
+          esac
+        esac
+      esac
+    | Binop (op, left, right) -> case env.genLabel of
+        [rightLab, env] -> case env.genLabel of
+          [opLab, env] -> case compile (rightLab, env, left) of
+            [rightLabUsed, env, leftCode] -> case compile (opLab, env, right) of
+              [opLabUsed, env, rightCode] -> [false, env, leftCode <+> label (rightLab, rightLabUsed) <+> rightCode <+> label (opLab, opLabUsed) <+ BINOP (op)]
+            esac
+          esac
+        esac
+      esac
+    | Ignore (e) -> case env.genLabel of
+        [dropLab, env] -> case compile (dropLab, env, e) of
+          [dropLabUsed, env, eCode] -> [false, env, eCode <+> label (dropLab, dropLabUsed) <+ DROP]
+        esac
+      esac
     esac
   }
 
