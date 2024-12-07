@@ -77,6 +77,7 @@ fun insnString (insn) {
     | "!!"  -> "orq" 
     | "^"   -> "xorq"
     | "cmp" -> "cmpq"
+    | "test" -> "testq"
     esac
   }
 
@@ -348,6 +349,21 @@ fun move (from, to) {
   fi
 }
 
+-- from must be I (0, M (...))
+fun lea (from, to) {
+  if memOpnd (to)
+  then singletonBuffer (Lea (from, rax)) <+ Mov (rax, to)
+  else singletonBuffer (Lea (from, to))
+  fi
+}
+
+fun binop (op, left, right) {
+  if memOpnd (left) && memOpnd (right)
+  then singletonBuffer (Mov (right, rax) <+ Binop (op, rax, left))
+  else singletonBuffer (Binop (op, right, left))
+  fi
+}
+
 -- Gets a suffix for Set instruction from
 -- source language comparison operator
 fun suffix (op) {
@@ -361,6 +377,37 @@ fun suffix (op) {
   esac
 }
 
+fun compileArithBinop (op, left, right, result, env, code) {
+  [env, code <+> binop (op, left, right) <+> move (left, result)]
+}
+
+fun divResultReg (op) {
+  case op of
+    "/" -> rax
+  | "%" -> rdx
+  esac
+}
+
+fun compileDivBinop (op, left, right, result, env, code) {
+  [env, code <+ Mov (left, rax) <+ Cqo <+ IDiv (right) <+ Mov (divResultReg (op), result)]
+}
+
+fun setTo (suf, dest) {
+  singletonBuffer (Mov (L (0), rax)) <+ Set (suf, "%al") <+ Mov (rax, dest)
+}
+
+fun compileCmpBinop (op, left, right, result, env, code) {
+  [env, code <+> binop ("cmp", left, right) <+> setTo (suffix (op), result)]
+}
+
+fun toBool (v) {
+  binop ("test", v, v) <+> setTo ("nz", v)
+}
+
+fun compileBoolBinop (op, left, right, result, env, code) {
+  [env, code <+> toBool (left) <+> toBool (right) <+> binop (op, left, right) <+ Mov (left, result)]
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -369,14 +416,61 @@ fun compile (env, code) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
         
       case i of
-        READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (rax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
+        READ -> case env.allocate of
+          [s, env] -> [env, code <+ Call ("Lread") <+ Mov (rax, s)]
+        esac             
+      | WRITE -> case env.pop of
+          [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
+        esac
+      | LD (x) -> case env.addGlobal (x).allocate of
+          [s, env] -> [env, code <+> move (env.loc (x), s)]
+        esac
+      | LDA (x) -> case env.addGlobal (x).allocate of
+          [s, env] -> [env, code <+> lea (I (0, env.loc (x)), s)]
+        esac
+      | ST (x) -> case env.addGlobal (x).peek of
+          [s, env] -> [env, code <+> move (s, env.loc (x))]
+        esac
+      | STI -> case env.pop of
+          [v, env] -> case env.peek of
+            [addr, env] -> [env, code <+> move (v, I (0, addr)) <+> move (v, addr)]
           esac
+        esac
+      | CONST (v) -> 
+          case env.allocate of
+            [s, env] -> [env, code <+ Mov (L (v), s)]
+          esac
+      | BINOP (op) -> 
+          case env.pop2 of
+            [right, left, env] -> 
+              case env.allocate of
+                [result, env] -> 
+                  case op of
+                    "+"  -> compileArithBinop (op, left, right, result, env, code)
+                  | "-"  -> compileArithBinop (op, left, right, result, env, code)
+                  | "*"  -> compileArithBinop (op, left, right, result, env, code)
+                  | "/"  -> compileDivBinop (op, left, right, result, env, code)
+                  | "%"  -> compileDivBinop (op, left, right, result, env, code)
+                  | "==" -> compileCmpBinop (op, left, right, result, env, code)
+                  | "!=" -> compileCmpBinop (op, left, right, result, env, code)
+                  | "<"  -> compileCmpBinop (op, left, right, result, env, code)
+                  | "<=" -> compileCmpBinop (op, left, right, result, env, code)
+                  | ">"  -> compileCmpBinop (op, left, right, result, env, code)
+                  | ">=" -> compileCmpBinop (op, left, right, result, env, code)
+                  | "&&" -> compileBoolBinop (op, left, right, result, env, code)
+                  | "!!" -> compileBoolBinop (op, left, right, result, env, code)
+                  | "^"  -> compileBoolBinop (op, left, right, result, env, code)
+                  esac
+              esac
+          esac
+      | LABEL (lab) -> [env.retrieveStack (lab), code <+ Label (lab)]
+      | JMP (lab) -> [env.setStack (lab), code <+ Jmp (lab)]
+      | CJMP (c, lab) -> case env.pop of
+          [v, env] -> [env.setStack(lab), code <+> binop ("test", v, v) <+ CJmp (c, lab)]
+        esac
+      | DROP -> case env.pop of
+          [_, env] -> [env, code]
+        esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
     }, [env, emptyBuffer ()], code)
