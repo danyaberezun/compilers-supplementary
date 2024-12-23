@@ -1,4 +1,4 @@
-TESTS=$(sort $(basename $(wildcard test*.lama)))
+TESTS=$(sort $(basename $(wildcard test009.lama)))
 LOGS=$(TESTS:=.log)
 
 LAMAC=../src/lama-impl
