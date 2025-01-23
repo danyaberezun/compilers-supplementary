@@ -425,6 +425,44 @@ fun suffix (op) {
   esac
 }
 
+fun cmpBinOp (op, x, y) {
+  emptyBuffer () <+ 
+  Binop ("^", rdx, rdx) <+
+  Binop ("cmp", x, y) <+ 
+  Set (suffix (op), "%dl") <+
+  Mov (rdx, rax)
+}
+
+fun logicBinOp (op, x, y) {
+  emptyBuffer () <+
+  Binop ("^", rax, rax) <+
+  Binop ("cmp", rax, y) <+
+  Set (suffix ("!="), "%al") <+
+  Binop ("^", rdx, rdx) <+
+  Binop ("cmp", rdx, x) <+
+  Set (suffix ("!="), "%dl") <+
+  Binop (op, rdx, rax)
+}
+
+fun compileBinOp (op, x, y, res) {
+  var code = emptyBuffer () <+> move (y, rax);
+  case op of 
+    "+" -> code <+ Binop ("+", x, rax)
+  | "-" -> code <+ Binop ("-", x, rax)
+  | "*" -> code <+ Binop ("*", x, rax)
+  | "/" -> code <+ Cltd <+ IDiv (x)
+  | "%" -> code <+ Cltd <+ IDiv (x) <+> move (rdx, rax)
+  | ">" -> code <+> cmpBinOp (op, x, y)
+  | "<" -> code <+> cmpBinOp (op, x, y)
+  | "<=" -> code <+> cmpBinOp (op, x, y)
+  | ">=" -> code <+> cmpBinOp (op, x, y)
+  | "==" -> code <+> cmpBinOp (op, x, y)
+  | "!=" -> code <+> cmpBinOp (op, x, y)
+  | "&&" -> code <+> logicBinOp (op, x, y)
+  | "!!" -> code <+> logicBinOp (op, x, y)
+  esac <+> move (rax, res)
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -455,27 +493,75 @@ fun compile (env, code) {
 				   listBuffer (reverse (popRegs))]
 	       esac
           esac
-      (* Assignment
-        
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-               
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-           End *)
-        esac
+      | LD (x) ->
+          case env.allocate of
+	          [s, env] -> [env, code <+> move (env.loc (x), s)]
+	        esac
+      | LDA (x) ->
+          case env.allocate of
+	          [s, env] -> [env, code <+ Lea (env.loc (x), s)]
+	        esac
+      | ST (x) -> 
+          case env.pop of
+	          [s, env] -> [env, code <+> move (s, env.loc (x))]
+	        esac
+      | STI -> 
+          case env.pop2 of
+            [x, y, env] -> 
+              case env.allocate of 
+                [res, env] -> [env, code <+ Mov (x, I (0, y)) <+ Mov (x, res)]
+              esac
+          esac
+      | CONST (x) -> 
+          case env.allocate of
+            [s, env] -> [env, code <+ Mov (L (x), s)]
+          esac
+      | BINOP (op) -> 
+          case env.pop2 of
+            [x, y, env] -> 
+              case env.allocate of 
+                [res, env] -> [env, code <+> compileBinOp (op, x, y, res)]
+              esac
+          esac
+      | LABEL (l) -> [if env.isBarrier then env.retrieveStack (l) else env fi, code <+ Label (l)]
+      | JMP (l) -> [env.setStack (l).setBarrier, code <+ Jmp (l)]
+      | CJMP (c, l) -> 
+          case env.pop of 
+            [s, env] -> [env.setStack (l).setBarrier, code <+ Binop ("cmp", L (0), s) <+ CJmp (c, l)]
+          esac
+      | CALL (f, na) -> 
+          case savecode (env, na) of 
+            [pushRegs, popRegs] -> 
+              var pushCode = emptyBuffer ();
+              for var i; i := 0, i < na, i := i + 1 do 
+                case env.pop of 
+                  [s, newEnv] ->
+                    pushCode := pushCode <+ Push (s);
+                    env := newEnv
+                esac
+              od;
+              case env.allocate of 
+                [s, env] -> [env, code <+>
+                                  listBuffer (pushRegs) <+>
+                                  pushCode <+
+                                  Call (f) <+
+                                  Binop ("+", L (wordSize * na), rsp) <+>
+                                  listBuffer (popRegs.reverse) <+
+				                          Mov (rax, s)]
+              esac
+          esac
+      | BEGIN (f, na, nl) -> [env.enterFunction (f, nl), code <+> prologue (f)]
+      | GLOBAL (x) -> [env.addGlobal (x), code]
+      | END -> 
+          case epilogue (env) of 
+            [env, endCode] -> [env, code <+> endCode]
+          esac
+      | DROP ->
+          case env.pop of 
+            [_, env] -> [env, code]
+          esac
+      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      esac
     }, [env, emptyBuffer ()], code)
 }
 
