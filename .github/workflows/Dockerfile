@@ -8,5 +8,6 @@ RUN dpkg --add-architecture i386 && \
 
 USER opam
 RUN opam init --disable-sandboxing -y && \
-    opam pin add -y ostap 0.5 && \
-    opam pin add -y Lama https://github.com/JetBrains-Research/Lama.git\#1.20
+    eval $(opam env) && \
+    opam pin add Lama https://github.com/PLTools/Lama.git\#1.30 --no-action && \
+    opam install -y Lama
