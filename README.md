@@ -11,3 +11,7 @@ A supplementary repository for the course on compilers.
   * `<T#>` --- assignment number (the first three symbols of the corresponding branch name)
 * NB: your pr has to contain changes to files `*.lama` files from folder `src`
 * NB: be sure that all checks have passed
+
+All lecture notes are located in branch [lecture-notes](https://github.com/danyaberezun/compilers-supplementary/tree/lecture-notes/).
+
+[This table](https://docs.google.com/spreadsheets/d/1Cs9XFVvEuXq3CaIk3YT9YF5EXpbkU0MjO4g-ajPKps8/edit?usp=sharing) contains results and deadlines in the corresponding sheets.
