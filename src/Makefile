@@ -19,14 +19,8 @@ X86.o: SM.o
 %.o: %.lama
 	$(LAMAC) -I . -c $<
 
-variate: $(FILES)
-
-$(FILES):
-	@cp $@ $@~ ; cat $@~ | awk 'BEGIN {skip=0; show=1} $$0 ~ /End \*\)/ {show=1; skip=1} $$0 ~ /\(\* Assignment/ {show=1; skip=1} $$0 ~ /\(\* Implementation/ {show=0; skip=1} {if (! skip && show) print $$0; skip = 0}' > $@
-
-clean:
-	rm -Rf *.s *.o *.i *~ *.html *.sm lama-impl
-
+variate:
+	for f in $(FILES) ; do cp $$f $$f~ ; cat $$f~ | awk 'BEGIN {skip=0; show=1} $$0 ~ /End \*\)/ {show=1; skip=1} $$0 ~ /\(\* Assignment/ {show=1; skip=1} $$0 ~ /\(\* Implementation/ {show=0; skip=1} {if (! skip && show) print $$0; skip = 0}' > $$f ; done
 
 clean:
 	rm -Rf *.s *.o *.i *~ *.html *.sm lama-impl
