@@ -1,7 +1,6 @@
-# Assignment 2: Statements and Expressions compilation to X86
+# Assignment 3: Straight Line Parser
 
 **Repo structure**:
-
 * [`regression`](regression/) --- tests
 * [`src`](src/) contains sources of your compiler
   * new: [`X86_64.lama`](src/X86_64.lama) --- compiler to X86_64 GAS AT&T syntax (see [instruction reference](https://www.felixcloutier.com/x86/) and [wikibook: Ассемблер в Linux для программистов C](https://ru.wikibooks.org/wiki/%D0%90%D1%81%D1%81%D0%B5%D0%BC%D0%B1%D0%BB%D0%B5%D1%80_%D0%B2_Linux_%D0%B4%D0%BB%D1%8F_%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B8%D1%81%D1%82%D0%BE%D0%B2_C))
@@ -25,13 +24,21 @@
 
 Now our compiler has to work in three modes:
 
+Now our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
 * [old] (`-i` option) direct interpretation of `.lama` files
 * [old] (`-s` option) compilation to SM and SM program interpretation
 * [new] (`-o` option) compilation to X86/64 (via SM)
 
-**How to submit the task**:
+Advice: take a look into Lama Specification section 3.5 and functions `expr` and `syntax`
 
-* fork the repo (or switch to the corresponding branch and stretch your changes)
+Important changes:
+* A lot of tests are added (see [deep-expression](regression/deep-expressions/) and [expressions](regression/expressions/))
+    + Common mistake: deep expressions fail due to an absence of addressing mode checks for generated X86_32 instructions
+* Please, note that function [compileX86](src/X86_64.lama#L311) (32-bit version [compileX86](src/X86.lama#L298)) now ***has an extra argument***; fix its usage!!!
+
+**How to submit the task**:
+* For the first task: fork the repo (or switch to the corresponding branch and stretch your changes)
+* For the next tasks: merge your changes with updated files
 * implement the task
 * open pull-request to this repo to the branch with the corresponding task
 * NB: your pr has to contain changes to files [`Expr.lama`](src/Expr.lama), [`Stmt.lama`](src/Stmt.lama), [`SM.lama`](src/SM.lama) and [`X86_64.lama`](src/X86_64.lama) only
@@ -44,7 +51,6 @@ Now our compiler has to work in three modes:
 * Complete `compile` function definition, see [`src/X86_64.lama`](src/X86_64.lama#L290)
 
 **Compile and run tests (from the root folder)**:
-
 ```bash
 make
 ```
