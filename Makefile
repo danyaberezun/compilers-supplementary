@@ -1,6 +1,7 @@
 .PHONY: all 
 
 all:
+	make -C runtime64
 	make -C src 
 	make -C regression
 
