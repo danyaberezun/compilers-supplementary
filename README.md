@@ -1,8 +1,9 @@
-# Assignment 3: Straight Line Parser
+# Assignment 4: Structural Control Flow
 
 **Repo structure**:
 * [`regression`](regression/) --- tests
 * [`src`](src/) contains sources of your compiler
+  + new: [`X86.lama`](src/X86.lama) --- compiler to X86_32 GAS AT&T syntax (see [instruction reference](https://www.felixcloutier.com/x86/) and [wikibook: Ассемблер в Linux для программистов C](https://ru.wikibooks.org/wiki/%D0%90%D1%81%D1%81%D0%B5%D0%BC%D0%B1%D0%BB%D0%B5%D1%80_%D0%B2_Linux_%D0%B4%D0%BB%D1%8F_%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B8%D1%81%D1%82%D0%BE%D0%B2_C))
 * [`runtime64`](runtime64/) (32-bit version [`runtime32`](runtime32/)) contains your compiler runtime; for now, it contains just two builtin functions [`Lread`](runtime64/runtime.c#L7) and [`Lwrite`](runtime64/runtime.c#L3)
 
 Now our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
@@ -10,12 +11,8 @@ Now our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
 * [old] (`-s` option) compilation to SM and SM program interpretation
 * [new] (`-o` option) compilation to X86 (via SM)
 
-Advice: take a look into Lama Specification section 3.5 and functions `expr` and `syntax`
-
-Important changes:
-* A lot of tests are added (see [deep-expression](regression/deep-expressions/) and [expressions](regression/expressions/))
-    + Common mistake: deep expressions fail due to an absence of addressing mode checks for generated X86_32 instructions
-* Please, note that function [compileX86](src/X86_64.lama#L311) (32-bit version [compileX86](src/X86.lama#L298)) now ***has an extra argument***; fix its usage!!!
+Corresponding lecture notes: [Structural Control Flow Operators Semantics and Syntax Extensions](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/03.pdf),
+[Extended Stack Machine (for structural control flow)](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/04.pdf).
 
 **How to submit the task**:
 * For the first task: fork the repo (or switch to the corresponding branch and stretch your changes)
@@ -29,7 +26,12 @@ Important changes:
 
 **Task**:
 
-* Implement a parser for expressions and statements (see [Parser](src/Parser.lama) and [Lexer](src/Lexer.lama))
+* Support control flow operators:
+  + Extend parser
+  + Extend reference language interpreter
+  + Extend compilation to SM
+  + Extend SM with new instructions
+  + Extend compilation to X86_32
 
 **Compile and run tests (from the root folder)**:
 ```bash
