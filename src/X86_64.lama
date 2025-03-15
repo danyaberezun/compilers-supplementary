@@ -5,7 +5,6 @@ import Collection;
 import List;
 import Buffer;
 import Fun;
-import Manifest;
 
 -- Assembler language interface
 -- The registers:
@@ -15,7 +14,7 @@ var regs = ["%rbx", "%rcx", "%rsi", "%rdi",
 	    "%r12", "%r13", "%r14", "%r15",
 	    "%rax", "%rdx", "%rbp", "%rsp"];
 
--- We can not freely operate with all register; only with 4 by now
+-- We can not freely operate with all register; only with 12 by now
 var nRegs = regs.length - 5;
 
 -- For convenience we define the following synonyms for the registers: 
@@ -85,7 +84,7 @@ fun insnString (insn) {
   }
   
   case insn of
-    Cltd               -> "\tcqo\n"
+    Cltd               -> "\tcltd\n"
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
   | Sal   (s)          -> sprintf ("\tsalq\t%s\n", s)
   | IDiv  (s1)         -> sprintf ("\tidivq\t%s\n", opndString (s1))
@@ -286,6 +285,12 @@ fun suffix (op) {
   esac
 }
 
+fun noneToBool (res) {
+  case res of None -> false
+  | _ -> true
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -301,35 +306,65 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
           esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      | LD (x) ->
+          case env.addGlobal (x).allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac
+      | ST (x) ->
+          case env.addGlobal (x).pop of
+            [s, env] -> [env, code <+> move (s, env.loc (x))]
+          esac
+      | CONST (x) -> 
+          case env.allocate of
+            [s, env] -> [env, code <+> move (L(x), s)]
+          esac
+      | BINOP (op) -> 
+        case env.pop2 of [y, x, env] -> 
+          case env.allocate of [s, env] ->          
+            (
+              var integerOperators = {["+" , true], ["-" , true], ["*" , true]};
+              var logicalOperators = {["&&" , [257, "e"]], ["!!" , [0, "g"]]};
+              var cmpOperators = {[">", true], [">=", true], ["<", true], ["<=", true], ["==", true], ["!=", true]};
+              if noneToBool(assoc(integerOperators, op)) then
+                [env, code <+ Mov(x, rax) <+ Binop(op, y, rax) <+ Mov(rax, s)]
+              elif noneToBool(assoc(logicalOperators, op)) then
+                case assoc(logicalOperators, op) of (Some([n, suff])) ->
+                    [env, code <+ Mov(L(0), rax) <+ Mov(L(0), rdx) <+
+                    Binop("cmp", L(0), y) <+ Set("ne", "%al") <+
+                    Binop("cmp", L(0), x) <+ Set("ne", "%ah") <+ Mov(L(n), rdx) <+ Binop("cmp", rdx, rax)
+                      <+ Mov(L(0), rax) <+ Set(suff, "%al") <+ Mov(rax, s)]
+                  esac
+              elif noneToBool(assoc(cmpOperators, op)) then
+                [env, code <+ Mov(L(0), rax) <+ Binop("cmp", y, x) <+ Set(suffix(op), "%al") <+ Mov(rax, s)]
+              elif compare(op, "/") == 0 then 
+                [env, code <+ Mov(x, rax) <+ IDiv(y) <+ Mov(rax, s)]
+              elif compare(op, "%") == 0 then 
+                [env, code <+ Mov(x, rax) <+ IDiv(y) <+ Mov(rdx, s)]
+              else failure("Unknown Binop\n")
+              fi
+            )
+          esac
         esac
+      | _ -> [env, code]
+      esac
     }, [env, emptyBuffer ()], code)
 }
 
--- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
--- compiles the program into machine code, and compiles the machine code into an executable
-public fun compileX86 (args, code) {
+-- A top-level codegeneration function. Takes a stack machine program
+-- and returns x86 listing as a string
+public fun compileX86 (code) {
   case compile (initEnv (), code) of
     [env, code] ->
-       var asmFile = args.getBaseName ++ ".s",
-           runtime = case getEnv ("LAMA_RUNTIME") of
-                       #val  -> "../runtime64/"
-                     | path  -> path
-                     esac ++ "/runtime.o";
-       
-       fwrite (asmFile,
-               map (insnString, 
-                    getBuffer $
-                      singletonBuffer (Meta ("\t.global\tmain\n")) <+>
-                      dataSection (listBuffer $ map (dataDef, getGlobals (env))) <+>
-                      codeSection (
-                        singletonBuffer (Meta ("main:\n")) <+>
-                        prologue (getStackSize (env)) <+>
-                        code <+>
-                        epilogue ()
-                      )
-                    ).stringcat);
-                    
-       system ({"gcc -g -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
+       map (insnString, 
+            getBuffer $
+              singletonBuffer (Meta ("\t.global\tmain\n")) <+>
+              dataSection (listBuffer $ map (dataDef, getGlobals (env))) <+>
+              codeSection (
+                singletonBuffer (Meta ("main:\n")) <+>
+                prologue (getStackSize (env)) <+>
+                code <+>
+                epilogue ()
+              )
+           ).stringcat
   esac
 }
