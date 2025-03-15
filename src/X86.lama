@@ -41,7 +41,10 @@ var wordSize = 4;
 --   Cltd                       -- see instruction set reference           
 --   Set   (string, string)     -- sets a value from flags; the first operand is the   
 --                                 suffix, which determines the value being set, the
---                                 the second --- (sub)register name 
+--                                 the second --- (sub)register name
+--   Jmp   (string)             -- unconditional jump to a label
+--   CJmp  (string, string)     -- conditional jump to a label
+--   Label (string)             -- a label
 --   Push  (opnd)               -- pushes the operand on the hardware stack
 --   Pop   (opnd)               -- pops from the hardware stack to the operand
 --   Call  (string)             -- calls a function by its name 
@@ -82,6 +85,9 @@ fun insnString (insn) {
   | Pop   (s)          -> sprintf ("\tpopl\t%s\n", opndString (s))
   | Ret                -> "\tret\n"
   | Call  (p)          -> sprintf ("\tcall\t%s\n", p)
+  | Label (l)          -> sprintf ("%s:\n", l)
+  | Jmp   (l)          -> sprintf ("\tjmp\t%s\n", l)
+  | CJmp  (c, l)       -> sprintf ("\tj%s\t%s\n", c, l)
   | Meta  (m)          -> m
   esac
 }
@@ -158,7 +164,23 @@ fun makeEnv (stack, stackSlots, globals) {
     stackSlots
   }
 
-  [envString, allocate, push, pop, pop2, addGlobal, loc, getGlobals, getStackSize]
+  (* generates code that 
+     1. saves two caller-saved registers (ecx, edx),
+     2. adds @push_args_code,
+     3. calls function @func_name,
+     4. adds @addl_code
+     5. restores registers
+  *)
+  fun genCallF (func_name, push_args_code, addl_code) {
+    emptyBuffer() 
+      <+  Push (ecx) <+ Push (edx)
+      <+> push_args_code
+      <+  Call (func_name)
+      <+> addl_code
+      <+  Pop  (ecx) <+ Pop  (edx)
+  }
+
+  [envString, allocate, push, pop, pop2, addGlobal, loc, getGlobals, getStackSize, genCallF]
 }
 
 -- Exported accessors
@@ -198,9 +220,13 @@ fun getStackSize (env) {
   env [8] ()
 }
 
+fun genCallF (env, func_name, push_args_code, addl_code) {
+  env [9] (func_name, push_args_code, addl_code)
+}
+
 -- Creates an initial environment
 fun initEnv () {
-  makeEnv (0, 0, emptySet (compare))
+  makeEnv (0, emptySet (compare), emptySet (compare))
 }
 
 -- Codegeneration helper functions
@@ -282,16 +308,15 @@ fun compile (env, code) {
       case i of
         READ ->
           case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+            [s, env] -> [env, code <+> genCallF(env, "Lread", emptyBuffer(), emptyBuffer()) <+ Mov (eax, s)]
           esac             
       | WRITE ->
           case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+            [s, env] -> [env, code <+> genCallF(env, "Lwrite", singletonBuffer(Push(s)), singletonBuffer(Pop (eax)))]
           esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-      esac
-    }, [env, emptyBuffer ()], code)
-}
+        esac
+    }, [env, emptyBuffer ()], code)}
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
@@ -300,8 +325,8 @@ public fun compileX86 (args, code) {
     [env, code] ->
        var asmFile = args.getBaseName ++ ".s",
            runtime = case getEnv ("LAMA_RUNTIME") of
-                       #val  -> "../runtime/"
-                     | path  -> path
+                       #val -> "../runtime/"
+                     | path     -> path
                      esac ++ "/runtime.o";
        
        fwrite (asmFile,
@@ -314,8 +339,8 @@ public fun compileX86 (args, code) {
                         prologue (getStackSize (env)) <+>
                         code <+>
                         epilogue ()
-                      )
-                    ).stringcat);
+                    )
+                   ).stringcat);
                     
        system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
