@@ -52,23 +52,35 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+fun evalCc(cc, value) {
+  case cc of 
+    "z" -> value == 0
+  | "nz" -> value != 0
+  esac
+}
+
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  foldl(
-    fun (c@[stack, s, w], ins) {
-      case ins of 
-        READ       -> let [v, w1] = readWorld (w) in [v:stack, s, w1]
-      | WRITE      -> let v:stack1 = stack in [stack1, s, writeWorld (v, w)]
-      | BINOP (op) -> let v2:v1:stack1 = stack in [evalOp (op, v1, v2):stack1, s, w]
-      | LD    (x)  -> [s (x):stack, s, w]
-      | ST    (x)  -> let v:stack1 = stack in [stack1, s <- [x, v], w]
-      | CONST (n)  -> [n:stack, s, w]
-      esac
-    },
-    c,
-    insns
-  )
+  fun evalOnce([ins:insns, c@[stack, s, w]]) {
+    case ins of 
+      READ         -> let [v, w1] = readWorld (w) in [insns, [v:stack, s, w1]]
+    | WRITE        -> let v:stack = stack in [insns, [stack, s, writeWorld (v, w)]]
+    | BINOP (op)   -> let v2:v1:stack = stack in [insns, [evalOp (op, v1, v2):stack, s, w]]
+    | LD    (x)    -> [insns, [s (x):stack, s, w]]
+    | ST    (x)    -> let v:stack = stack in [insns, [stack, s <- [x, v], w]]
+    | CONST (n)    -> [insns, [n:stack, s, w]]
+    | LABEL (s)    -> [insns, c]
+    | JMP   (l)    -> [env.fromLabel (l), c]
+    | CJMP  (cc, l) -> let v:stack = stack in [if evalCc (cc, v) then env.fromLabel (l) else insns fi, [stack, s, w]]
+    esac
+  }
+  var state = [insns, c];
+
+  while (state[0] != {}) do
+    state := evalOnce (state)
+  od;
+  state[1]
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -145,11 +157,11 @@ public fun compileSM (stmt) {
   --    code buffer  
   fun compile (lab, env, stmt) {
     case stmt of
-      Skip           -> [false, env, emptyBuffer ()]
-    | Read  (x)      -> [false, env, singletonBuffer (READ) <+ ST (x)]
-    | Write (e)      -> [false, env, compileExpr (e) <+ WRITE]
-    | Assn  (x, e)   -> [false, env, compileExpr (e) <+ ST (x)]
-    | Seq   (s1, s2) ->
+      Skip                   -> [false, env, emptyBuffer ()]
+    | Read    (x)            -> [false, env, singletonBuffer (READ) <+ ST (x)]
+    | Write   (e)            -> [false, env, compileExpr (e) <+ WRITE]
+    | Assn    (x, e)         -> [false, env, compileExpr (e) <+ ST (x)]
+    | Seq     (s1, s2)       ->
         case env.genLabel of
           [s2Lab, env] ->
              case compile (s2Lab, env, s1) of
@@ -159,7 +171,22 @@ public fun compileSM (stmt) {
                   esac
              esac
         esac
-    | _              -> failure ("compileSM not implemented\n")
+    | If      (cond, p, f)  -> 
+        let [negLab, env] = env.genLabel in
+        let [_, env, posCode] = compile (lab, env, p) in
+        let [_, env, negCode] = compile (lab, env, f) in
+        let code = compileExpr (cond) <+ CJMP ("z", negLab) 
+                   <+> posCode <+ JMP (lab)  
+                   <+ LABEL (negLab) <+> negCode in
+          [true, env, code]
+    | While   (cond, b)     -> compile (lab, env, If (cond, DoWhile (cond, b), Skip))
+    | DoWhile (cond, b)     ->
+        let [loopLab, env] = env.genLabel in
+        let [condLab, env] = env.genLabel in
+        let [condLabUsed, env, bCode] = compile (condLab, env, b) in
+        let code = label (loopLab, true) <+> bCode 
+                   <+> label (condLab, condLabUsed) <+> compileExpr (cond) <+ CJMP ("nz", loopLab)  in
+          [false, env, code]
     esac
   }  
 
