@@ -1,17 +1,39 @@
-# compilers-supplementary
+# Assignment 4: Structural Control Flow
 
-A supplementary repository for the course on compilers.
+**Repo structure**:
+* [`regression`](regression/) --- tests
+* [`src`](src/) contains sources of your compiler
+  + new: [`X86.lama`](src/X86.lama) --- compiler to X86_32 GAS AT&T syntax (see [instruction reference](https://www.felixcloutier.com/x86/) and [wikibook: Ассемблер в Linux для программистов C](https://ru.wikibooks.org/wiki/%D0%90%D1%81%D1%81%D0%B5%D0%BC%D0%B1%D0%BB%D0%B5%D1%80_%D0%B2_Linux_%D0%B4%D0%BB%D1%8F_%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B8%D1%81%D1%82%D0%BE%D0%B2_C))
+* [`runtime64`](runtime64/) (32-bit version [`runtime32`](runtime32/)) contains your compiler runtime; for now, it contains just two builtin functions [`Lread`](runtime64/runtime.c#L7) and [`Lwrite`](runtime64/runtime.c#L3)
 
-**How to submit tasks**:
+Now our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
+* [old] (`-i` option) direct interpretation of `.lama` files
+* [old] (`-s` option) compilation to SM and SM program interpretation
+* [new] (`-o` option) compilation to X86 (via SM)
 
-* fork the repo
-* implement the corresponding task (branches `T01`, `T02`, ...)
-* open pull-request with title `[<your_university>] <T#> <Your_Name> <Your_Surname>` to this repo to the branch with the corresponding task where
-  * `<your_university> ::= SPBGU | NUP | CUB | HSE | |ITMO`
-  * `<T#>` --- assignment number (the first three symbols of the corresponding branch name)
-* NB: your pr has to contain changes to files `*.lama` files from folder `src`
-* NB: be sure that all checks have passed
+Corresponding lecture notes: [Structural Control Flow Operators Semantics and Syntax Extensions](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/03.pdf),
+[Extended Stack Machine (for structural control flow)](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/04.pdf).
 
-All lecture notes are located in branch [lecture-notes](https://github.com/danyaberezun/compilers-supplementary/tree/lecture-notes/).
+**How to submit the task**:
+* For the first task: fork the repo (or switch to the corresponding branch and stretch your changes)
+* For the next tasks: merge your changes with updated files
+* implement the task
+* open pull-request to this repo to the branch with the corresponding task
+* NB: your pr has to contain changes to files `src/*.lama` only
+* NB: be sure that all checks have passed and opened pr is free of extra changes
 
-[This table](https://docs.google.com/spreadsheets/d/1Cs9XFVvEuXq3CaIk3YT9YF5EXpbkU0MjO4g-ajPKps8/edit?usp=sharing) contains results and deadlines in the corresponding sheets.
+**Standard deadline**: next lecture
+
+**Task**:
+
+* Support control flow operators:
+  + Extend parser
+  + Extend reference language interpreter
+  + Extend compilation to SM
+  + Extend SM with new instructions
+  + Extend compilation to X86_32
+
+**Compile and run tests (from the root folder)**:
+```bash
+make
+```
