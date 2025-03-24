@@ -5,7 +5,6 @@ import Collection;
 import List;
 import Buffer;
 import Fun;
-import Manifest;
 
 -- Assembler language interface
 -- The registers:
@@ -15,7 +14,7 @@ var regs = ["%rbx", "%rcx", "%rsi", "%rdi",
 	    "%r12", "%r13", "%r14", "%r15",
 	    "%rax", "%rdx", "%rbp", "%rsp"];
 
--- We can not freely operate with all register; only with 4 by now
+-- We can not freely operate with all register; only with 12 by now
 var nRegs = regs.length - 5;
 
 -- For convenience we define the following synonyms for the registers: 
@@ -85,7 +84,7 @@ fun insnString (insn) {
   }
   
   case insn of
-    Cltd               -> "\tcqo\n"
+    Cltd               -> "\tcltd\n"
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
   | Sal   (s)          -> sprintf ("\tsalq\t%s\n", s)
   | IDiv  (s1)         -> sprintf ("\tidivq\t%s\n", opndString (s1))
@@ -301,35 +300,80 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
           esac
+      | CONST (n) ->
+          case env.push (L (n)) of env -> [env, code]
+          esac  
+      | LD (variable) -> 
+          case env.addGlobal (variable).allocate of
+	          [s, env] -> [env, code <+> move (env.loc (variable), s)]
+	        esac
+      | ST (variable) ->
+          case env.addGlobal (variable).pop of
+	          [s, env] -> [env, code <+> move (s, env.loc (variable))]
+	        esac 
+      | BINOP (op) -> 
+        case env.pop2 of
+          [rightOperand, leftOperand, env] -> 
+            case env.allocate of 
+              [s, env] -> 
+                case op of
+                "!!" -> [env, code <+
+                            Mov (L (0), rdx) <+
+                            Mov (L (0), rax) <+
+                            Binop ("cmp", rightOperand, rax) <+
+                            Set ("ne", "%dl") <+
+                            Mov (L (0), rbx) <+
+                            Binop ("cmp", leftOperand, rax) <+
+                            Set ("ne", "%dh") <+
+                            Binop ("cmp", rdx, rax) <+
+                            Set ("ne", "%al") <+
+                            Mov (rax, s)]                      
+                  | "&&" -> [env, code <+
+                            Mov (L (0), rdx) <+
+                            Mov (L (0), rax) <+
+                            Binop ("cmp", rightOperand, rax) <+
+                            Set ("ne", "%dl") <+
+                            Binop ("cmp", leftOperand, rax) <+
+                            Set ("ne", "%dh") <+
+                            Mov (L (257), rax) <+
+                            Binop ("cmp", rdx, rax) <+
+                            Mov (L (0), rax) <+
+                            Set ("e", "%al") <+
+                            Mov (rax, s)]         
+                  | "+" -> [env, code <+ Mov (leftOperand, rax) <+ Binop ("+", rightOperand, rax) <+ Mov (rax, s)]
+                  | "-" -> [env, code <+ Mov (leftOperand, rax) <+ Binop ("-", rightOperand, rax) <+ Mov (rax, s)]
+                  | "*" -> [env, code <+ Mov (leftOperand, rbx) <+ Binop ("*", rightOperand, rbx) <+ Mov (rbx, s)]
+                  | "%" -> [env, code <+ Mov (leftOperand, rax) <+ Mov (L (0), rdx) <+ IDiv (rightOperand) <+ Mov (rdx, s)]
+                  | "/" -> [env, code <+ Mov (leftOperand, rax) <+ Mov (L (0), rdx) <+ IDiv (rightOperand) <+ Mov (rax, s)]
+                  | ">" -> [env, code <+ Binop ("cmp", rightOperand, leftOperand) <+ Mov (L (0), rax) <+ Set ("g", "%al") <+ Mov (rax, s)]
+                  | "<" -> [env, code <+ Binop ("cmp", rightOperand, leftOperand) <+ Mov (L (0), rax) <+ Set ("l", "%al") <+ Mov (rax, s)]
+                  | ">=" -> [env, code <+ Binop ("cmp", rightOperand, leftOperand) <+ Mov (L (0), rax) <+ Set ("ge", "%al") <+ Mov (rax, s)]
+                  | "<=" -> [env, code <+ Binop ("cmp", rightOperand, leftOperand) <+ Mov (L (0), rax) <+ Set ("le", "%al") <+ Mov (rax, s)]
+                  | "==" -> [env, code <+ Binop ("cmp", rightOperand, leftOperand) <+ Mov (L (0), rax) <+ Set ("e", "%al") <+ Mov (rax, s)]
+                  | "!=" -> [env, code <+ Binop ("cmp", rightOperand, leftOperand) <+ Mov (L (0), rax) <+ Set ("ne", "%al") <+ Mov (rax, s)]
+                  esac    
+              esac              
+          esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
+      esac
     }, [env, emptyBuffer ()], code)
 }
 
--- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
--- compiles the program into machine code, and compiles the machine code into an executable
-public fun compileX86 (args, code) {
+-- A top-level codegeneration function. Takes a stack machine program
+-- and returns x86 listing as a string
+public fun compileX86 (code) {
   case compile (initEnv (), code) of
     [env, code] ->
-       var asmFile = args.getBaseName ++ ".s",
-           runtime = case getEnv ("LAMA_RUNTIME") of
-                       #val  -> "../runtime64/"
-                     | path  -> path
-                     esac ++ "/runtime.o";
-       
-       fwrite (asmFile,
-               map (insnString, 
-                    getBuffer $
-                      singletonBuffer (Meta ("\t.global\tmain\n")) <+>
-                      dataSection (listBuffer $ map (dataDef, getGlobals (env))) <+>
-                      codeSection (
-                        singletonBuffer (Meta ("main:\n")) <+>
-                        prologue (getStackSize (env)) <+>
-                        code <+>
-                        epilogue ()
-                      )
-                    ).stringcat);
-                    
-       system ({"gcc -g -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
+       map (insnString, 
+            getBuffer $
+              singletonBuffer (Meta ("\t.global\tmain\n")) <+>
+              dataSection (listBuffer $ map (dataDef, getGlobals (env))) <+>
+              codeSection (
+                singletonBuffer (Meta ("main:\n")) <+>
+                prologue (getStackSize (env)) <+>
+                code <+>
+                epilogue ()
+              )
+           ).stringcat
   esac
 }
