@@ -4,6 +4,7 @@ USER root
 RUN dpkg --add-architecture i386 && \
     apt-get update --fix-missing -y && \
     apt-get install -y software-properties-common gcc-multilib make m4 && \
+    apt-get install pkg-config && \
     rm -rf /var/lib/apt/lists/*
 
 USER opam
