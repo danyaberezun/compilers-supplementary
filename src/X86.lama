@@ -41,7 +41,10 @@ var wordSize = 4;
 --   Cltd                       -- see instruction set reference           
 --   Set   (string, string)     -- sets a value from flags; the first operand is the   
 --                                 suffix, which determines the value being set, the
---                                 the second --- (sub)register name 
+--                                 the second --- (sub)register name
+--   Jmp   (string)             -- unconditional jump to a label
+--   CJmp  (string, string)     -- conditional jump to a label
+--   Label (string)             -- a label
 --   Push  (opnd)               -- pushes the operand on the hardware stack
 --   Pop   (opnd)               -- pops from the hardware stack to the operand
 --   Call  (string)             -- calls a function by its name 
@@ -82,6 +85,9 @@ fun insnString (insn) {
   | Pop   (s)          -> sprintf ("\tpopl\t%s\n", opndString (s))
   | Ret                -> "\tret\n"
   | Call  (p)          -> sprintf ("\tcall\t%s\n", p)
+  | Label (l)          -> sprintf ("%s:\n", l)
+  | Jmp   (l)          -> sprintf ("\tjmp\t%s\n", l)
+  | CJmp  (c, l)       -> sprintf ("\tj%s\t%s\n", c, l)
   | Meta  (m)          -> m
   esac
 }
@@ -158,7 +164,23 @@ fun makeEnv (stack, stackSlots, globals) {
     stackSlots
   }
 
-  [envString, allocate, push, pop, pop2, addGlobal, loc, getGlobals, getStackSize]
+  (* generates code that 
+     1. saves two caller-saved registers (ecx, edx),
+     2. adds @push_args_code,
+     3. calls function @func_name,
+     4. adds @addl_code
+     5. restores registers
+  *)
+  fun genCallF (func_name, push_args_code, addl_code) {
+    emptyBuffer() 
+      <+  Push (ecx) <+ Push (edx)
+      <+> push_args_code
+      <+  Call (func_name)
+      <+> addl_code
+      <+  Pop  (ecx) <+ Pop  (edx)
+  }
+
+  [envString, allocate, push, pop, pop2, addGlobal, loc, getGlobals, getStackSize, genCallF]
 }
 
 -- Exported accessors
@@ -198,9 +220,13 @@ fun getStackSize (env) {
   env [8] ()
 }
 
+fun genCallF (env, func_name, push_args_code, addl_code) {
+  env [9] (func_name, push_args_code, addl_code)
+}
+
 -- Creates an initial environment
 fun initEnv () {
-  makeEnv (0, 0, emptySet (compare))
+  makeEnv (0, emptySet (compare), emptySet (compare))
 }
 
 -- Codegeneration helper functions
@@ -288,7 +314,7 @@ fun binopType (op) {
   | "<=" -> "CMP" 
   | ">=" -> "CMP"
   | "&&" -> "AND"
-  | "!!" -> "NOT"
+  | "!!" -> "OR"
   esac
 }
 
@@ -317,44 +343,13 @@ fun compile (env, code) {
       case i of
         READ ->
           case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+            [s, env] -> [env, code <+> genCallF(env, "Lread", emptyBuffer(), emptyBuffer()) <+ Mov (eax, s)]
           esac             
       | WRITE ->
           case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+            [s, env] -> [env, code <+> genCallF(env, "Lwrite", singletonBuffer(Push(s)), singletonBuffer(Pop (eax)))]
           esac
-      | LD (x) ->
-          case env.addGlobal (x).allocate of
-            [s, env] -> [env, code <+> move (env.loc (x), s)]
-          esac
-      | ST (x) ->
-          case env.addGlobal (x).pop of
-            [s, env] -> [env, code <+> move (s, env.loc (x))]
-          esac
-      | CONST (x) ->
-          case env.allocate of
-            [s, env] -> [env, code <+> move (L (x), s)] 
-          esac
-      | BINOP (op) -> 
-          case env.pop2 of 
-            [s, t, env] ->
-                case binopType(op) of
-                    "ARITHM" -> compileArithm(env, op, code, s, t)
-                  | "CMP"    -> compileCmp(env, op, code, s, t)  
-                  | "DIV"    -> compileDivMod(env, op, eax, code, s, t)
-                  | "MOD"    -> compileDivMod(env, op, edx, code, s, t)
-                  | "AND" ->
-                      case env.allocate of
-                        [u, env] -> [env, code <+ Mov (L (0), edx) <+ Mov (L (0), eax) <+ Binop ("cmp", s, eax) <+  Set ("ne", "%dl") <+ Binop ("cmp", t, eax) <+  Set ("ne", "%dh") <+  Mov (L (257), eax) <+ Binop ("cmp", edx, eax) <+  Mov (L (0), eax) <+ Set ("e", "%al") <+ Mov (eax, u)]
-                      esac
-                  | "NOT" ->
-                      case env.allocate of 
-                        [u, env] -> [env, code <+ Mov (L (0), edx) <+ Mov (L (0), eax) <+ Binop ("cmp", s, eax) <+ Set ("ne", "%dl") <+ Binop ("cmp", t, eax) <+ Set ("ne", "%dh") <+ Binop ("cmp", edx, eax) <+ Set ("ne", "%al") <+ Mov (eax, u)]
-                      esac
-                  | _ -> failure("Compile error at binop %s\n", op)
-                esac
-          esac
-      | _ -> failure("Compile error at instruction %s\n", i.string)
+      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
 }
@@ -366,8 +361,8 @@ public fun compileX86 (args, code) {
     [env, code] ->
        var asmFile = args.getBaseName ++ ".s",
            runtime = case getEnv ("LAMA_RUNTIME") of
-                       #val  -> "../runtime/"
-                     | path  -> path
+                       #val -> "../runtime/"
+                     | path     -> path
                      esac ++ "/runtime.o";
        
        fwrite (asmFile,
@@ -380,8 +375,8 @@ public fun compileX86 (args, code) {
                         prologue (getStackSize (env)) <+>
                         code <+>
                         epilogue ()
-                      )
-                    ).stringcat);
+                    )
+                   ).stringcat);
                     
        system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
