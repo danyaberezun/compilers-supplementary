@@ -54,8 +54,26 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, c@[stack, state, w], insns) {
+  case insns of 
+    head:tail -> 
+      case head of
+        CONST (x) -> eval(env, [x:stack, state, w], tail)  
+        | READ -> let [n, newWorld] = readWorld(w) in eval(env, [n:stack, state, newWorld], tail)   
+        | WRITE -> let value:restStack = stack in eval(env, [restStack, state, writeWorld(value, w)], tail) 
+        | LD (x) -> eval(env, [state(x):stack, state, w], tail)
+        | ST (x) -> let value:restStack = stack in eval(env, [restStack, state <- [x, value], w], tail)
+        | BINOP (op) -> let second:first:restStack = stack in
+            eval(env, [evalExpr(state, Binop(op, Const(first), Const(second))) : restStack, state, w], tail)       
+        | LABEL (l) -> eval(env, c, tail)
+        | JMP (l) -> eval(env, c, fromLabel(env, l))
+        | CJMP ("nz", l) -> let first:restStack = stack in 
+            eval(env, [restStack, state, w], if first == 0 then tail else fromLabel(env, l) fi)
+        | CJMP ("z", l) -> let first:restStack = stack in 
+            eval(env, [restStack, state, w], if first == 0 then fromLabel(env, l) else tail fi)
+      esac
+    | {} -> c 
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -96,7 +114,11 @@ fun genLabels (env, n) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of
+    Var (name) -> singletonBuffer(LD (name))
+    | Const (value) -> singletonBuffer(CONST (value))
+    | Binop (op, left, right) -> compileExpr(left) <+> compileExpr(right) <+ BINOP (op)
+  esac  
 }
 
 -- Compiles a statement into a stack machine code.
@@ -128,16 +150,44 @@ public fun compileSM (stmt) {
     | Write (e)      -> [false, env, compileExpr (e) <+ WRITE]
     | Assn  (x, e)   -> [false, env, compileExpr (e) <+ ST (x)]
     | Seq   (s1, s2) ->
-        case env.genLabel of
-          [s2Lab, env] ->
-             case compile (s2Lab, env, s1) of
-               [s2LabUsed, env, s1Code] ->
-                  case compile (lab, env, s2) of
-                    [labUsed, env, s2Code] -> [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
-                  esac
-             esac
-        esac
-    | _              -> failure ("compileSM not implemented\n")
+        let [s2Lab, env] = env.genLabel in
+          let [s2LabUsed, env, s1Code] = compile (s2Lab, env, s1) in
+            let [labUsed, env, s2Code] = compile (lab, env, s2) in
+              [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
+    | If (expr, s1, s2) ->
+        let [elseLabel, env] = env.genLabel in
+          let [_, env, codeTrueCond] = compile (lab, env, s1) in
+            let [_, env, codeFalseCond] = compile (lab, env, s2) in
+              [true, env, 
+                compileExpr (expr) <+
+                CJMP ("z", elseLabel) <+> 
+                codeTrueCond <+
+                JMP (lab) <+ 
+                LABEL (elseLabel) <+> 
+                codeFalseCond
+              ]
+    | While (expr, s) ->
+        let [condLabel, bodyLabel, env] = env.genLabels (2) in
+          let [_, env, code] = compile (condLabel, env, s) in
+            [false, env,
+              singletonBuffer (JMP (condLabel)) <+
+              LABEL (bodyLabel) <+>
+              code <+
+              LABEL (condLabel) <+>
+              compileExpr (expr) <+
+              CJMP ("nz", bodyLabel)
+            ]
+    
+    | DoWhile (s, expr) ->
+        let [bodyLabel, env] = env.genLabel in
+          let [_, env, code] = compile (bodyLabel, env, s) in
+            [false, env,
+              label (bodyLabel, true) <+>
+              code <+>
+              compileExpr (expr) <+
+              CJMP ("nz", bodyLabel)
+            ]
+    | _  -> failure ("compileSM not implemented\n")
     esac
   }  
 
