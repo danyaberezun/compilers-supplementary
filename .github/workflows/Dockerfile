@@ -3,7 +3,7 @@ FROM ocaml/opam:ubuntu-lts-ocaml-4.14
 USER root
 RUN dpkg --add-architecture i386 && \
     apt-get update --fix-missing -y && \
-    apt-get install -y software-properties-common gcc-multilib make m4 pkg-config && \
+    apt-get install -y software-properties-common gcc-multilib make m4 pkg-config libpcre2-dev && \
     rm -rf /var/lib/apt/lists/*
 
 USER opam
