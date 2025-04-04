@@ -36,6 +36,13 @@ var rbx = R (0),
     rbp = R (14),
     rsp = R (15);
 
+-- Lama 1.3: crash after start if al, ah, dl, dh are directly initialized by string literals
+var regs8 = ["%al", "%ah", "%dl", "%dh"];
+var al = regs8[0],
+    ah = regs8[1],
+    dl = regs8[2],
+    dh = regs8[3];
+
 -- We need to know the word size to calculate offsets correctly
 var wordSize = 8;
 
@@ -133,7 +140,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
   -- returns a pair: a location for allocated item and
   -- an updated environment
   fun allocate () {
-    case 
+    case
       case stack of
         {}        -> [rbx, 0]
       | S (n) : _ -> [S (n+1), n+2]
@@ -212,6 +219,22 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
     esac
   }
 
+  -- Returns list of registers in stack which may be corrupted by callee function
+  -- x86_64: also adds padding reg if required
+  fun regsToSave () {
+    fun checkCell (cell) { 
+      case cell of
+        R (x) -> x > 0 && x < 8
+      | _ -> false
+      esac
+    }
+    
+    let buf = if stack.size >= 8 
+      then {rcx, rsi, rdi, r8, r9, r10, r11}
+      else filter (checkCell, stack) 
+      fi in if buf.size % 2 == 0 then buf else buf +++ {rax} fi
+}
+
   [envString,
    allocate,
    push,
@@ -225,7 +248,8 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
    isBarrier,
    setBarrier,
    setStack,
-   retrieveStack]
+   retrieveStack,
+   regsToSave]
 }
 
 -- Exported accessors
@@ -285,9 +309,13 @@ fun retrieveStack (env, l) {
   env [13] (l)
 }
 
+fun regsToSave (env) {
+  env [14] ()
+}
+
 -- Creates an initial environment
 fun initEnv () {
-  makeEnv (0, emptySet (compare), emptySet (compare), false, emptyMap (compare))
+  makeEnv ({}, 0, emptySet (compare), false, emptyMap (compare))
 }
 
 
@@ -311,7 +339,7 @@ fun dataDef (name) {
 fun prologue (size) {
   singletonBuffer (Push (rbp)) <+
   Mov   (rsp, rbp) <+
-  Binop ("-", L (wordSize*size), rsp)
+  Binop ("-", L ((wordSize+1)/2*2*size), rsp)
 }
 
 -- Generates function epilogue
@@ -335,6 +363,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -361,6 +390,15 @@ fun suffix (op) {
   esac
 }
 
+ fun genCallF (env, func_name, regsToSave, push_args_code, addl_code) {
+  emptyBuffer() 
+    <+> listBuffer (map (fun (r) { Push (r) }, regsToSave))
+    <+> push_args_code
+    <+  Call (func_name)
+    <+> addl_code
+    <+> listBuffer (map (fun (r) { Pop (r) }, regsToSave.reverse))
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -370,15 +408,84 @@ fun compile (env, code) {
         
       case i of
         READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (rax, s)]
-          esac             
+          let regs = env.regsToSave in 
+          let [s, env] = env.allocate in
+            [env, code <+> genCallF (env, "Lread", regs, emptyBuffer (), singletonBuffer (Mov (rax, s)))]           
       | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
-          esac
+          let [s, env] = env.pop in
+          let regs = env.regsToSave in
+            [env, code <+> genCallF (env, "Lwrite", regs, singletonBuffer (Mov (s, rdi)), emptyBuffer ())]
+      | LD (x) ->
+          let [s, env] = env.addGlobal (x).allocate in [env, code <+> move (env.loc (x), s)]
+      | ST (x) ->
+          let [s, env] = env.addGlobal (x).pop in [env, code <+> move (s, env.loc (x))]
+      | CONST (x) ->
+          let [s, env] = env.allocate in [env, code <+> move (L (x), s)]
+      | LABEL (l) -> let env = if env.isBarrier then env.retrieveStack (l) else env fi in [env, code <+ Label (l)]
+      | JMP (l) -> [env.setStack (l).setBarrier, code <+ Jmp (l)]
+      | CJMP (cc, l) -> let [s, env] = env.pop in [env.setStack (l).setBarrier, code <+ Binop ("cmp", L (0), s) <+ CJmp (cc, l)]
+      | BINOP (op) ->
+          let [y, x, env] = env.pop2 in
+            if memOpnd (x) && memOpnd (y) && op != "/" && op != "%" && op != "*" then 
+              code := code <+ Mov (y, rax);
+              y := rax
+            fi;
+            
+            code := code <+> case op of
+              "+"  -> singletonBuffer (Binop ("+", y, x))
+            | "-"  -> singletonBuffer (Binop ("-", y, x))
+            | "*"  -> 
+              if memOpnd (x) then 
+                singletonBuffer (Mov (x, rax)) <+ Binop ("*", y, rax) <+ Mov (rax, x)
+              else 
+                singletonBuffer (Binop ("*", y, x)) 
+              fi
+            | "&&" ->
+              singletonBuffer (Binop ("^", rax, rax)) -- rax = 0
+                <+ Binop ("^", rdx, rdx)              -- rdx = 0
+                <+ Binop ("cmp", L (0), x)            -- flags = compare(0, x)
+                <+ Set (suffix ("!="), al)            -- rax[7:0] = (0 != x)
+                <+ Binop ("cmp", L (0), y)            -- flags = compare(0, y)
+                <+ Set (suffix ("!="), ah)            -- rax[15:8] = (0 != y)
+                <+ Binop ("cmp", L (257), rax)        -- flags = compare(0x0101, rax)
+                <+ Set (suffix ("=="), dl)            -- rdx[7:0] = (0x0101 == rax)
+                <+ Mov (rdx, x)                       -- x = rdx
+            | "!!" ->
+              singletonBuffer (Binop ("^", rax, rax)) -- rax = 0
+                <+ Binop ("^", rdx, rdx)              -- rdx = 0
+                <+ Binop ("cmp", L (0), x)            -- flags = compare(0, x)
+                <+ Set (suffix ("!="), al)            -- rax[7:0] = (0 != x)
+                <+ Binop ("cmp", L (0), y)            -- flags = compare(0, y)
+                <+ Set (suffix ("!="), ah)            -- rax[15:8] = (0 != y)
+                <+ Binop ("cmp", L (0), rax)          -- flags = compare(0, rax)
+                <+ Set (suffix ("!="), dl)            -- rdx[7:0] = (0 != rax)
+                <+ Mov (rdx, x)                       -- x = rdx
+            | "/"  -> singletonBuffer (Mov (x, rax)) <+ Cltd <+ IDiv (y) <+ Mov (rax, x)
+            | "%"  -> singletonBuffer (Mov (x, rax)) <+ Cltd <+ IDiv (y) <+ Mov (rdx, x)
+            | _    ->
+              singletonBuffer (Binop ("^", rax, rax))
+                <+ Binop ("cmp", y, x)
+                <+ Set (suffix (op), al)
+                <+ Mov (rax, x)
+            esac;
+            
+            [env.push (x), code]
+      | LDA (x) -> let [s, env] = env.addGlobal (x).allocate in [env, code <+ Lea (env.loc (x), s)]
+      | STI -> 
+        let [v, ref, env] = env.pop2 in
+        let [vNew, env] = env.allocate in 
+          if memOpnd (ref) then
+            [env, code <+> move (ref, rdx) <+> move (v, I (0, rdx)) <+> move (v, vNew)]
+          else 
+           [env, code <+> move (v, I (0, ref)) <+> move (v, vNew)]
+          fi
+      | DROP -> let [_, env] = env.pop in [env, code]
+      | DUP -> 
+          let [x, env] = env.peek in 
+          let [s, env] = env.allocate in
+            [env, code <+> move (s, x)]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
+      esac
     }, [env, emptyBuffer ()], code)
 }
 
