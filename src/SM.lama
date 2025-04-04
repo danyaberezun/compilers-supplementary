@@ -78,6 +78,10 @@ fun eval (env, c, insns) {
     | LABEL (s)    -> [insns, c]
     | JMP   (l)    -> [env.fromLabel (l), c]
     | CJMP  (cc, l) -> let v:stack = stack in [if evalCc (cc, v) then env.fromLabel (l) else insns fi, [stack, s, w]]
+    | LDA   (x) -> [insns, [x:stack, s, w]]
+    | STI -> let v:x:stack = stack in [insns, [v:stack, s <- [x, v], w]]
+    | DROP -> let _:stack = stack in [insns, [stack, s, w]]
+    | DUP -> let v:_ = stack in [insns, [v:stack, s, w]]
     esac
   }
   var state = [insns, c];
@@ -123,21 +127,6 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
-fun compileExpr1 (expr, out) {
-  case expr of
-    Var (v)            -> addBuffer (out, LD (v))
-  | Const (x)          -> addBuffer (out, CONST (x))
-  | Binop (op, e1, e2) -> out := compileExpr1 (e1, out); 
-                          out := compileExpr1 (e2, out); 
-                          addBuffer(out, BINOP (op))
-  esac
-}
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
-fun compileExpr (expr) {
-  compileExpr1 (expr, emptyBuffer ())
-}
-
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
@@ -155,9 +144,21 @@ public fun compileSM (stmt) {
     | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
     | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | Read    (x)       -> [false, env, singletonBuffer (READ) <+ ST (x)]
-    | Write   (e)       -> [false, env, compileExpr (e) <+ WRITE]
-    | Assn    (x, e)    -> [false, env, compileExpr (e) <+ ST (x)]
+    | Read    (e)       -> 
+        let [eLab, env] = env.genLabel in
+        let [eLabUsed, env, eCode] = compile (eLab, env, e) in
+          [false, env, eCode <+> label (eLab, eLabUsed) <+ READ <+ STI <+ DROP]
+    | Write   (e)       -> 
+        let [eLab, env] = env.genLabel in
+        let [eLabUsed, env, eCode] = compile (eLab, env, e) in
+          [false, env, eCode <+> label (eLab, eLabUsed) <+ WRITE]
+    | Assn    (t, e)    ->
+        let [tLab, env] = env.genLabel in
+        let [tLabUsed, env, tCode] = compile (tLab, env, t) in
+        let [eLab, env] = env.genLabel in
+        let [eLabUsed, env, eCode] = compile (eLab, env, e) in
+        let code = tCode <+> label (tLab, tLabUsed) <+> eCode <+> label (eLab, eLabUsed) <+ STI in
+          [false, env, code]
     | Seq     (s1, s2)  ->
         case env.genLabel of
           [s2Lab, env] ->
@@ -169,21 +170,37 @@ public fun compileSM (stmt) {
              esac
         esac
     | If      (cond, p, f) -> 
+        let [condLab, env] = env.genLabel in
+        let [condLabUsed, env, condCode] = compile (condLab, env, cond) in
         let [negLab, env] = env.genLabel in
         let [_, env, posCode] = compile (lab, env, p) in
         let [_, env, negCode] = compile (lab, env, f) in
-        let code = compileExpr (cond) <+ CJMP ("z", negLab) 
+        let code = condCode <+> label (condLab, condLabUsed) <+ CJMP ("z", negLab) 
                    <+> posCode <+ JMP (lab)  
                    <+ LABEL (negLab) <+> negCode in
           [true, env, code]
     | While   (cond, b) -> compile (lab, env, If (cond, DoWhile (cond, b), Skip))
     | DoWhile (cond, b) ->
-        let [loopLab, env] = env.genLabel in
         let [condLab, env] = env.genLabel in
-        let [condLabUsed, env, bCode] = compile (condLab, env, b) in
+        let [condLabUsed, env, condCode] = compile (condLab, env, cond) in
+        let [loopLab, env] = env.genLabel in
+        let [contLab, env] = env.genLabel in
+        let [contLabUsed, env, bCode] = compile (contLab, env, b) in
         let code = label (loopLab, true) <+> bCode 
-                   <+> label (condLab, condLabUsed) <+> compileExpr (cond) <+ CJMP ("nz", loopLab)  in
+                   <+> label (contLab, contLabUsed) 
+                   <+> condCode <+> label (condLab, condLabUsed) <+ CJMP ("nz", loopLab)  in
           [false, env, code]
+    | Binop (op, e1, e2) -> 
+        let [e1Lab, env] = env.genLabel in
+        let [e1LabUsed, env, e1Code] = compile (e1Lab, env, e1) in
+        let [e2Lab, env] = env.genLabel in
+        let [e2LabUsed, env, e2Code] = compile (e2Lab, env, e2) in
+        let code = e1Code <+> label (e1Lab, e1LabUsed) <+> e2Code <+> label (e2Lab, e2LabUsed) <+ BINOP (op) in
+          [false, env, code]
+    | Ignore  (e) -> 
+        let [eLab, env] = env.genLabel in
+        let [eLabUsed, env, eCode] = compile (eLab, env, e) in
+          [false, env, eCode <+ DROP]
     esac
   }
 

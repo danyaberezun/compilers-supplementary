@@ -219,6 +219,22 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
     esac
   }
 
+  -- Returns list of registers in stack which may be corrupted by callee function
+  -- x86_64: also adds padding reg if required
+  fun regsToSave () {
+    fun checkCell (cell) { 
+      case cell of
+        R (x) -> x > 0 && x < 8
+      | _ -> false
+      esac
+    }
+    
+    let buf = if stack.size >= 8 
+      then {rcx, rsi, rdi, r8, r9, r10, r11}
+      else filter (checkCell, stack) 
+      fi in if buf.size % 2 == 0 then buf else buf +++ {rax} fi
+}
+
   [envString,
    allocate,
    push,
@@ -232,7 +248,8 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
    isBarrier,
    setBarrier,
    setStack,
-   retrieveStack]
+   retrieveStack,
+   regsToSave]
 }
 
 -- Exported accessors
@@ -292,9 +309,13 @@ fun retrieveStack (env, l) {
   env [13] (l)
 }
 
+fun regsToSave (env) {
+  env [14] ()
+}
+
 -- Creates an initial environment
 fun initEnv () {
-  makeEnv (0, emptySet (compare), emptySet (compare), false, emptyMap (compare))
+  makeEnv ({}, 0, emptySet (compare), false, emptyMap (compare))
 }
 
 
@@ -318,7 +339,7 @@ fun dataDef (name) {
 fun prologue (size) {
   singletonBuffer (Push (rbp)) <+
   Mov   (rsp, rbp) <+
-  Binop ("-", L (wordSize*size), rsp)
+  Binop ("-", L ((wordSize+1)/2*2*size), rsp)
 }
 
 -- Generates function epilogue
@@ -342,6 +363,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -368,6 +390,15 @@ fun suffix (op) {
   esac
 }
 
+ fun genCallF (env, func_name, regsToSave, push_args_code, addl_code) {
+  emptyBuffer() 
+    <+> listBuffer (map (fun (r) { Push (r) }, regsToSave))
+    <+> push_args_code
+    <+  Call (func_name)
+    <+> addl_code
+    <+> listBuffer (map (fun (r) { Pop (r) }, regsToSave.reverse))
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -377,18 +408,22 @@ fun compile (env, code) {
         
       case i of
         READ ->
-          let [s, env] = env.allocate in [env, code <+ Call ("Lread") <+ Mov (rax, s)]
+          let regs = env.regsToSave in 
+          let [s, env] = env.allocate in
+            [env, code <+> genCallF (env, "Lread", regs, emptyBuffer (), singletonBuffer (Mov (rax, s)))]           
       | WRITE ->
-          let [s, env] = env.pop in [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
+          let [s, env] = env.pop in
+          let regs = env.regsToSave in
+            [env, code <+> genCallF (env, "Lwrite", regs, singletonBuffer (Mov (s, rdi)), emptyBuffer ())]
       | LD (x) ->
           let [s, env] = env.addGlobal (x).allocate in [env, code <+> move (env.loc (x), s)]
       | ST (x) ->
           let [s, env] = env.addGlobal (x).pop in [env, code <+> move (s, env.loc (x))]
       | CONST (x) ->
           let [s, env] = env.allocate in [env, code <+> move (L (x), s)]
-      | LABEL (l) -> [env, code <+ Label (l)]
-      | JMP (l) -> [env, code <+ Jmp (l)]
-      | CJMP (cc, l) -> let [s, env] = env.pop in [env, code <+ Binop ("cmp", L (0), s) <+ CJmp (cc, l)]
+      | LABEL (l) -> let env = if env.isBarrier then env.retrieveStack (l) else env fi in [env, code <+ Label (l)]
+      | JMP (l) -> [env.setStack (l).setBarrier, code <+ Jmp (l)]
+      | CJMP (cc, l) -> let [s, env] = env.pop in [env.setStack (l).setBarrier, code <+ Binop ("cmp", L (0), s) <+ CJmp (cc, l)]
       | BINOP (op) ->
           let [y, x, env] = env.pop2 in
             if memOpnd (x) && memOpnd (y) && op != "/" && op != "%" && op != "*" then 
@@ -435,8 +470,22 @@ fun compile (env, code) {
             esac;
             
             [env.push (x), code]
+      | LDA (x) -> let [s, env] = env.addGlobal (x).allocate in [env, code <+ Lea (env.loc (x), s)]
+      | STI -> 
+        let [v, ref, env] = env.pop2 in
+        let [vNew, env] = env.allocate in 
+          if memOpnd (ref) then
+            [env, code <+> move (ref, rdx) <+> move (v, I (0, rdx)) <+> move (v, vNew)]
+          else 
+           [env, code <+> move (v, I (0, ref)) <+> move (v, vNew)]
+          fi
+      | DROP -> let [_, env] = env.pop in [env, code]
+      | DUP -> 
+          let [x, env] = env.peek in 
+          let [s, env] = env.allocate in
+            [env, code <+> move (s, x)]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
+      esac
     }, [env, emptyBuffer ()], code)
 }
 

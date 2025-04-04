@@ -206,6 +206,21 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
     esac
   }
 
+  -- Returns list of registers in stack which may be corrupted by callee function
+  fun regsToSave () {
+    fun checkCell (cell) { 
+      case cell of
+        R (x) -> x > 0 && x < 3
+      | _ -> false
+      esac
+    }
+    
+    if stack.size > 3 
+    then {ecx, esi}
+    else filter (checkCell, stack) 
+    fi
+}
+
   [envString,
    allocate,
    push,
@@ -219,7 +234,8 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
    isBarrier,
    setBarrier,
    setStack,
-   retrieveStack]
+   retrieveStack,
+   regsToSave]
 }
 
 -- Exported accessors
@@ -279,9 +295,12 @@ fun retrieveStack (env, l) {
   env [13] (l)
 }
 
+fun regsToSave (env) {
+  env [14] ()
+}
 -- Creates an initial environment
 fun initEnv () {
-  makeEnv (0, emptySet (compare), emptySet (compare), false, emptyMap (compare))
+  makeEnv ({}, 0, emptySet (compare), false, emptyMap (compare))
 }
 
 -- Codegeneration helper functions
@@ -328,6 +347,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -354,6 +374,15 @@ fun suffix (op) {
   esac
 }
 
+ fun genCallF (env, func_name, regsToSave, push_args_code, addl_code) {
+  emptyBuffer() 
+    <+> listBuffer (map (fun (r) { Push (r) }, regsToSave))
+    <+> push_args_code
+    <+  Call (func_name)
+    <+> addl_code
+    <+> listBuffer (map (fun (r) { Pop (r) }, regsToSave.reverse))
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -363,22 +392,22 @@ fun compile (env, code) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
         case i of
           READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
+            let regs = env.regsToSave in 
+            let [s, env] = env.allocate in
+              [env, code <+> genCallF (env, "Lread", regs, emptyBuffer (), singletonBuffer (Mov (eax, s)))]           
         | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-            esac
+            let [s, env] = env.pop in
+            let regs = env.regsToSave in
+              [env, code <+> genCallF (env, "Lwrite", regs, singletonBuffer (Push (s)), singletonBuffer (Pop (eax)))]
         | LD (x) ->
             let [s, env] = env.addGlobal (x).allocate in [env, code <+> move (env.loc (x), s)]
         | ST (x) ->
             let [s, env] = env.addGlobal (x).pop in [env, code <+> move (s, env.loc (x))]
         | CONST (x) ->
             let [s, env] = env.allocate in [env, code <+> move (L (x), s)]
-        | LABEL (l) -> [env, code <+ Label (l)]
-        | JMP (l) -> [env, code <+ Jmp (l)]
-        | CJMP (cc, l) -> let [s, env] = env.pop in [env, code <+ Binop ("cmp", L (0), s) <+ CJmp (cc, l)]
+        | LABEL (l) -> let env = if env.isBarrier then env.retrieveStack (l) else env fi in [env, code <+ Label (l)]
+        | JMP (l) -> [env.setStack (l).setBarrier, code <+ Jmp (l)]
+        | CJMP (cc, l) -> let [s, env] = env.pop in [env.setStack (l).setBarrier, code <+ Binop ("cmp", L (0), s) <+ CJmp (cc, l)]
         | BINOP (op) ->
             let [y, x, env] = env.pop2 in
               if memOpnd (x) && memOpnd (y) && op != "/" && op != "%" && op != "*" then 
@@ -426,6 +455,20 @@ fun compile (env, code) {
               
               [env.push (x), code]
     
+        | LDA (x) -> let [s, env] = env.addGlobal (x).allocate in [env, code <+ Lea (env.loc (x), s)]
+        | STI -> 
+          let [v, ref, env] = env.pop2 in
+          let [vNew, env] = env.allocate in 
+            if memOpnd (ref) then
+              [env, code <+> move (ref, edx) <+> move (v, I (0, edx)) <+> move (v, vNew)]
+            else 
+            [env, code <+> move (v, I (0, ref)) <+> move (v, vNew)]
+            fi
+        | DROP -> let [_, env] = env.pop in [env, code]
+        | DUP -> 
+            let [x, env] = env.peek in 
+            let [s, env] = env.allocate in
+              [env, code <+> move (s, x)]
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
@@ -441,7 +484,7 @@ public fun compileX86 (args, code) {
     [env, code] ->
        var asmFile = args.getBaseName ++ ".s",
            runtime = case getEnv ("LAMA_RUNTIME") of
-                       #val -> "../runtime/"
+                       #val -> "../runtime32/"
                      | path -> path
                      esac ++ "/runtime.o";
        
