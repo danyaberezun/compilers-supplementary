@@ -274,7 +274,7 @@ fun retrieveStack (env, l) {
 
 -- Creates an initial environment
 fun initEnv () {
-  makeEnv (0, emptySet (compare), emptySet (compare), false, emptyMap (compare))
+  makeEnv ({}, 0, emptySet (compare), false, emptyMap (compare))
 }
 
 -- Codegeneration helper functions
@@ -319,9 +319,10 @@ fun stackOpnd (opnd) {
 -- Checks if an operand resides in memory
 fun memOpnd (opnd) {
   case opnd of
-    S (_) -> true
-  | M (_) -> true
-  | _     -> false
+    S (_)    -> true
+  | M (_)    -> true
+  | I (_, _) -> true
+  | _        -> false
   esac
 }
 
@@ -350,25 +351,62 @@ fun suffix (op) {
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  fun compile (env, code) {
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-            esac
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-      }, [env, emptyBuffer ()], code)
-  }
-
-  compile (env, code) 
+  foldl (
+    fun ([env, scode], i) {
+      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+        
+      case i of
+        READ ->
+          let [s, env] = env.allocate in
+          [env, code <+ Call ("Lread") <+ Mov (eax, s)]       
+      | WRITE ->
+          let [s, env] = env.pop in
+          [env, code <+ Mov (s, edi) <+ Call ("Lwrite")]
+      | BINOP (op) ->
+          let [s1, env] = env.pop in
+          let [s2, env] = env.pop in
+          let [s , env] = env.allocate in
+          case op of
+            "/"  -> [env, code <+ Mov (s2, eax) <+ Cltd <+ IDiv (s1) <+ Mov (eax, s)]
+          | "%"  -> [env, code <+ Mov (s2, eax) <+ Cltd <+ IDiv (s1) <+ Mov (edx, s)]
+          | "&&" -> [env, code <+ Binop ("cmp", L (0), s1) <+ Set ("ne", "%al") <+ Binop ("&&", L (1), eax) <+ Binop ("cmp", L (0), s2) <+ Set ("ne", "%dl") <+ Binop ("&&", L (1), edx) <+ Binop ("&&", edx, eax) <+ Mov (eax, s)]
+          | "!!" -> [env, code <+ Binop ("cmp", L (0), s1) <+ Set ("ne", "%al") <+ Binop ("&&", L (1), eax) <+ Binop ("cmp", L (0), s2) <+ Set ("ne", "%dl") <+ Binop ("&&", L (1), edx) <+ Binop ("!!", edx, eax) <+ Mov (eax, s)]
+          | _    -> case assoc ({ ["<", 0], ["<=", 0], ["==", 0], ["!=", 0], [">=", 0], [">", 0] }, op) of
+                      None     -> [env, code <+ Binop (op, s1, s2) <+ Mov (s2, s)]
+                    | Some (_) -> [env, code <+ Binop ("cmp", s1, s2) <+ Set (suffix (op), "%al") <+ Binop ("&&", L (1), eax) <+ Mov (eax, s)]
+                    esac
+          esac
+      | LD (x) ->
+          let [s, env] = env.addGlobal (x).allocate in
+          [env, code <+> move (env.loc (x), s)]
+      | LDA (x) ->
+          let [s, env] = env.addGlobal (x).allocate in
+          [env, code <+ Lea (env.loc (x), s)]
+      | ST (x) ->
+          let [s, env] = env.addGlobal (x).pop in
+          [env, code <+> move (s, env.loc (x))]
+      | STI ->
+          let [sa, env] = env.pop in
+          let sx = env.peek in
+          [env, code <+> move (sx, I (0, sa))]
+      | CONST (n) ->
+          let [s, env] = env.allocate in
+          [env, code <+ Mov (L (n), s)]
+      | LABEL (l) -> [env, code <+ Label (l)]
+      | JMP (l) -> [env, code <+ Jmp (l)]
+      | CJMP (c, l) -> 
+          let [s, env] = env.pop in
+          [env, code <+ Binop ("cmp", L (0), s) <+ CJmp (c, l)]
+      | DUP ->
+          let s = env.peek in
+          let [s1, env] = env.allocate in
+          [env, code <+ Mov (s, s1)]
+      | DROP ->
+          let [_, env] = env.pop in
+          [env, code]
+      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      esac
+    }, [env, emptyBuffer ()], code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,

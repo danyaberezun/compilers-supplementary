@@ -59,8 +59,56 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, [stack, state, world], insns) {
+  -- DEBUG
+  -- failure (showSM (insns));
+
+  case insns of
+    {} -> [stack, state, world]
+  | insn:insnsT ->
+    case insn of
+      READ -> eval (env, let [varRed, newWorld] = readWorld (world)
+                          in [varRed:stack, state, newWorld], insnsT)
+    | WRITE -> eval (env, case stack of
+        {} -> failure( "WRITE: stack empty\n")
+      | s:stackT -> [stackT, state, writeWorld (s, world)]
+      esac, insnsT)
+    | BINOP (op) -> eval (env, case stack of
+        {} -> failure ("BINOP: stack empty\n")
+      | {i} -> failure ("BINOP: stack size is 1\n")
+      | i:j:stackT -> [evalOp (op, j, i):stackT, state, world]
+      esac, insnsT)
+    | LD (x) -> eval (env, [state (x):stack, state, world], insnsT)
+    | LDA (x) -> eval (env, [x:stack, state, world], insnsT) -- злоупотребляем динамической типизацией :)
+    | ST (x) -> eval (env, case stack of
+        {} -> failure ("ST: stack empty\n")
+      | i:stackT -> [stackT, state <- [x, i], world]
+      esac, insnsT)
+    | STI -> eval (env, case stack of
+        {} -> failure ("STI: stack empty\n")
+      | {_} -> failure ("STI: stack size is 1\n")
+      | x:i:stackT -> [i:stackT, state <- [x, i], world]
+      esac, insnsT)
+    | CONST (i) -> eval (env, [i:stack, state, world], insnsT)
+    | LABEL (s) -> eval (env, [stack, state, world], insnsT)
+    | JMP (l) -> eval (env, [stack, state, world], env.fromLabel(l))
+    | CJMP (c, l) -> eval (env, [stack, state, world], case stack of
+        {} -> failure ("CJMP: stack empty\n")
+      | i:stackT -> if (compare (c, "z") == 0) == (i == 0)
+                    then env.fromLabel(l)
+                    else insnsT fi
+      esac)
+    | DUP -> eval (env, case stack of
+        {} -> failure ("DUP: stack empty\n")
+      | i:stackT -> [i:i:stackT, state, world]
+      esac, insnsT)
+    | DROP -> eval (env, case stack of
+        {} -> failure ("DROP: stack empty\n")
+      | _:stackT -> [stackT, state, world]
+      esac, insnsT)
+    | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", insn)
+    esac
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -109,13 +157,64 @@ public fun compileSM (stmt) {
     fi
   }
   
+-- expr = Ignore  (expr)
   fun compile (lab, env, stmt) {
     case stmt of
-      Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 ->  failure ("compileSM not implemented\n")
+      Assn (ea, ev)      ->
+        -- assignment is evaluated from right to left
+        let [vlab, env] = env.genLabel in
+        let [alab, env] = env.genLabel in
+        let [vlabUsed, env, vcode] = compile (vlab, env, ev) in
+        let [alabUsed, env, acode] = compile (alab, env, ea) in
+        [false, env, vcode <+> label (vlab, vlabUsed) <+> acode <+> label (alab, alabUsed) <+ STI]
+    | Seq (e1, e2)       ->
+        let [lab1, env] = env.genLabel in
+        let lab2 = lab in
+        let [lab1Used, env, code1] = compile (lab1, env, e1) in
+        let [lab2Used, env, code2] = compile (lab2, env, e2) in
+        [lab2Used, env, code1 <+> label (lab1, lab1Used) <+> code2] -- +lab2?
+    | Skip               -> [false, env, emptyBuffer ()]
+    | Read (x)           -> [false, env, singletonBuffer (READ) <+ ST (x)]
+    | Write (e)          ->
+        let [lab1, env] = env.genLabel in
+        let [lab1Used, env, code] = compile (lab1, env, e) in
+        [false, env, code <+> label (lab1, lab1Used) <+ WRITE]
+    | If (ec, et, ef)    ->
+        let tlab = lab in
+        let [flab, env] = env.genLabel in
+        let [clab, env] = env.genLabel in
+        let [clabUsed, env, ccode] = compile (clab, env, ec) in
+        let [_, env, tcode] = compile (tlab, env, et) in
+        let [_, env, fcode] = compile (tlab, env, ef) in
+        [true, env, ccode <+> label (clab, clabUsed) <+ CJMP ("z", flab) <+> tcode <+ JMP (tlab) <+ LABEL (flab) <+> fcode] -- +tlab
+    | While (ec, ed)     ->
+        let blab = lab in
+        let [rlab, env] = env.genLabel in
+        let [clab, env] = env.genLabel in
+        let [clabUsed, env, ccode] = compile (clab, env, ec) in
+        let [_, env, dcode] = compile (rlab, env, ed) in
+        [true, env, label (rlab, true) <+> ccode <+> label (clab, clabUsed) <+ CJMP ("z", blab) <+> dcode <+ JMP (rlab)] -- +blab
+    | DoWhile (ed, ec)    ->
+        let [rlab, env] = env.genLabel in
+        let [clab, env] = env.genLabel in
+        let [dlab, env] = env.genLabel in
+        let [dlabUsed, env, dcode] = compile (dlab, env, ed) in
+        let [clabUsed, env, ccode] = compile (clab, env, ec) in
+        [false, env, label (rlab, true) <+> dcode <+> label (dlab, dlabUsed) <+> ccode <+> label (clab, clabUsed) <+ CJMP ("nz", rlab)]
+    | Var (x)            -> [false, env, singletonBuffer (LD (x))]
+    | Ref (x)            -> [false, env, singletonBuffer (LDA (x))]
+    | Const (n)          -> [false, env, singletonBuffer (CONST (n))]
+    | Binop (op, el, er) ->
+        let [llab, env] = env.genLabel in
+        let [rlab, env] = env.genLabel in
+        let [llabUsed, env, lcode] = compile (llab, env, el) in
+        let [rlabUsed, env, rcode] = compile (rlab, env, er) in
+        [false, env, lcode <+> label (llab, llabUsed) <+> rcode <+> label (rlab, rlabUsed) <+ BINOP (op)]
+    | Ignore (e)         ->
+        let [lab1, env] = env.genLabel in
+        let [lab1Used, env, code] = compile (lab1, env, e) in
+        [false, env, code <+> label (lab1, lab1Used) <+ DROP]
+    | _                  -> failure (sprintf ("compileSM for %s is not implemented\n", stmt.string))
     esac
   }
 
