@@ -361,6 +361,10 @@ fun suffix (op) {
   esac
 }
 
+var integerBinops = {"+", "-", "*"}.listSet(compare);
+var compareBinops = {">", ">=", "<", "<=", "==", "!="}.listSet(compare);
+var booleanBinops = {"&&", "!!"}.listSet(compare);
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -369,17 +373,61 @@ fun compile (env, code) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
         
       case i of
-        READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (rax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
-          esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-    }, [env, emptyBuffer ()], code)
+        READ -> let [s, env] = allocate(env) in [env, code <+ Call("Lread") <+ Mov(rax, s)]
+      | WRITE -> let [s, env] = pop(env) in [env, code <+ Mov(s, rdi) <+ Call("Lwrite")]
+      | LD (x) -> let [s, env] = allocate(env) in [addGlobal(env, x), code <+> move(loc(env, x), s)]
+      | CONST (n) -> let [s, env] = allocate(env) in [env, code <+ Mov(L(n), s)]
+      | ST (x) -> let [s, env] = pop(addGlobal(env, x)) in [push(env, loc(env, x)), code <+> move(s, loc(env, x))]
+      | BINOP (op) -> 
+        let [y, x, env] = pop2(env) in (
+          let [s, env] = allocate(env) in (
+              if integerBinops.memSet(op) then
+                [env, code <+ Mov(x, rax) <+ Binop(op, y, rax) <+ Mov(rax, s)]
+              elif compareBinops.memSet(op) then
+                [env, code <+ Mov(x, rax) <+ Binop("cmp", y, rax) <+ Set(op.suffix, "%al") <+ Binop("&&", L(1), rax) <+ Mov(rax, s)]
+              elif booleanBinops.memSet(op) then
+                [env, code <+ Binop("cmp", L(0), y) <+ Set("!=".suffix, "%al") <+ Mov(rax, y)
+                             <+ Binop("cmp", L(0), x) <+ Set("!=".suffix, "%al")
+                             <+ Binop(op, y, rax) <+ Binop("&&", L(1), rax) <+ Mov(rax, s)]
+              else
+                  case op of
+                  "/" -> [env, code <+ Mov(x, rax) <+ Cltd <+ IDiv(y) <+ Mov(rax, s)]
+                  | "%" -> [env, code <+ Mov(x, rax) <+ Cltd <+ IDiv(y) <+ Mov(rdx, s)]
+                  | _   -> failure("Binop %s is not supported\n", op)
+                  esac
+              fi
+          )
+        )
+      | LABEL (lab) -> if isBarrier(env)
+                       then [retrieveStack(env, lab), code <+ Label(lab)]
+                       else [env, code <+ Label(lab)]
+                       fi
+      | JMP (lab) -> [setBarrier(setStack(env, lab)), code <+ Jmp(lab)]
+      | CJMP (con, lab) -> let [s, env] = pop(env) in [setStack(env, lab), code <+ Binop("cmp", L(0), s) <+ CJmp(con, lab)]
+      | LDA (x) -> let [s, env] = allocate(addGlobal(env, x)) in [env, code <+> (
+                                                                                  if memOpnd(s)
+                                                                                  then (singletonBuffer(Lea(loc(env, x), rax)) <+ Mov(rax, s))
+                                                                                  else singletonBuffer(Lea(loc(env, x), s))
+                                                                                  fi
+                                                                                )]
+      | STI -> let [v, r, env] = pop2(env) in [push(env, v), code <+> (
+                                                                        if memOpnd(v)
+                                                                        then
+                                                                          if memOpnd(r)
+                                                                          then singletonBuffer(Mov(v, rax)) <+> singletonBuffer(Mov(r, rdx)) <+ Mov(rax, I(0, rdx))
+                                                                          else singletonBuffer(Mov(v, rax)) <+> singletonBuffer(Mov(rax, I(0, r)))
+                                                                          fi
+                                                                        else
+                                                                          if memOpnd(r)
+                                                                          then singletonBuffer(Mov(r, rdx)) <+ Mov(v, I(0, rdx))
+                                                                          else singletonBuffer(Mov(v, I(0, r)))
+                                                                          fi
+                                                                        fi
+                                                                      )]
+      | DROP -> [pop(env)[1], code]
+      | _ -> [env, code]
+    esac
+    }, [env, emptyBuffer()], code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
