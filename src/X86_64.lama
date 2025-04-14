@@ -361,115 +361,88 @@ fun suffix (op) {
   esac
 }
 
-fun binopType (op) {
-  case op of
-    "+" -> "ARITHM"
-  | "-" -> "ARITHM"
-  | "*" -> "ARITHM"
-  | "^" -> "ARITHM"
-  | "/" -> "DIV"
-  | "%" -> "MOD"
-  | "<" -> "CMP"
-  | ">"  -> "CMP"
-  | "!=" -> "CMP" 
-  | "==" -> "CMP" 
-  | "<=" -> "CMP" 
-  | ">=" -> "CMP"
-  | "&&" -> "AND"
-  | "!!" -> "OR"
-  esac
-}
-
-fun compileArithm (env, op, code, s, t) {
-  case allocate (env) of
-    [u, env] -> [env, code <+ Mov (t, rax) <+ Binop (op, s, rax) <+ Mov (rax, u)]
-  esac
-}
-
-fun compileCmp (env, op, code, s, t) {
-  case allocate (env) of
-    [u, env] -> [env, code <+ Mov (t, rax) <+ Binop ("cmp", s, rax) <+ Set(suffix (op), "%al") <+ Binop("&&", L(1), rax) <+ Mov(rax, u)]
-  esac
-}
-
-fun compileDivMod (env, op, reg, code, s, t) {
-  case allocate (env) of
-    [u, env] -> [env, code <+ Mov (t, rax) <+ Cltd <+ IDiv (s) <+ Mov (reg, u)]
-  esac
-}
-
-fun compileAndOr (env, op, code, s, t) {
-  case allocate (env) of
-    [u, env] -> [env, code <+ Binop ("cmp", L (0), s) <+ Set (suffix ("!="), "%al") <+ Mov (rax, s) <+ Binop ("cmp", L (0), t) <+ Set (suffix ("!="), "%al") <+ Binop (op, s, rax) <+ Binop ("&&", L (1), rax) <+ Mov (rax, u)]
-  esac
-}
-
--- Compiles stack machine code into a list of x86 instructions. Takes an environment
--- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        
       case i of
-        READ ->
+        READ -> 
           case allocate (env) of
             [s, env] -> [env, code <+ Call ("Lread") <+ Mov (rax, s)]
-          esac             
-      | WRITE ->
+          esac
+      | WRITE ->  
           case pop (env) of
             [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
           esac
-      | LD (x) ->
-          case allocate (addGlobal (env, x)) of
-            [s, env] -> [env, code <+> move (env.loc (x), s)]
+      | BINOP(s) -> 
+          case s of
+            "+" -> simpleBinop("+", env, code)
+            | "-" -> simpleBinop("-", env, code)
+            | "*" -> mulBinop("*", env, code)
+            | "/" -> divModBinop (env, code, rax)
+            | "%" -> divModBinop (env, code, rdx)
+            | "==" -> compareBinop ("==", env, code)
+            | "!=" -> compareBinop ("!=", env, code)
+            | "<=" -> compareBinop ("<=", env, code)
+            | ">=" -> compareBinop (">=", env, code)
+            | "<" -> compareBinop ("<", env, code)
+            | ">" -> compareBinop (">", env, code)
+            | "!!" -> 
+              case pop2 (env) of
+                [x, y, env] -> [push (env, y), code <+ Binop ("^", rax, rax) <+ Binop ("^", rdx, rdx) <+ Binop ("cmp", L (0), y) <+ Set (suffix ("!="), "%al") <+ Binop ("cmp", L (0), x) <+ Set (suffix ("!="), "%dl") <+ Binop ("!!", rax, rdx) <+ Mov (rdx, y)]
+              esac
+            | "&&" -> 
+              case pop2 (env) of
+                [x, y, env] -> [push (env, y), code <+ Binop ("^", rax, rax) <+ Binop ("^", rdx, rdx) <+ Binop ("cmp", L (0), y) <+ Set (suffix ("!="), "%al") <+ Binop ("cmp", L (0), x) <+ Set (suffix ("!="), "%dl") <+ Binop ("&&", rax, rdx) <+ Mov (rdx, y)]
+              esac
           esac
-      | LDA (x) -> 
-          case allocate (addGlobal (env, x)) of 
-            [s, env] -> [env, code <+ Lea (env.loc (x), s)] 
-          esac
-      | DUP -> 
-          case peek (env) of top -> case allocate (env) of 
-            [s, env] -> [env, code <+> move (top, s)] 
-          esac esac
-      | DROP -> 
-          case pop (env) of 
-            [_, env] -> [env, code] 
-          esac
-      | STI -> 
-          case pop2 (env) of [first, second, env] -> case allocate (env) of
-            [s, env] -> [env, code <+> move (first, I (0, second)) <+> move (first, s)]
-          esac esac
-      | ST (x) ->
-          case pop (addGlobal (env, x)) of
-            [s, env] -> [env, code <+> move (s, env.loc (x))]
-          esac
-      | CONST (x) ->
-          case allocate (env) of
-            [s, env] -> [env, code <+> move (L (x), s)] 
-          esac
-      | BINOP (op) -> 
-          case pop2 (env) of 
-            [s, t, env] ->
-                case binopType (op) of
-                    "ARITHM" -> compileArithm (env, op, code, s, t)
-                  | "CMP"    -> compileCmp (env, op, code, s, t)  
-                  | "DIV"    -> compileDivMod (env, op, rax, code, s, t)
-                  | "MOD"    -> compileDivMod (env, op, rdx, code, s, t)
-                  | "AND"    -> compileAndOr (env, op, code, s, t)
-                  | "OR"    -> compileAndOr (env, op, code, s, t)
-                  | _ -> failure ("Compile error at binop %s\n", op)
-                esac
-          esac
-      | LABEL (lab) -> [env, code <+ Label (lab)]
-      | JMP (lab) -> [env, code <+ Jmp (lab)]
-      | CJMP (c, lab) -> case pop (env) of [v, env] -> 
-            [env, code <+ Binop ("cmp", L (0), v) <+ CJmp (c, lab)]
-          esac
-      | _ -> failure("Compile error at instruction %s\n", i.string)
-      esac
+      | LD (x) -> let [s, env] = allocate (addGlobal (env, x)) in [env, code <+> move (loc (env, x), s)]
+      | LDA (x) ->  let [s, env] = allocate (addGlobal (env, x)) in [env, code <+> singletonBuffer (Lea (loc (env, x), rax)) <+ Mov (rax, s)]
+      | STI ->  let [v, r, env] = pop2 (env) in [push (env, v), code <+> singletonBuffer (Mov (v, rax)) <+> singletonBuffer( Mov (r, rdx)) <+ Mov (rax, I (0, rdx))]
+      | DROP -> [pop (env)[1], code]
+      | CONST(n) -> case allocate (env) of
+                      [s, env] -> [env, code <+ Mov(L(n), s)]
+                    esac
+      | ST (x) -> case pop (addGlobal (env, x)) of
+                      [s, env] -> [push (env, loc (env, x)), code <+> move (s, loc (env, x))]
+                  esac
+      | LABEL(l) -> if isBarrier (env)
+                      then [retrieveStack (env, l), code <+ Label(l)]
+                      else [env, code <+ Label(l)]
+                    fi
+      | JMP(l) -> [setBarrier (setStack (env, l)), code <+ Jmp(l)]
+      | CJMP(cond, l) ->  case pop (env) of
+                            [x, env] -> [setStack (env, l), code <+ Binop("cmp", L(0), x) <+ CJmp(cond, l)]
+                          esac
+      | _ -> failure ("Not implemented\n")
+    esac
     }, [env, emptyBuffer ()], code)
 }
+
+fun simpleBinop (s, env, code) {
+   case pop2 (env) of [x, y, env] -> 
+    [push (env, y), code <+> (if memOpnd (x) && memOpnd (y) then singletonBuffer (Mov (x, rax)) <+ Binop (s, rax, y) else singletonBuffer (Binop (s, x, y)) fi)]
+   esac
+}
+
+fun mulBinop (s, env, code) {
+  case pop2 (env) of [x, y, env] -> 
+    [push (env, y), code <+> (if memOpnd (y) then singletonBuffer (Binop (s, x, rax)) <+ Mov (rax, y) else singletonBuffer (Binop (s, x, y)) fi)]
+   esac
+}
+
+fun divModBinop (env, code, resMov) {
+   case pop2 (env) of [x, y, env] -> 
+    [push (env, y), code <+> (singletonBuffer (Mov (y, rax)) <+ Cltd <+ IDiv (x) <+ Mov (resMov, y))]
+   esac
+}
+
+fun compareBinop (s, env, code) {
+   case pop2 (env) of [x, y, env] -> 
+    [push (env, y), code <+> (singletonBuffer (Binop ("^", rdx, rdx)) <+> (if memOpnd(x) && memOpnd(y) then singletonBuffer(Mov(x, rax)) <+ Binop("cmp", x, y) else singletonBuffer(Binop("cmp", x, y)) fi) <+ Set(suffix(s), "%dl") <+ Mov(rdx, y))]
+   esac
+}
+
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
