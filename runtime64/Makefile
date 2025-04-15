@@ -1,7 +1,7 @@
 all: runtime.o
 
-runtime.o: runtime.c
-	gcc -g -c runtime.c
+runtime.o: runtime.s
+	gcc -g -c runtime.s
 
 clean:
 	rm -f *.a *.o *~
