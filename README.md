@@ -1,4 +1,4 @@
-# Assignment 5: All expressions (Control Flow Expressions)
+# Assignment 6: Scopes and functions (Interpretation mode only)
 
 **Repo structure**:
 * [`regression`](regression/) --- tests
@@ -11,25 +11,13 @@ Our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
 * (`-s` option) compilation to SM and SM program interpretation
 * (`-o` option) compilation to X86 (via SM)
 
-Corresponding lecture notes: [Control Flow Expressions (combining `Expressions` and `Statements` into one syntactic category)](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/05.pdf)
+Corresponding lecture notes:  [Functions and Local Scopes](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/06.pdf)
 
-**What is new and some important changes**:
-1. Joining all constructs from the statements category into expressions (see [lecture notes]([lectures/05.pdf](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/05.pdf)))
-   1. Fix parser; note attributes inference and checking
-   1. Fix language interpreter; note, values in language semantics are no longer just numbers
-   2. Fix SM; `SM` is extended with new instructions: `LDA X`, `STI`, `DROP`, `DUP`; Semantics of `ST X` is updated
-   3. Fix X86 compilation (see below)
-      + New operand type `I` (see [`X86.lama#L35`](src/X86.lama#L35), [`X86_64.lama#L47`](src/X86.lama#L47))
-      + New instruction `lea` (see [`X86.lama#L39`](src/X86.lama#L39), [`X86_64.lama#L51`](src/X86.lama#L51))
-      + Updated environment (see [`X86.lama#L100`](src/X86.lama#L100), [`X86_64.lama#L113`](src/X86.lama#L113)) and *barriers* (see [`X86.lama#L179`](src/X86.lama#L179), [`X86_64.lama#L192`](src/X86.lama#L192))
-        - The problem: we generate X86 code from SM "linearly" (a-la by folding the list of SM instructions). Thus, we ignore the real control flow. As a consequence of this, the state (especially the symbolic stack) after JMP instruction can be invalid
-        - Idea: use barriers. Please see functions `isBarrier`, `setBarrier`, `setStack`, `retrieveStack`
-        - Invariant: the state of the symbolic stack is the same no matter how we got to the point (following the control flow graph)
-        - Algo (invariant preserving):
-          1. compiling `JMP l` instruction\
-          1.1. use `setStack` to save the current stack state for label `l`.\
-          1.2. use `setBarrier` to indicate that your interpreter is going to "break the control flow" by going to the next instruction in the list.
-          2. compiling `LABEL l` instruction, check whether the barrier is set (calling `isBarrier`) and if it is set then retrieve the saved stack state.
+**What is new, some important changes, and additional remarks**:
+1. New lecture notes ([Functions and Local Scopes](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/06.pdf)
+2. Note, we support syntactically nested functions in an *extremely* simple way:
+   + we do **not** support access to enclosing functions local variables
+3. Note, `;` used at the end of declarations does not match the sequence operator `;`
 
 
 **How to submit the task**:
@@ -40,11 +28,13 @@ Corresponding lecture notes: [Control Flow Expressions (combining `Expressions` 
 * NB: your pr has to contain changes to files `src/*.lama` only
 * NB: be sure that all checks have passed and opened pr is free of extra changes
 
-**Standard deadline**: two weeks
+**Standard deadline**: one week
 
 **Task**:
 
-* Unify `Expressions` and `Statements` into one syntactic category `Control Flow Expressions`, and refactor the whole compiler to support changes in all three modes.
+* Add scopes and functions (in interpretation mode only):
+  + Change parser to support scopes and functions
+  + Update language interpreter (`-i` mode) to support scopes and functions
 
 **Compile and run tests (from the root folder)**:
 ```bash
