@@ -212,6 +212,17 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
     esac
   }
 
+  fun getSavedRegs () {
+    let buf = filter (
+       fun (cell) { 
+          case cell of
+             R (x) -> x > 0 && x < 8
+           | _ -> false
+          esac
+       }, stack) in 
+       if buf.size % 2 == 0 then buf else buf +++ {rax} fi
+  }
+
   [envString,
    allocate,
    push,
@@ -225,7 +236,8 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
    isBarrier,
    setBarrier,
    setStack,
-   retrieveStack]
+   retrieveStack,
+   getSavedRegs]
 }
 
 -- Exported accessors
@@ -283,6 +295,10 @@ fun setStack (env, l) {
 
 fun retrieveStack (env, l) {
   env [13] (l)
+}
+
+fun getSavedRegs (env) {
+  env [14] ()
 }
 
 -- Creates an initial environment
@@ -361,6 +377,53 @@ fun suffix (op) {
   esac
 }
 
+fun isCmpOp (op) {
+   case op of
+      "<"  -> true
+    | "<=" -> true
+    | "==" -> true
+    | "!=" -> true
+    | ">=" -> true
+    | ">"  -> true
+    | _	   -> false
+  esac
+}
+
+fun isLogicOp (op) {
+   case op of
+      "&&" -> true
+    | "!!" -> true
+    | _    -> false
+   esac
+}
+
+fun isMathOp (op) {
+   case op of
+      "+" -> true
+    | "-" -> true
+    | "*" -> true
+    | "/" -> true
+    | "%" -> true
+    | _   -> false
+   esac
+}
+
+fun isDivOp (op) {
+   case op of
+      "/" -> true
+    | "%" -> true
+    | _   -> false
+   esac
+}
+
+fun divResReg (op) {
+   case op of
+      "/" -> rax
+    | "%" -> rdx
+    | _   -> failure("op must be / or %")
+   esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -370,15 +433,55 @@ fun compile (env, code) {
         
       case i of
         READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (rax, s)]
-          esac             
+          let sregs = env.getSavedRegs in 
+             case env.allocate of
+                [s, env] -> [env, code <+> listBuffer (map (fun (r) { Push (r) }, sregs)) <+ Call ("Lread") <+> singletonBuffer (Mov (rax, s)) <+> listBuffer (map (fun (r) { Pop (r) }, sregs.reverse))]
+             esac             
       | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
-          esac
+          let [s, env] = env.pop in
+             let sregs = env.getSavedRegs in
+                [env, code <+> listBuffer (map (fun (r) { Push (r) }, sregs)) <+> singletonBuffer (Mov (s, rdi)) <+ Call ("Lwrite") <+> listBuffer (map (fun (r) { Pop (r) }, sregs.reverse))]
+      | LD (x) ->
+          case env.addGlobal (x).allocate of
+	    [s, env] -> [env, code <+> move (env.loc (x), s)]
+	  esac
+      | ST (x) ->
+          case env.addGlobal (x).pop of
+	    [s, env] -> [env, code <+> move (s, env.loc (x))]
+	  esac
+      | CONST (n) -> 
+          let [s, env] = env.allocate in [env, code <+ Mov(L (n), s)]
+      | BINOP (op) -> let [x, y, env] = env.pop2 in
+         let [s, env] = env.allocate in
+            let newcode = 
+               if isDivOp(op) 
+               then code <+ Mov (y, rax) <+ Cltd <+ IDiv (x) <+ Mov (divResReg(op), s)
+               elif isMathOp(op)
+               then code <+ Mov (y, rax) <+ Binop (op, x, rax) <+ Mov (rax, s)
+               elif isCmpOp(op)
+               then code <+ Mov (y, rax) <+ Binop ("cmp", x, rax) <+ Set (suffix (op), "%al") <+ Binop ("&&", L(1), rax) <+ Mov (rax, s)
+               elif isLogicOp(op)
+               then code <+ Binop ("cmp", L (0), x) <+ Set (suffix ("!="), "%al") <+ Binop ("&&", L(1), rax) <+ 
+                            Binop ("cmp", L (0), y) <+ Set (suffix ("!="), "%dl") <+ Binop ("&&", L(1), rdx) <+ 
+			    Binop ("&&", rax, rdx) <+ Mov (rdx, s)
+               else failure("wrong op")	
+               fi
+            in [env, newcode]
+      | LABEL (x) -> let env = if env.isBarrier then env.retrieveStack (x) else env fi in [env, code <+ Label (x)]
+      | JMP (x) -> [env.setStack (x).setBarrier, code <+ Jmp (x)]
+      | CJMP (c, l) -> let [x, env] = env.pop in
+         [env.setStack (l).setBarrier, code <+ Binop("cmp", L(0), x) <+ CJmp(c, l)]
+      | LDA (x) -> let [s, env] = env.addGlobal (x).allocate in [env, code <+ Lea (env.loc (x), s)]
+      | DROP -> let [_, env] = env.pop in [env, code]
+      | DUP -> let [x, env] = env.peek in
+         let [s, env] = env.allocate in [env, move (s, x)]
+      | STI -> let [value, name, env] = env.pop2 in
+         let [value2, env] = env.allocate in
+            if memOpnd (name) then [env, code <+> move (name, rdx) <+> move (value, I (0, rdx)) <+> move (value, value2)]
+            else [env, code <+> move (value, I (0, name)) <+> move (value, value2)]
+            fi
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
+      esac
     }, [env, emptyBuffer ()], code)
 }
 

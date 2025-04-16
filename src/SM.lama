@@ -117,12 +117,37 @@ fun eval (env, w, insns) {
   }
 
   -- Core interpreter: takes a configuration and a program, returns a configuration
-  (* Assignment *)
   fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+     let [stack, st, w] = c in 
+        case insns of 
+           s:t -> case s of 
+              READ         -> let [value, w2] = readWorld(w) in eval(env, [value:stack, st, w2], t)
+            | WRITE        -> let value:stack2 = stack in 
+               eval(env, [stack2, st, writeWorld(value, w)], t)
+            | BINOP (op)   -> let value1:value2:stack2 = stack in
+               eval(env, [evalOp (op, value2, value1):stack2, st, w], t)
+            | LD    (x)    -> eval(env, [st(x):stack, st, w], t)
+            | ST    (x)    -> let value:stack2 = stack in 
+               eval(env, [stack2, st <- [x, value], w], t)
+            | CONST (n)    -> eval(env, [n:stack, st, w], t)
+            | LABEL (x)    -> eval(env, c, t)
+            | JMP   (x)    -> eval(env, c, fromLabel (env, x))
+            | CJMP  (e, x) -> let value:stack2 = stack in
+                let go = 
+                  case e of
+                     "z"  -> if value == 0 then true else false fi
+                   | "nz" -> if value != 0 then true else false fi
+                  esac 
+                in if go then eval (env, [stack2, st, w], fromLabel (env, x)) else eval (env, [stack2, st, w], t) fi
+            | LDA   (x)    -> eval(env, [x:stack, st, w], t)
+            | STI          -> let value:name:stack2 = stack in eval(env, [value:stack2, st <- [name, value], w], t)
+            | DROP         -> let _:stack2 = stack in eval(env, [stack2, st, w], t)
+            | DUP   (x)    -> let value:_ = stack in eval(env, [value:stack, st, w], t)
+           esac
+         | {}  -> c
+        esac
   }
-  (* End *)
-  
+
   eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
 }
 
@@ -358,16 +383,59 @@ public fun compileSM (stmt) {
     else emptyBuffer ()
     fi
   }
-  
+
   fun compile (lab, env, stmt) {
     case stmt of
-      Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 ->  failure ("compileSM not implemented\n")
+      Skip                 -> [false, env, emptyBuffer ()]
+    | Var     (x)          -> [false, env, singletonBuffer (LD (x))]
+    | Ref     (x)          -> [false, env, singletonBuffer (LDA (x))]
+    | Const   (n)          -> [false, env, singletonBuffer (CONST (n))]
+    | Read    (x)          -> let [l, env] = env.genLabel in 
+       let [lUsed, env, code] = compile (l, env, x) in [false, env, code <+> label (l, lUsed) <+ READ <+ STI <+ DROP]
+    | Write   (e)          -> let [l, env] = env.genLabel in
+       let [lUsed, env, code] = compile (l, env, e) in [false, env, code <+> label (l, lUsed) <+ WRITE]
+    | Assn    (x, e)       -> let [lx, env] = env.genLabel in
+       let [lxUsed, env, xcode] = compile (lx, env, x) in
+          let [le, env] = env.genLabel in
+             let [leUsed, env, ecode] = compile (le, env, e) in [false, env, xcode <+> label (lx, lxUsed) <+> ecode <+> label (le, leUsed) <+ STI]
+    | Seq     (s1, s2)     ->
+        case env.genLabel of
+          [s2Lab, env]     ->
+             case compile (s2Lab, env, s1) of
+               [s2LabUsed, env, s1Code] ->
+                  case compile (lab, env, s2) of
+                    [labUsed, env, s2Code] -> [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
+                  esac
+             esac
+        esac
+    | If      (c, s1, s2)  -> let [lc, env] = env.genLabel in
+       let [lcUsed, env, codec] = compile (lc, env, c) in
+          let [lelse, env] = env.genLabel in
+             let [_, env, code1] = compile (lab, env, s1) in
+                let [_, env, code2] = compile (lab, env, s2) in
+                   [true, env, codec <+> label (lc, lcUsed) <+ CJMP ("z", lelse) <+> code1 <+ JMP (lab) <+ LABEL (lelse) <+> code2]
+    | While   (c, s)        -> let [lc, env] = env.genLabel in
+       let [ls, env] = env.genLabel in
+          let [le, env] = env.genLabel in
+             let [leUsed, env, codec] = compile (le, env, c) in
+                let [lcUsed, env, codes] = compile (lc, env, s) in
+                   [false, env, singletonBuffer(JMP(lc)) <+ LABEL (ls) <+> codes <+ LABEL (lc) <+> codec <+> label (le, leUsed)<+ CJMP ("nz", ls)]
+    | DoWhile (c, s)        -> let [lc, env] = env.genLabel in
+       let [ls, env] = env.genLabel in
+          let [le, env] = env.genLabel in
+             let [leUsed, env, codec] = compile (le, env, c) in
+                let [lcUsed, env, codes] = compile (lc, env, s) in
+                   [false, env, singletonBuffer(LABEL (ls)) <+> codes <+> label (lc, lcUsed) <+> codec <+> label (le, leUsed) <+ CJMP ("nz", ls)]
+    | Binop (op, e1, e2)    -> let [le1, env] = env.genLabel in
+       let [le2, env] = env.genLabel in
+          let [le1Used, env, code1] = compile (le1, env, e1) in
+             let [le2Used, env, code2] = compile (le2, env, e2) in
+                [false, env, code1 <+> label (le1, le1Used) <+> code2 <+> label (le2, le2Used) <+ BINOP (op)]
+    | Ignore  (e) -> let [le, env] = env.genLabel in
+       let [leUsed, env, code] = compile (le, env, e) in
+          [false, env, code <+ DROP]
     esac
-  }
+  }  
 
   case initCompEnv ().genLabel of
     [endLab, env] ->
