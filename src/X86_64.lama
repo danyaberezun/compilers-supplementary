@@ -367,18 +367,129 @@ fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        
+
       case i of
         READ ->
           case env.allocate of
             [s, env] -> [env, code <+ Call ("Lread") <+ Mov (rax, s)]
-          esac             
+          esac
       | WRITE ->
           case env.pop of
             [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
           esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
+      | BINOP(op) ->
+          let [y, x, env] = env.pop2 in
+          [env.push(x),
+            if
+              compare(op, "+") == 0 !!
+              compare(op, "-") == 0 !!
+              compare(op, "*") == 0
+            then
+              if memOpnd(x) && memOpnd(y) then
+                code <+ Mov(y, rax) <+ Binop(op, rax, x)
+              else
+                code <+ Binop(op, y, x)
+              fi
+            elif
+              compare(op, "/") == 0 !!
+              compare(op, "%") == 0
+            then
+              code
+                <+ Mov(x, rax) <+ Cltd
+                <+ IDiv(y)
+                <+ case op of "/" -> Mov(rax, x) | "%" -> Mov(rdx, x) esac
+            elif
+              compare(op, "<") == 0  !! compare(op, ">=") == 0 !!
+              compare(op, "==") == 0 !! compare(op, "!=") == 0 !!
+              compare(op, ">") == 0  !! compare(op, "<=") == 0
+            then
+              code
+                <+ Binop("^", rdx, rdx)
+                <+> (if memOpnd(x) && memOpnd(y) then
+                      singletonBuffer(Mov(x, rax)) <+
+                        Binop("cmp", y, rax)
+                    else
+                      singletonBuffer(Binop("cmp", y, x))
+                    fi)
+                <+ Set(suffix(op), "%dl")
+                <+ Mov(rdx, x)
+            elif
+              compare(op, "&&") == 0 !!
+              compare(op, "!!") == 0
+            then
+              code
+                <+> (if memOpnd(x) then
+                      singletonBuffer(Mov(x, rax)) <+
+                        Binop("&&", rax, rax)
+                    else
+                      singletonBuffer(Binop("&&", x, x))
+                    fi)
+                <+ Set("nz", "%dl")
+                <+> (if memOpnd(y) then
+                      singletonBuffer(Mov(y, rax)) <+
+                        Binop("&&", rax, rax)
+                    else
+                      singletonBuffer(Binop("&&", y, y))
+                    fi)
+                <+ Set("nz", "%al")
+                <+ Binop(op, rax, rdx)
+                <+ Binop("&&", L(1), rdx)
+                <+ Mov(rdx, x)
+            else
+              failure("Unsupported binop: " ++ op ++ "\n")
+            fi
+          ]
+      | CONST(x) ->
+          let [s, env] = env.allocate in
+          [env, code <+ Mov(L(x), s)]
+      | LD(x) ->
+          let [s, env] = env.addGlobal(x).allocate in
+          if memOpnd(s) then
+            [env, code <+ Mov(env.loc(x), rax) <+ Mov(rax, s)]
+          else
+            [env, code <+ Mov(env.loc(x), s)]
+          fi
+      | ST(x) ->
+          let env = addGlobal(env, x) in
+          let s = peek(env) in
+          if memOpnd(s) then
+            [env, code <+ Mov(s, rax) <+ Mov(rax, env.loc(x))]
+          else
+            [env, code <+ Mov(s, env.loc(x))]
+          fi
+      | JMP(l) -> 
+        let env = setStack(env, l) in
+        let env = setBarrier(env) in
+        [env, code <+ Jmp(l)]
+      | LABEL(l) ->
+        if isBarrier(env) then
+          let env = retrieveStack(env, l) in
+          [env, code <+ Label(l)]
+        else
+          [env, code <+ Label(l)]
+        fi
+      | CJMP(c, l) ->
+        let [x, env] = env.pop in
+        let env = setStack(env, l) in
+        let env = setBarrier(env) in
+        [env, code <+ Binop("cmp", L(0), x) <+ CJmp(c, l)]
+      | DROP ->
+        let [_, env] = pop(env) in [env, code]
+      | LDA(v) ->
+        let env = addGlobal(env, v) in
+        let [x, env] = env.allocate in
+        if memOpnd(x) then
+          [env, code <+ Lea(env.loc(v), rax) <+ Mov(rax, x)]
+        else
+          [env, code <+ Lea(env.loc(v), x)]
+        fi
+      | STI ->
+        let [value, ref, env] = env.pop2 in
+        let [top, env] = env.allocate in
+        [env, code <+ Mov(value, rax) <+ Mov(rax, I(0, ref)) <+ Mov(rax, top)]
+      | inst -> failure("\n\n\nInstruction not supported: "
+                        ++ string(inst) ++ "\n\n\n")
+      esac
     }, [env, emptyBuffer ()], code)
 }
 
