@@ -325,17 +325,17 @@ fun epilogue () {
 -- Checks if an operand resides on a stack
 fun stackOpnd (opnd) {
   case opnd of
-    S (_) -> true
-  | _     -> false
+    S (_) -> 1
+  | _     -> 0
   esac      
 }
 
 -- Checks if an operand resides in memory
 fun memOpnd (opnd) {
   case opnd of
-    S (_) -> true
-  | M (_) -> true
-  | _     -> false
+    S (_) -> 1
+  | M (_) -> 1
+  | _     -> 0
   esac
 }
 
@@ -364,22 +364,114 @@ fun suffix (op) {
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  foldl (
-    fun ([env, scode], i) {
-      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        
-      case i of
-        READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (rax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
-          esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-    }, [env, emptyBuffer ()], code)
+    foldl (
+        fun ([env, scode], i) {
+var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+case i of
+    READ -> case env.allocate of
+        [s, env] -> [env, code <+ Call ("Lread") <+ Mov (rax, s)]
+        esac             
+    | WRITE -> case env.pop of
+      [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
+      esac
+    | LD(x) ->
+      let [s, env] = allocate(addGlobal(env, x))
+        in [env, code <+> move(loc(env, x), s)]
+    | LDA(x) ->
+      let [s, env] = allocate(addGlobal(env, x)) in 
+        if memOpnd(s)
+            then [env, code <+ Lea(loc(env, x), rax) <+ Mov(rax, s)]
+            else [env, code <+ Lea(loc(env, x), s)]
+        fi
+    | STI -> 
+      let [v, r, env] = pop2(env) in
+        [push(env, v), code <+
+            if memOpnd(v)
+                then Mov(v, rax) <+
+                    if memOpnd(r)
+                        then Mov(r, rdx) <+ Mov(rax, I(0, rdx))
+                        else Mov(rax, I(0, r))
+                    fi
+                else
+                if memOpnd(r)
+                    then Mov(r, rdx) <+ Mov(v, I(0, rdx))
+                    else Mov(v, I(0, r))
+                fi
+            fi
+        ]
+    | CONST(x) ->
+      let [s, env] = allocate(env) in
+        [env, code <+ Mov(L(x), s)]
+    | ST(x) ->
+      let [s, env] = pop(addGlobal(env, x)) in
+        [push(env, loc(env, x)), code <+> move(s, loc(env, x))]
+    | LABEL(l) -> if isBarrier(env)
+                  then [retrieveStack(env, l), code <+ Label(l)]
+                  else [env, code <+ Label(l)]
+                fi
+    | JMP(l) ->
+      [setBarrier(setStack(env, l)), code <+ Jmp(l)]
+    | CJMP(cond, l) ->
+      let [x, env] = pop(env) in
+        [setStack(env, l), code <+ Binop("cmp", L(0), x) <+ CJmp(cond, l)]
+    | DROP ->
+      let [_, env] = pop(env)
+        in [env, code]
+    | BINOP(op) ->
+      let [y, x, env] = env.pop2 in
+        [env.push(x), 
+            if 
+                case op of
+                      "+" -> 1
+                    | "-" -> 1
+                    | "*" -> 1
+                    | _ -> 0
+                esac
+            then
+                code <+ Mov(y, rax) <+ Binop(op, rax, x)
+            elif
+                case op of
+                      "/" -> 1
+                    | "%" -> 1
+                    | _ -> 0
+                esac
+            then
+            code
+                <+ Mov(x, rax) <+ Cltd <+ IDiv(y) <+ Mov(
+                    case op of 
+                          "/" -> rax 
+                        | "%" -> rdx
+                    esac, x
+                )
+            elif
+                case op of
+                      "<"  -> 1
+                    | "<=" -> 1
+                    | "==" -> 1
+                    | "!=" -> 1
+                    | ">=" -> 1
+                    | ">"  -> 1
+                    | _ -> 0
+                esac
+            then
+                code <+ Mov(x, rax) <+ Binop("cmp", y, rax) <+ Set(op.suffix, "%al") <+ Binop("&&", L(1), rax) <+ Mov(rax, x)
+            elif
+                case op of
+                  "&&" -> 1
+                | "!!" -> 1
+                | _ -> 0
+                esac
+            then
+                code <+ Binop("cmp", L(0), y) <+ Set("!=".suffix, "%al") <+ Mov(rax, y) 
+                      <+ Binop("cmp", L(0), x) <+ Set("!=".suffix, "%al") 
+                      <+ Binop(op, y, rax) <+ Binop("&&", L(1), rax) <+ Mov(rax, x)
+            else
+                code
+            fi
+        ]
+    | _ -> [env, code]
+esac
+ }, [env, emptyBuffer ()], code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
