@@ -88,11 +88,11 @@ fun eval (env, c@[stack, state, w], insns) {
     | "!!" -> x !! y
     esac in
     eval(env, [value:stack, state, w], rest)
-  | LD(v) : rest ->
+  | LD(v@#str) : rest ->
     eval(env, [state(v) : stack, state, w], rest)
-  | ST(v) : rest ->
+  | ST(v@#str) : rest ->
     let top:stack = stack in
-    eval(env, [stack, state <- [v, top], w], rest)
+    eval(env, [top:stack, state <- [v, top], w], rest)
   | CONST(v) : rest ->
     eval(env, [v : stack, state, w], rest)
   | JMP(l) : _ ->
@@ -106,6 +106,14 @@ fun eval (env, c@[stack, state, w], insns) {
     fi
   | LABEL(_) : rest ->
     eval(env, c, rest)
+  | LDA(v) : rest ->
+    eval(env, [VarRef(v) : stack, state, w], rest)
+  | STI : rest ->
+    let (v@#val):VarRef(name):stack = stack in
+    eval(env, [v:stack, state <- [name, v], w], rest)
+  | DROP : rest ->
+    let v:stack = stack in
+    eval(env, [stack, state, w], rest)
   esac
 }
 
@@ -158,9 +166,21 @@ public fun compileSM (stmt) {
   fun compile (lab, env, stmt) {
     case stmt of
       Skip           -> [false, env, emptyBuffer ()]
-    | Read  (x)      -> [false, env, singletonBuffer (READ) <+ ST (x)]
-    | Write (e)      -> [false, env, compileExpr (e) <+ WRITE]
-    | Assn  (x, e)   -> [false, env, compileExpr (e) <+ ST (x)]
+    | Read  (x)      -> [false, env, singletonBuffer (READ) <+ ST (x) <+ DROP]
+    | Write (e)      ->
+        let [lab, env] = genLabel(env) in
+        let [labUsed, env, e] = compile(lab, env, e) in
+        [false, env, e <+> label(lab, labUsed) <+ WRITE]
+    | Assn(Var(x), e)   ->
+        let [lab, env] = genLabel(env) in
+        let [labUsed, env, e] = compile(lab, env, e) in
+        [false, env, e <+> label(lab, labUsed) <+ ST (x)]
+    | Assn(lvalue, e)   ->
+        let [lhsLab, env] = genLabel(env) in
+        let [lhsLabUsed, env, lhs] = compile(lhsLab, env, lvalue) in
+        let [lab, env] = genLabel(env) in
+        let [labUsed, env, e] = compile(lab, env, e) in
+        [false, env, lhs <+> label(lhsLab, lhsLabUsed) <+> e <+> label(lab, labUsed) <+ STI]
     | Seq   (s1, s2) ->
         case env.genLabel of
           [s2Lab, env] ->
@@ -172,11 +192,13 @@ public fun compileSM (stmt) {
              esac
         esac
     | If(cond, th, els) ->
+        let [postCond, env] = env.genLabel in
         let [elseLabel, env] = env.genLabel in
-        let cond = compileExpr(cond) in
+        let [postCondUsed, env, cond] = compile(postCond, env, cond) in
         let [_, env, thenBody] = compile(lab, env, th) in
         let [_, env, elseBody] = compile(lab, env, els) in
         [true, env, cond
+          <+> label(postCond, postCondUsed)
           <+ CJMP("z", elseLabel)
           <+> thenBody
           <+ JMP(lab)
@@ -187,15 +209,18 @@ public fun compileSM (stmt) {
         let [loopLabel, env] = env.genLabel in
         let [condLabel, env] = env.genLabel in
         let [condLabelUsed, env, body] = compile(condLabel, env, s) in
-        let cond = compileExpr(x) in
+        let [beforeCmp, env] = env.genLabel in
+        let [beforeCmpUsed, env, cond] = compile(beforeCmp, env, x) in
         [false, env, singletonBuffer(LABEL(loopLabel))
           <+> body
           <+> label(condLabel, condLabelUsed)
           <+> cond
+          <+> label(beforeCmp, beforeCmpUsed)
           <+ CJMP("nz", loopLabel)]
     | While(x, s) ->
         let [loopLabel, env] = env.genLabel in
-        let cond = compileExpr(x) in
+        let [beforeCmp, env] = env.genLabel in
+        let [beforeCmpUsed, env, cond] = compile(beforeCmp, env, x) in
         let [condLabel, env] = env.genLabel in
         let [_, env, body] = compile(condLabel, env, s) in
         [false, env, singletonBuffer(JMP(condLabel)) 
@@ -203,8 +228,25 @@ public fun compileSM (stmt) {
           <+> body
           <+ LABEL(condLabel)
           <+> cond
+          <+> label(beforeCmp, beforeCmpUsed)
           <+ CJMP("nz", loopLabel)]
-    | _              -> failure ("compileSM not implemented\n")
+    | Var(x) -> [false, env, singletonBuffer(LD(x))]
+    | Ref(x) -> [false, env, singletonBuffer(LDA(x))]
+    | Const(x) -> [false, env, singletonBuffer(CONST(x))]
+    | Binop (op, lhs, rhs) ->
+        let [e1lab, env] = genLabel(env) in
+        let [e1labUsed, env, lhs] = compile(e1lab, env, lhs) in
+        let [e2lab, env] = genLabel(env) in
+        let [e2labUsed, env, rhs] = compile(e2lab, env, rhs) in
+        [false, env, lhs
+          <+> label(e1lab, e1labUsed)
+          <+> rhs
+          <+> label(e2lab, e2labUsed)
+          <+ BINOP(op)]
+    | Ignore(expr) ->
+        let [beforeDrop, env] = genLabel(env) in
+        let [beforeDropUsed, env, expr] = compile(beforeDrop, env, expr) in
+        [false, env, expr <+ DROP]
     esac
   }
 
