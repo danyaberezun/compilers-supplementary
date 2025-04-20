@@ -7,22 +7,32 @@ import Buffer;
 import Fun;
 import Manifest;
 
+fun min (x, y) {
+  if x > y then y else x fi
+}
+
+fun max (x, y) {
+  if x > y then x else y fi
+}
+
 -- Assembler language interface
 -- The registers:
-  
-var regs = ["%rbx", "%rcx", "%rsi", "%rdi",
+var regs = ["%rdi", "%rsi", "%rdx", "%rcx",
             "%r8" , "%r9" , "%r10", "%r11",
 	    "%r12", "%r13", "%r14", "%r15",
-	    "%rax", "%rdx", "%rbp", "%rsp"];
+	    "%rbx", "%rax", "%rbp", "%rsp"];
 
--- We can not freely operate with all register; only with 12 by now
-var nRegs = regs.length - 5;
+-- We can not freely operate with all register; only with 13 by now;
+-- we also notify that the 6 first register are used to
+-- pass arguments to a function
+var nRegs    = regs.length - 4,
+    nRegArgs = 6;
 
 -- For convenience we define the following synonyms for the registers: 
-var rbx = R (0),
-    rcx = R (1),
-    rsi = R (2),
-    rdi = R (3),
+var rdi = R (0),
+    rsi = R (1),
+    rdx = R (2),
+    rcx = R (3),
     r8  = R (4),
     r9  = R (5),
     r10 = R (6),
@@ -31,8 +41,8 @@ var rbx = R (0),
     r13 = R (9),
     r14 = R (10),
     r15 = R (11),
-    rax = R (12),
-    rdx = R (13),
+    rbx = R (12),
+    rax = R (13),
     rbp = R (14),
     rsp = R (15);
 
@@ -137,10 +147,10 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
   -- Allocates a new position on the symbolic stack;
   -- returns a pair: a location for allocated item and
   -- an updated environment
-  fun allocate () {
+  fun alloc () {
     case 
       case stack of
-        {}        -> [rbx, 0]
+        {}        -> [rdi, 0]
       | S (n) : _ -> [S (n+1), n+2]
       | R (n) : _ -> if n < nRegs then [R (n+1), stackSlots] else [S (nLocals), nLocals + 1] fi
       | _         -> [S (nLocals), nLocals + 1]
@@ -183,7 +193,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
   fun loc (alloc) {
     case alloc of
       Glb (x) -> M (globalName (x))
-    | Arg (i) -> S (-1-i)
+    | Arg (i) -> if i < nRegArgs then R (i) else S (-1-(i - nRegArgs)) fi
     | Loc (i) -> S (i)
     esac
   }
@@ -222,8 +232,15 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
   }
 
   -- Sets the label of current function
-  fun enterFunction (fLabel, nl) {
-    makeEnv (stack, stackSlots, globals, false, stackMap, fLabel, nl)
+  fun enterFunction (fLabel, na, nl) {
+    fun enter (env, n) {
+      if n == 0
+      then env
+      else enter (env.allocate [1], n - 1)
+      fi
+    }
+    
+    enter (makeEnv ({}, 0, globals, false, emptyMap (compare), fLabel, nl), min (na, nRegArgs))
   }
 
   -- Gets the label of current function
@@ -249,8 +266,16 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
     nLocals + stackSlots
   }
 
+  fun freeReg (R (i)) {
+    stack.size <= i  
+  }
+
+  fun stackDepth () {
+    stack.size
+  }
+  
   [envString,
-   allocate,
+   alloc,
    push,
    pop,
    pop2,
@@ -266,7 +291,9 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
    enterFunction,
    currentFunction,
    liveRegisters,
-   staticSize]
+   staticSize,
+   freeReg,
+   stackDepth]
 }
 
 -- Exported accessors
@@ -326,8 +353,8 @@ fun retrieveStack (env, l) {
   env [13] (l)
 }
 
-fun enterFunction (env, fLabel, nL) {
-  env [14] (fLabel, nL)
+fun enterFunction (env, fLabel, nA, nL) {
+  env [14] (fLabel, nA, nL)
 }
 
 fun currentFunction (env) {
@@ -342,9 +369,17 @@ fun staticSize (env) {
   env [17] ()
 }
 
+fun freeReg (env, r) {
+  env [18] (r)
+}
+
+fun stackDepth (env) {
+  env [19] ()
+}
+
 -- Creates an initial environment
 fun initEnv () {
-  makeEnv (0, 0, emptySet (compare), false, emptyMap (compare), "", 1)
+  makeEnv ({}, 0, emptySet (compare), false, emptyMap (compare), "", 1)
 }
 
 -- Codegeneration helper functions
@@ -398,6 +433,15 @@ fun memOpnd (opnd) {
   esac
 }
 
+-- Enframes a rdx-using code with save/restore
+-- if RDX is occupied
+fun withRDX (env, code) {
+  if env.freeReg (rdx)
+  then code  
+  else singletonBuffer (Push (rdx)) <+> code <+ Pop (rdx)
+  fi
+}
+
 -- Generates a move between locations, using
 -- intermediate register if needed
 fun move (from, to) {
@@ -407,9 +451,34 @@ fun move (from, to) {
   fi
 }
 
--- Gets push/pops for live registers
+-- Gets push/pops for live registers (as buffers in
+-- a proper order)
 fun savecode (env, nA) {
-  unzip $ map (fun (r) {[Push (r), Pop (r)]}, env.liveRegisters (nA)) 
+  foldr (fun ([pushs, pops], r) {
+           [singletonBuffer (Push (r)) <+> pushs, pops <+ Pop (r)]
+         },
+	 [emptyBuffer (), emptyBuffer ()],
+	 env.liveRegisters (nA)
+  )
+}
+
+-- Generates a static call
+-- Some guidelines for generating function calls:
+--
+-- 1. generate instructions to save live registers on the X86 stack (use
+--    env.liveRegisters (number of arguments);
+-- 2. generate instructions to move actual parameters from the symbolic
+--    stack to the proper places:
+--    a. first nRegArgs arguments go to the registers (reg[0]-reg[nRegArgs-1]).
+--    b. the rest of arguments go to the regular X86 stack.
+--    c. sometemes no work is needed (all arguments are already in their
+--       places);
+--    d. pay attention to the order of arguments placements 
+-- 3. generate the call itself;
+-- 4. discard those parameters that were passed through stack from the stack;
+-- 5. restore saved live registers.         
+fun call (env, fLabel, nA) {
+  failure ("calls not implemented")
 }
 
 -- Gets a suffix for Set instruction from
@@ -431,51 +500,27 @@ fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+
+      -- printf ("compiling %s\n", showSMInsn (i));
       
-      case i of
+      case i of      
         READ ->
-	  case savecode (env, 0) of
-	    [pushRegs, popRegs] ->
-               case env.allocate of
-                 [s, env] -> [env, code <+>
-		                   listBuffer (pushRegs) <+
-				   Call ("Lread") <+>
-				   listBuffer (reverse (popRegs)) <+
-				   Mov (rax, s)]
-	       esac
-          esac             
+          let [env, callCode] = call (env, "Lread", 0) in
+	  [env, code <+> callCode]
       | WRITE ->
-          case savecode (env, 1) of
-	    [pushRegs, popRegs] ->
-               case env.pop of
-                 [s, env] -> [env, code <+>
-		                   listBuffer (pushRegs) <+
-				   Mov (s, rdi) <+
-				   Call ("Lwrite") <+>
-				   listBuffer (reverse (popRegs))]
-	       esac
-          esac
-      (* Assignment
-        
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
+          let [env, callCode] = call (env, "Lwrite", 1) in
+	  [env, code <+> callCode]
+	  
+      (* Assignment        
          -- Some guidelines for generating functions:
          --
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-               
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-           End *)
-        esac
+      *)
+        
+      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      esac
     }, [env, emptyBuffer ()], code)
 }
 
