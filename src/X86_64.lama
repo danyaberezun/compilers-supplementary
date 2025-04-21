@@ -460,7 +460,44 @@ fun savecode (env, nA) {
 -- 4. discard those parameters that were passed through stack from the stack;
 -- 5. restore saved live registers.         
 fun call (env, fLabel, nA) {
-  failure ("calls not implemented")
+  var codes = savecode(env, nA);
+  var code = codes[0];
+  if getStackSize(env) == nA
+    then
+      printf("==\n"); --////
+      for var i = nA;, i > 0, i := i - 1 do
+        case pop(env) of
+          [x, newEnv] ->  env := newEnv;
+                          code := if i > nRegArgs
+                                    then code <+ Mov(x, rax) <+ Push(rax)
+                                    else code
+                                  fi
+        esac
+      od;
+      if nA > nRegArgs
+        then let [s, env] = allocate(env) in [env, ((code <+ Call(fLabel) <+ Binop("-", L(wordSize * (nA - nRegArgs)), rsp))
+                <+> codes[1]) <+ Mov(rax, s)]
+        else let [s, env] = allocate(env) in [env, ((code <+ Call(fLabel)) <+> codes[1]) <+ Mov(rax, s)]
+      fi
+    else
+      var revCode = emptyBuffer();
+      printf("special case\n"); --////
+      for var i = nA;, i > 0, i := i - 1 do
+        case pop(env) of
+          [x, newEnv] ->  env := newEnv;
+                          if i > nRegArgs
+                            then code := code <+ Mov(x, rax) <+ Push(rax)
+                            else revCode := singletonBuffer(Mov(x, R(i - 1))) <+> revCode
+                          fi
+        esac
+      od;
+      code := code <+> revCode;
+      if nA > nRegArgs
+        then let [s, env] = allocate(env) in [env, ((code <+ Call(fLabel) <+ Binop("-", L(wordSize * (nA - nRegArgs)), rsp))
+                <+> codes[1]) <+ Mov(rax, s)]
+        else let [s, env] = allocate(env) in [env, ((code <+ Call(fLabel)) <+> codes[1]) <+ Mov(rax, s)]
+      fi
+  fi
 }
 
 -- Gets a suffix for Set instruction from
@@ -506,16 +543,61 @@ fun compile (env, code) {
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
 
-      -- printf ("compiling %s\n", showSMInsn (i));
+      printf ("compiling %s\n", showSMInsn (i));--////
       
       case i of      
         READ ->
           let [env, callCode] = call (env, "Lread", 0) in
-	  [env, code <+> callCode]
+	              [env, code <+> callCode]
       | WRITE ->
           let [env, callCode] = call (env, "Lwrite", 1) in
-	  [env, code <+> callCode]
-	  
+	              [env, code <+> callCode]
+      | BINOP(s) -> case s of
+                      "+" -> simpleBinop("+", env, code)
+                      | "-" -> simpleBinop("-", env, code)
+                      | "*" -> mulBinop("*", env, code)
+                      | "/" -> divModBinop (env, code, rax)
+                      | "%" -> divModBinop (env, code, rdx)
+                      | "==" -> compareBinop ("==", env, code)
+                      | "!=" -> compareBinop ("!=", env, code)
+                      | "<=" -> compareBinop ("<=", env, code)
+                      | ">=" -> compareBinop (">=", env, code)
+                      | "<" -> compareBinop ("<", env, code)
+                      | ">" -> compareBinop (">", env, code)
+                      | "!!" -> case pop2(env) of
+                                  [x, y, env] -> [push(env, y), code <+> withRDX(env, singletonBuffer(Binop("^", rax, rax)) <+ Binop("^", rdx, rdx) <+ Binop("cmp", L(0), y) <+ Set(suffix("!="), "%al") <+
+                                    Binop("cmp", L(0), x) <+ Set(suffix("!="), "%dl") <+ Binop("!!", rax, rdx) <+ Mov(rdx, y))]
+                                esac
+                      | "&&" -> case pop2(env) of
+                                  [x, y, env] -> [push(env, y), code <+> withRDX(env, singletonBuffer(Binop("^", rax, rax)) <+ Binop("^", rdx, rdx) <+ Binop("cmp", L(0), y) <+ Set(suffix("!="), "%al") <+
+                                    Binop("cmp", L(0), x) <+ Set(suffix("!="), "%dl") <+ Binop("&&", rax, rdx) <+ Mov(rdx, y))]
+                                esac
+                  esac
+      | LD (x) -> let [s, env] = allocate(env) in [env, code <+> move (loc (env, x), s)]
+      | LDA (x) ->  let [s, env] = allocate(env) in [env, code <+> leaHelper (env, loc (env, x), s)]
+      | STI ->  let [v, r, env] = pop2(env) in [push(env, v), code <+> moveToAddressHelper(v, r)]
+      | DROP -> [pop(env)[1], code]
+      | CONST(n) -> case allocate(env) of
+                      [s, env] -> [env, code <+ Mov(L(n), s)]
+                    esac
+      | ST (x) -> case pop(env) of
+                      [s, env] -> [push(env, loc (env, x)), code <+> move (s, loc (env, x))]
+                  esac
+      | LABEL(l) -> if isBarrier(env)
+                      then [retrieveStack(env, l), code <+ Label(l)]
+                      else [env, code <+ Label(l)]
+                    fi
+      | JMP(l) -> [setBarrier(setStack(env, l)), code <+ Jmp(l)]
+      | CJMP(cond, l) ->  case pop(env) of
+                            [x, env] -> [setStack(env, l), code <+ Binop("cmp", L(0), x) <+ CJmp(cond, l)]
+                          esac
+      | CALL(f, n) -> let [env, callCode] = call (env, f, n) in
+	                        [env, code <+> callCode]
+      | GLOBAL(x) -> [addGlobal(env, x), code]
+      | END ->  case epilogue(env) of
+                  [env, epiCode] -> [env, code <+> epiCode]
+                esac
+      | BEGIN(f, a, l) -> [enterFunction(env, f, a, l), code <+> prologue(f)]
       (* Assignment        
          -- Some guidelines for generating functions:
          --
@@ -527,6 +609,41 @@ fun compile (env, code) {
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
+}
+
+fun simpleBinop (s, env, code) {
+   case pop2(env) of
+     [x, y, env] -> [push(env, y), code <+> (if memOpnd(x) && memOpnd(y) then singletonBuffer(Mov(x, rax)) <+ Binop(s, rax, y)
+                                  else singletonBuffer(Binop(s, x, y))
+                                  fi)]
+   esac
+}
+
+fun mulBinop (s, env, code) {
+  case pop2(env) of
+     [x, y, env] -> [push(env, y), code <+> (if memOpnd(y) then singletonBuffer(Binop(s, x, rax)) <+ Mov(rax, y)
+                                  else singletonBuffer(Binop(s, x, y))
+                                  fi)]
+   esac
+}
+
+fun divModBinop (env, code, resMov) {
+   case pop2(env) of
+     [x, y, env] -> case x of
+                      R(2) -> [push(env, y), code <+> withRDX(env, singletonBuffer(Mov(rsi, rax)) <+ Mov(rdx, rsi) <+ Cltd <+ IDiv(rsi) <+ Mov(resMov, rsi))] -- y is rsi
+                      | _ -> [push(env, y), code <+> withRDX(env, singletonBuffer(Mov(y, rax)) <+ Cltd <+ IDiv(x) <+ Mov(resMov, y))]
+                    esac
+   esac
+}
+
+fun compareBinop (s, env, code) {
+   case pop2(env) of
+     [x, y, env] -> [push(env, y), code <+> withRDX(env, (singletonBuffer(Binop("^", rdx, rdx)) <+> (
+                                              if memOpnd(x) && memOpnd(y)
+                                                then singletonBuffer(Mov(x, rax)) <+ Binop("cmp", rax, y)
+                                                else singletonBuffer(Binop("cmp", x, y))
+                                              fi) <+ Set(suffix(s), "%dl") <+ Mov(rdx, y)))]
+   esac
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
