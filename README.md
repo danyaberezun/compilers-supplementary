@@ -3,7 +3,9 @@
 **Repo structure**:
 * [`regression`](regression/) --- tests
 * [`src`](src/) contains sources of your compiler
+
   + [`X86.lama`](src/X86.lama) and [`X86_64.lama`](src/X86_64.lama) --- compiler to X86_32 and X86_64 GAS AT&T syntax (see [instruction reference](https://www.felixcloutier.com/x86/) and [wikibook: Ассемблер в Linux для программистов C](https://ru.wikibooks.org/wiki/%D0%90%D1%81%D1%81%D0%B5%D0%BC%D0%B1%D0%BB%D0%B5%D1%80_%D0%B2_Linux_%D0%B4%D0%BB%D1%8F_%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B8%D1%81%D1%82%D0%BE%D0%B2_C))
+
 * [`runtime64`](runtime64/) (32-bit version [`runtime32`](runtime32/)) contains your compiler runtime; for now, it contains just two builtin functions [`Lread`](runtime64/runtime.c#L7) and [`Lwrite`](runtime64/runtime.c#L3)
 
 Our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
