@@ -123,24 +123,43 @@ fun eval (env, w, insns) {
     inner (n, {}, list)
   }
 
+  -- Make a fresh local state: a pair of arrays for arguments and local variables;
+  -- takes the numbers of arguments and local variables respectively
+  fun beginCall (params, l) {
+    [listArray (params), initArray (l, fun (_) {0})]
+  }
+
   -- Core interpreter: takes a configuration and a program, returns a configuration
-  (* TODO *)
   fun eval (c@[st, cst, s, w], insns) {
-    fun evalOnce([ins:insns, c@[stack, s, w]]) {
+    fun evalOnce([ins:insns, c@[stack, cst, s@[args, locs], w]]) {
       case ins of 
-        READ         -> let [v, w1] = readWorld (w) in [insns, [v:stack, s, w1]]
-      | WRITE        -> let v:stack = stack in [insns, [stack, s, writeWorld (v, w)]]
-      | BINOP (op)   -> let v2:v1:stack = stack in [insns, [evalOp (op, v1, v2):stack, s, w]]
-      | LD    (x)    -> [insns, [s (x):stack, s, w]]
-      | ST    (x)    -> let v:stack = stack in [insns, [stack, s <- [x, v], w]]
-      | CONST (n)    -> [insns, [n:stack, s, w]]
+        READ         -> let [v, w1] = readWorld (w) in [insns, [v:stack, cst, s, w1]]
+      | WRITE        -> let v:stack = stack in [insns, [stack, cst, s, writeWorld (v, w)]]
+      | BINOP (op)   -> let v2:v1:stack = stack in [insns, [evalOp (op, v1, v2):stack, cst, s, w]]
+      | LD    (x)    -> [insns, [lookup (s, x):stack, cst, s, w]]
+      | ST    (x)    -> let v:stack = stack in [insns, [stack, cst, assign (s, x, v), w]]
+      | CONST (n)    -> [insns, [n:stack, cst, s, w]]
       | LABEL (s)    -> [insns, c]
-      | JMP   (l)    -> [env.fromLabel (l), c]
-      | CJMP  (cc, l) -> let v:stack = stack in [if evalCc (cc, v) then env.fromLabel (l) else insns fi, [stack, s, w]]
-      | LDA   (x) -> [insns, [x:stack, s, w]]
-      | STI -> let v:x:stack = stack in [insns, [v:stack, s <- [x, v], w]]
-      | DROP -> let _:stack = stack in [insns, [stack, s, w]]
-      | DUP -> let v:_ = stack in [insns, [v:stack, s, w]]
+      | JMP   (l)    -> [fromLabel (env, l), c]
+      | CJMP  (cc, l) -> let v:stack = stack in [if evalCc (cc, v) then fromLabel (env, l) else insns fi, [stack, cst, s, w]]
+      | CALL   (f, n)    -> 
+          let callee = fromLabel (env, f) in
+            [callee, [stack, [insns, s]:cst, s, w]]
+      | BEGIN  (f, a, l) -> 
+          let [stack, params] = take (stack, a) in 
+            [insns, [stack, cst, beginCall (params, l), w]]
+      | GLOBAL (x)       -> [insns, c]
+      | END              ->
+          case cst of
+            {} -> [{}, c]
+          | [insns, s]:cst -> [insns, [stack, cst, s, w]]
+          esac
+      | LDA   (x) -> [insns, [x:stack, cst, s, w]]
+      | STI -> let v:x:stack = stack in
+        assign (s, x, v);
+        [insns, [v:stack, cst, s, w]]
+      | DROP -> let _:stack = stack in [insns, [stack, cst, s, w]]
+      | DUP -> let v:_ = stack in [insns, [v:stack, cst, s, w]]
       esac
     }
     var state = [insns, c];
@@ -148,8 +167,7 @@ fun eval (env, w, insns) {
     while (state[0] != {}) do
       state := evalOnce (state)
     od;
-    state[1];
-    failure ("SM interpreter is not implemented\n")
+    state[1]
   }
   
   eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
@@ -355,32 +373,7 @@ fun addVars (env, names) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
-
-(* Assignment *)
-
--- Some guidelines for compiling functions and scopes.
---
--- 1. use env.beginScope/env.endScope properly;
--- 2. in each scope traverse the definitions twice:
---    a. first, add all bindings into symbolic state,
---       using end.addVar/env.addFun;
---    b. do not forget to generate GLOBAL instructions for
---       top-level variable declarations;
---    c. on the secord traversal add functions themselves for
---       future code generation (use env.rememberFun).
--- 3. the overall flow for code generation:
---    a. generate the code for the topmost expression (the program itself);
---    b. take list of nested functions definitions via env.getFuns and
---       generate the code for each function;
---    c. repeat b. until no function definitions appear.
--- 4. when compiling functions, do not forget to create proper
---    environment (use env.beginFun) and register arguments
---    (use env.addArg).
-
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine
--- instructions.
-public fun compileSM (stmt) {
+public fun compileSM (expr) {
   fun label (lab, labUsed) {
     if labUsed
     then singletonBuffer (LABEL (lab))
@@ -404,11 +397,11 @@ public fun compileSM (stmt) {
     esac
   }
 
-  fun compile (lab, env, stmt) {
-    case stmt of
+  fun compile (lab, env, expr) {
+    case expr of
       Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
+    | Var    (x)        -> [false, env, singletonBuffer (LD (lookupVar (env, x)))]
+    | Ref    (x)        -> [false, env, singletonBuffer (LDA (lookupVar (env, x)))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
     | Read    (e)       -> 
         let [eLab, env] = env.genLabel in
@@ -463,6 +456,49 @@ public fun compileSM (stmt) {
         let [e2LabUsed, env, e2Code] = compile (e2Lab, env, e2) in
         let code = e1Code <+> label (e1Lab, e1LabUsed) <+> e2Code <+> label (e2Lab, e2LabUsed) <+ BINOP (op) in
           [false, env, code]
+    | Call (fn, args)    -> 
+        let Fun (fLabel, params) = lookupFun (env, fn) in
+        let [env, argsCode] = foldl(
+          fun ([env, argsCode], arg) {
+            let [eLab, env] = genLabel (env) in
+            let [eLabUsed, env, code] = compile (eLab, env, arg) in
+              [env, argsCode <+> code <+> label (eLab, eLabUsed)]
+          },
+          [env, emptyBuffer ()],
+          args
+        ) in
+          [false, env, argsCode <+ CALL (fLabel, size (args))]
+    | Scope (defs, e)    -> 
+
+        -- 1st pass: add locals
+        let [env, gCode, funs] = foldl (
+          fun ([env, gCode, funs], def) {
+            case def of
+              Fun (name, args, body) -> 
+                let [fLabel, env] = genFunLabel (env, name) in
+                  [addFun (env, name, fLabel, size (args)), gCode, Fun (fLabel, args, body) : funs]
+            | Var (names) -> 
+                [
+                  addVars (env, names), 
+                  if isGlobal (env) then listBuffer (map (fun (n) { GLOBAL (n) }, names)) else gCode fi,
+                  funs
+                ]
+            esac
+          },
+          [beginScope (env), {}, {}],
+          defs
+        ) in 
+        -- 2nd pass: remember functions
+        let env = foldl (
+          fun (env, Fun (fLabel, args, body)) {
+            rememberFun (env, fLabel, args, body)
+          },
+          env,
+          funs
+        ) in 
+        let [labUsed, env, eCode] = compile (lab, env, e) in
+        let code = gCode <+> eCode in
+          [labUsed, endScope (env), code]
     | Ignore  (e) -> 
         let [eLab, env] = env.genLabel in
         let [eLabUsed, env, eCode] = compile (eLab, env, e) in
@@ -498,7 +534,7 @@ public fun compileSM (stmt) {
     
   case initCompEnv ().genLabel of
     [endLab, env] ->
-       case compile (endLab, env, stmt) of
+       case compile (endLab, env, expr) of
          [endLabUsed, env, code] ->
             getBuffer $
             compileFunctions (env, 
