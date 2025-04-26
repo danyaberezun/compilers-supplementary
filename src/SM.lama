@@ -119,8 +119,51 @@ fun eval (env, w, insns) {
   -- Core interpreter: takes a configuration and a program, returns a configuration
   (* Assignment *)
   fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
-  }
+    case insns of
+      JMP(l) : tail -> eval(env, [s, st, w], env.fromLabel(l))
+      | CJMP(t, l) : tail -> 
+          case s of x : s_ -> 
+            var pred = case t of
+              "z"  -> (x == 0)
+              | "nz" -> (x != 0)
+            esac;
+            eval(env, [s_, st, w], if pred then JMP(l) : tail else tail fi)
+          esac
+      | READ : tail -> 
+          case readWorld(w) of
+            [z, w1] -> eval(env, [z : s, st, w1], tail)
+        esac
+      | WRITE : tail -> 
+          case s of
+            z : s_ -> eval(env, [s_, st, writeWorld(z, w)], tail)
+          esac
+      | BINOP (op):t ->
+        case st of r:l:tail -> 
+          eval(env, [evalOp(op, l, r):tail, cst, w], t) 
+        esac
+      | LD(x) : tail -> eval(env, [st(x) : s, st, w], tail)
+      | ST(x) : tail -> 
+          case s of
+            z : s_ -> eval(env, [s_, st <- [x, z], w], tail)
+          esac
+      | CONST(z) : tail -> eval(env, [z : s, st, w], tail)
+      | LDA(x) : tail -> eval(env, [Ref(x) : s, st, w], tail)
+      | STI : tail ->
+          case s of
+            v : Ref(x) : s_ -> eval(env, [s_, st <- [x, v], w], tail)
+          esac
+      | DROP : tail ->
+          case s of
+            _ : s_ -> eval(env, [s_, st, w], tail)
+          esac
+      | DUP : tail ->
+          case s of
+            x : _ -> eval(env, [x : s, st, w], tail)
+          esac
+      | LABEL(_) : tail -> eval(env, [s, st, w], tail)
+      | _ : tail -> eval(env, [s, st, w], tail)
+    esac
+}
   (* End *)
   
   eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
@@ -327,6 +370,14 @@ fun addVars (env, names) {
 -- Takes an expression, returns a list of stack machine
 -- instructions.
 
+fun compileExpr (expr) {
+  case expr of
+     Var(name) -> singletonBuffer(LD(name))
+   | Const(x) -> singletonBuffer(CONST(x))
+   | Binop(op, l, r) -> compileExpr(l) <+> compileExpr(r) <+ BINOP(op)
+   esac
+}
+
 (* Assignment *)
 
 -- Some guidelines for compiling functions and scopes.
@@ -365,8 +416,44 @@ public fun compileSM (stmt) {
     | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
     | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 ->  failure ("compileSM not implemented\n")
-    esac
+    | Read  (x)         -> [false, env, singletonBuffer (READ) <+ ST (x) <+ DROP]
+    | Write(x) ->
+        let [eLab, env1] = env.genLabel() in
+        let [labUsed, env2, code] = compile(eLab, env1, x) in
+        let fullCode = code <+> label(eLab, labUsed) <+ WRITE in [false, env2, fullCode]
+    | Assn(s, e) ->
+        let [varLab, eLab, env1] = env.genLabels(2) in
+        let [varLabUsed, env2, varCode] = compile(varLab, env1, s) in
+        let [eLabUsed, env3, eCode] = compile(eLab, env2, e) in
+        let fullCode = varCode <+> label(varLab, varLabUsed) <+> eCode <+> label(eLab, eLabUsed) <+> STI in [false, env3, fullCode]
+    | Seq(s1, s2) ->
+        let [s2Lab, env1] = env.genLabel() in
+        let [s2LabUsed, env2, s1Code] = compile(s2Lab, env1, s1) in
+        let [labUsed, env3, s2Code] = compile(lab, env2, s2) in
+        let fullCode = s1Code <+> label(s2Lab, s2LabUsed) <+> s2Code in [labUsed, env3, fullCode]
+    | If(e, s1, s2) ->
+        let [elseLab, env1] = env.genLabel() in
+        let [_, env2, tb] = compile(lab, env1, s1) in
+        let [_, env3, eb] = compile(lab, env2, s2) in
+        let fullCode = compileExpr(e) <+> CJMP("z", elseLab) <+> tb <+> JMP(lab) <+> LABEL(elseLab) <+> eb in [true, env3, fullCode]
+    | DoWhile(s, e) ->
+        let [blockLab, env1] = env.genLabel() in
+        let [condLab, env2] = env1.genLabel() in
+        let [clu, env3, bc] = compile(condLab, env2, s) in
+        let fullCode = label(blockLab, true) <+> bc <+> label(condLab, clu) <+> compileExpr(e) <+> CJMP("nz", blockLab) in [false, env3, fullCode]
+    | Binop(op, e1, e2) ->
+        let [lLab, env1] = env.genLabel() in
+        let [rLab, env2] = env1.genLabel() in
+        let [lLab_, env3, block1] = compile(lLab, env2, e1) in
+        let [rLab_, env4, block2] = compile(rLab, env3, e2) in
+        let fullCode = block1 <+> label(lLab, lLab_) <+> block2 <+> label(rLab, rLab_) <+> BINOP(op) in [false, env4, fullCode]
+    | While(e, s) ->
+        compile(lab, env, If(e, DoWhile(s, e), Skip))
+    | Ignore(e) ->
+        let [condLab, env1] = env.genLabel() in
+        let [eLabUsed, env2, eCode] = compile(condLab, env1, e) in
+        let fullCode = eCode <+> label(condLab, eLabUsed) <+> DROP in [false, env2, fullCode]
+  esac
   }
 
   case initCompEnv ().genLabel of
