@@ -476,9 +476,37 @@ fun savecode (env, nA) {
 --    d. pay attention to the order of arguments placements 
 -- 3. generate the call itself;
 -- 4. discard those parameters that were passed through stack from the stack;
--- 5. restore saved live registers.         
+-- 5. restore saved live registers.
 fun call (env, fLabel, nA) {
-  failure ("calls not implemented")
+  fun moveArgsInPlaces(env, nA) {
+    if nA == 0 then
+      [env, emptyBuffer()]
+    elif stackDepth(env) == nA then
+      let [x, env] = pop(env) in
+      moveArgsInPlaces(env, nA - 1)
+    else
+      let [x, env] = pop(env) in
+      let [env, moveCode] = moveArgsInPlaces(env, nA - 1) in
+      if nA <= nRegArgs then
+        [env, moveCode <+ Mov(x, R(nA - 1))]
+      else
+        [env, moveCode <+ Push(x)]
+      fi
+    fi
+  }
+
+  let [pushs, pops] = savecode (env, nA) in
+  let numRegArgs = min(nRegArgs, nA) in
+  let numStackArgs = nA - numRegArgs in
+  let [env, moveCode] = moveArgsInPlaces(env, nA) in
+  let [x, env] = allocate(env) in
+
+  [env, pushs
+    <+> moveCode
+    <+ Call(fLabel)
+    <+ Binop("+", L(numStackArgs * wordSize), rsp)
+    <+> pops
+    <+ Mov(rax, x)]
 }
 
 -- Gets a suffix for Set instruction from
@@ -497,16 +525,18 @@ fun suffix (op) {
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  foldl (
+  let result = foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      -- printf("Compiling %s\n", showSMInsn (i));
 
-      case i of
+      let result = case i of
         READ ->
           let [env, callCode] = call (env, "Lread", 0) in
           [env, code <+> callCode]
       | WRITE ->
           let [env, callCode] = call (env, "Lwrite", 1) in
+          let [_, env] = pop(env) in
           [env, code <+> callCode]
       (*
         READ ->
@@ -536,46 +566,94 @@ fun compile (env, code) {
 
       | BINOP(op) ->
           let [y, x, env] = env.pop2 in
-          [env.push(x),
-            if
-              compare(op, "+") == 0 !!
-              compare(op, "-") == 0 !!
-              compare(op, "*") == 0
-            then
-              if memOpnd(x) && memOpnd(y) then
-                code <+ Mov(y, rax) <+ Binop(op, rax, x)
-              else
-                code <+ Binop(op, y, x)
-              fi
-            elif
-              compare(op, "/") == 0 !!
-              compare(op, "%") == 0
-            then
-              code
-                <+ Mov(x, rax) <+ Cltd
-                <+ IDiv(y)
-                <+ case op of "/" -> Mov(rax, x) | "%" -> Mov(rdx, x) esac
-            elif
-              compare(op, "<") == 0  !! compare(op, ">=") == 0 !!
-              compare(op, "==") == 0 !! compare(op, "!=") == 0 !!
-              compare(op, ">") == 0  !! compare(op, "<=") == 0
-            then
-              code
-                <+ Binop("^", rdx, rdx)
+          let oldEnv = env in
+          let env = push(env, x) in
+          if
+            compare(op, "+") == 0 !!
+            compare(op, "-") == 0 !!
+            compare(op, "*") == 0
+          then
+            if memOpnd(x) && memOpnd(y) then
+              [env, code <+ Mov(y, rax) <+ Binop(op, rax, x)]
+            else
+              [env, code <+ Binop(op, y, x)]
+            fi
+          elif
+            compare(op, "/") == 0 !!
+            compare(op, "%") == 0
+          then
+            [env, code
+              <+ Mov(x, rax)
+              <+> case x of
+                  R(2) ->
+                    singletonBuffer(Cltd)
+                    <+ IDiv(y)
+                    <+ case op of "/" -> Mov(rax, x) | "%" -> Mov(rdx, x) esac
+                | R(1) ->
+                    singletonBuffer(Mov(y, rcx))
+                    <+ Cltd
+                    <+ IDiv(rcx)
+                    <+ case op of "/" -> Mov(rax, x) | "%" -> Mov(rdx, x) esac
+                | _ ->
+                    withRDX(oldEnv, singletonBuffer(Cltd)
+                      <+ IDiv(y)
+                      <+ case op of "/" -> Mov(rax, x) | "%" -> Mov(rdx, x) esac)
+                esac]
+          elif
+            compare(op, "<") == 0  !! compare(op, ">=") == 0 !!
+            compare(op, "==") == 0 !! compare(op, "!=") == 0 !!
+            compare(op, ">") == 0  !! compare(op, "<=") == 0
+          then
+            case x of
+              R(2) ->
+                [env, code
+                  <+ Binop("^", rbx, rbx)
+                  <+ Binop("cmp", y, x)
+                  <+ Set(suffix(op), "%bl")
+                  <+ Mov(rbx, x)]
+            | R(1) ->
+                [env, code
+                  <+ Binop("^", rbx, rbx)
+                  <+ Binop("cmp", y, x)
+                  <+ Set(suffix(op), "%bl")
+                  <+ Mov(rbx, x)]
+            | _ ->
+              [env, code
+                <+ Binop("^", rax, rax)
                 <+> (if memOpnd(x) && memOpnd(y) then
-                      singletonBuffer(Mov(x, rax)) <+
-                        Binop("cmp", y, rax)
+                      withRDX(oldEnv, singletonBuffer(Mov(x, rdx)) <+
+                        Binop("cmp", y, rdx))
                     else
                       singletonBuffer(Binop("cmp", y, x))
                     fi)
-                <+ Set(suffix(op), "%dl")
-                <+ Mov(rdx, x)
-            elif
-              compare(op, "&&") == 0 !!
-              compare(op, "!!") == 0
-            then
-              code
-                <+> (if memOpnd(x) then
+                <+ Set(suffix(op), "%al")
+                <+ Mov(rax, x)]
+            esac
+          elif
+            compare(op, "&&") == 0 !!
+            compare(op, "!!") == 0
+          then
+            case x of
+              R(2) ->
+                [env, code
+                  <+ Binop("^", rbx, rbx)
+                  <+ Binop("&&", y, y)
+                  <+ Set("nz", "%bl")
+                  <+ Binop("&&", x, x)
+                  <+ Set("nz", "%cl")
+                  <+ Binop(op, rcx, rbx)
+                  <+ Mov(rbx, x)]
+            | R(1) ->
+                [env, code
+                  <+ Binop("^", rbx, rbx)
+                  <+ Binop("&&", y, y)
+                  <+ Set("nz", "%bl")
+                  <+ Binop("&&", x, x)
+                  <+ Set("nz", "%cl")
+                  <+ Binop(op, rcx, rbx)
+                  <+ Mov(rbx, x)]
+            | _ -> [env, code <+>
+                withRDX(oldEnv, (if memOpnd(x) then
                       singletonBuffer(Mov(x, rax)) <+
                         Binop("&&", rax, rax)
                     else
@@ -591,23 +669,22 @@ fun compile (env, code) {
                 <+ Set("nz", "%al")
                 <+ Binop(op, rax, rdx)
                 <+ Binop("&&", L(1), rdx)
-                <+ Mov(rdx, x)
-            else
-              failure("Unsupported binop: " ++ op ++ "\n")
-            fi
-          ]
+                <+ Mov(rdx, x))]
+            esac
+          else
+            failure("Unsupported binop: " ++ op ++ "\n")
+          fi
       | CONST(x) ->
           let [s, env] = env.allocate in
           [env, code <+ Mov(L(x), s)]
       | LD(x) ->
-          let [s, env] = env.addGlobal(x).allocate in
+          let [s, env] = env.allocate in
           if memOpnd(s) then
             [env, code <+ Mov(env.loc(x), rax) <+ Mov(rax, s)]
           else
             [env, code <+ Mov(env.loc(x), s)]
           fi
       | ST(x) ->
-          let env = addGlobal(env, x) in
           let s = peek(env) in
           if memOpnd(s) then
             [env, code <+ Mov(s, rax) <+ Mov(rax, env.loc(x))]
@@ -633,7 +710,6 @@ fun compile (env, code) {
       | DROP ->
         let [_, env] = pop(env) in [env, code]
       | LDA(v) ->
-        let env = addGlobal(env, v) in
         let [x, env] = env.allocate in
         if memOpnd(x) then
           [env, code <+ Lea(env.loc(v), rax) <+ Mov(rax, x)]
@@ -660,9 +736,25 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
+      | BEGIN(fnName, numArgs, numLocals) ->
+        let env = enterFunction(env, fnName, numArgs, numLocals) in
+        [env, code <+> prologue(fnName)]
+      | GLOBAL(name) ->
+        let env = addGlobal(env, name) in
+        [env, code]
+      | END ->
+        let [env, epilogue] = epilogue(env) in
+        [env, code <+> epilogue]
+      | CALL(fnName, numArgs) ->
+          let [env, callCode] = call (env, fnName, numArgs) in
+          [env, code <+> callCode]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-      esac
-    }, [env, emptyBuffer ()], code)
+      esac in
+      -- printf("Compiled into %s\n", let [env, inst] = result in string(inst));
+      result
+  }, [env, emptyBuffer ()], code) in
+  -- printf("%s\n", string(result));
+  result
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
