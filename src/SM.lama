@@ -56,7 +56,7 @@ fun initEvalEnv (insns) {
           fun ([m, insns]) {
             case insns of
               {}               -> m
-            | LABEL (lab) : tl -> rec ([addMap (m, lab, insns), tl])
+            | LABEL (l) : tl -> rec ([addMap (m, l, insns), tl])
             | _ : tl           -> rec ([m, tl])
             esac
           }
@@ -68,8 +68,8 @@ fun initEvalEnv (insns) {
 }
 
 -- Accessor function
-fun fromLabel (env, lab) {
-  env [0] (lab)
+fun fromLabel (env, l) {
+  env [0] (l)
 }
 
 -- Stack machine interpreter. Takes an environment, a world and a program,
@@ -117,11 +117,31 @@ fun eval (env, w, insns) {
   }
 
   -- Core interpreter: takes a configuration and a program, returns a configuration
-  (* Assignment *)
-  fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+  fun eval (c@[stack, cst, s, w], insns) {
+    case insns of
+          BINOP(op):insns_rest -> let r:l:stack_rest = stack in eval([evalOp(op, l, r):stack_rest, s, w], insns_rest) 
+        | CONST(x):insns_rest -> eval([x:stack, s, w], insns_rest) 
+        | READ:insns_rest -> let [inp, w] = readWorld(w) in eval([inp:stack, s, w], insns_rest)
+        | WRITE:insns_rest -> let out:stack_rest = stack in eval([stack_rest, s, writeWorld(out, w)], insns_rest)
+        | LD(x):insns_rest -> eval([s(x):stack, s, w], insns_rest)
+        | LDA(x):insns_rest -> eval([Ref(x):stack, s, w], insns_rest)
+        | ST(x):insns_rest -> let v:stack_rest = stack in eval([stack, s <- [x, v], w], insns_rest)
+        | STI:insns_rest ->  let v:Ref(x):stack_rest = stack in eval([v:stack_rest, s <- [x, v], w], insns_rest)
+        | LABEL(_):insns_rest -> eval(c, insns_rest)
+        | JMP(l):_ -> eval(c, fromLabel(env, l))
+        | CJMP(c, l):insns_rest -> let x:stack_rest = stack in
+            if case c of 
+                  "z" -> x == 0 
+                | "nz" -> x != 0
+            esac then
+                eval([stack_rest, s, w], fromLabel(env, l))
+            else
+                eval([stack_rest, s, w], insns_rest)
+            fi
+        | DROP:insns_rest -> let _:stack_rest = stack in eval([stack_rest, s, w], insns_rest)
+        | _ -> c
+    esac
   }
-  (* End *)
 
   eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
 }
@@ -352,9 +372,9 @@ fun addVars (env, names) {
 -- Takes an expression, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  fun label (lab, labUsed) {
-    if labUsed
-    then singletonBuffer (LABEL (lab))
+  fun label (l, lUsed) {
+    if lUsed
+    then singletonBuffer (LABEL (l))
     else emptyBuffer ()
     fi
   }
@@ -375,13 +395,42 @@ public fun compileSM (stmt) {
     esac
   }
 
-  fun compile (lab, env, stmt) {
+  fun compile (l, env, stmt) {
     case stmt of
       Skip              -> [false, env, emptyBuffer ()]
     | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
     | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 -> failure ("compileSM not implemented\n")
+    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]              
+    | Read (x) ->   [false, env, emptyBuffer() <+ READ <+ ST (x) <+ DROP]
+    | Write (e) ->  let [l1, env] = genLabel(env) in 
+                    let [l2, env, ec] = compile(l1, env, e) in 
+                    [false, env, ec <+> label(l1, l2) <+ WRITE]
+    | Binop (s, l, r) ->    let [l1, l2, env] = genLabels(env, 2) in 
+                            let [l3, env, lc] = compile(l1, env, l) in 
+                            let [l4, env, rc] = compile(l2, env, r) in
+                            [false, env, lc <+> label(l1, l3) <+> rc <+> label(l2, l4) <+ BINOP(s)] 
+    | Assn (x, e) ->    let [l1, env] = genLabel(env) in 
+                        let [l2, new_env, xc] = compile(l1, env, x) in
+                        let [l3, env] = genLabel(env) in 
+                        let [l4, new_env, ec] = compile(l1, env, e) in
+                        [false, new_env, xc <+> label (l1, l2) <+> ec <+> label (l3, l4) <+ STI]
+    | Seq (s1, s2) ->   let [l1, env] = genLabel(env) in
+                        let [l2, env, c1] = compile(l1, env, s1) in
+                        let [l3, env, c2] = compile(l, env, s2) in
+                        [l3, env, c1 <+> label(l1, l2) <+> c2]
+    | If (con, t, f) -> let [l1, l2, env] = genLabels(env, 2) in
+                        let [l3, env, ccon] = compile(l2, env, con) in 
+                        let [_, env, ct] = compile(l, env, t) in 
+                        let [_, env, cf] = compile(l, env, f) in
+                        [true, env, ccon <+> label(l2, l3) <+ CJMP("z", l1) <+> ct <+ JMP(l) <+ LABEL (l1) <+> cf]
+    | While (con, b) -> compile (l, env, If (con, DoWhile (b, con), Skip))
+    | DoWhile (b, con) ->   let [l1, l2, l3, env] = genLabels(env, 3) in
+                            let [l4, env, ccon] = compile(l3, env, con) in
+                            let [l5, env, cb] = compile(l1, env, b) in
+                            [false, env, label(l2, true) <+> cb <+> label(l1, l5) <+> ccon <+> label(l3, l4) <+ CJMP("nz", l2)]
+    | Ignore(e) ->  let [l1, env] = genLabel(env) in
+                    let [l2, env, c] = compile(l1, env, e) in
+                    [false, env, c <+> label(l1, l2) <+ DROP]
     esac
   }
 
@@ -410,7 +459,7 @@ public fun compileSM (stmt) {
     
     main <+> iterate (env, {})
   }
-    
+
   case initCompEnv ().genLabel of
     [endLab, env] ->
        case compile (endLab, env, stmt) of
