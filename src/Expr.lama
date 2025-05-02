@@ -64,7 +64,7 @@ public fun evalOp (op, l, r) {
 fun checkVar (state, name) {
   case state.lookup (name) of
     Var (_) -> skip
-  | _       -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
+  | _       -> error (sprintf ("the name ""%s"" does not designate a variable (%s)", name, state.lookup (name).string), getLoc (name))
   esac
 }
 
@@ -80,6 +80,10 @@ fun checkFun (state, name) {
 -- Helper function: adds a bunch of regular variables current scope
 fun addNames (state, names) {
   foldl (fun (s, name) {s.addName (name, Var (0))}, state, names)
+}
+
+fun addNamesWithValues (state, names, values) {
+  foldl (fun (s, [name, v]) {s.addName (name, Var (v))}, state, zip(names, values))
 }
 
 -- Helper function: adds a function in current scope
@@ -101,58 +105,165 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun addScopeDef (s, d) {
-  case d of
-      Var (n)             -> s.addNames (n)
-    | Fun (n, args, body) -> s.addFunction (n, args, body)
+fun evalDefs(st, defs) {
+  foldl(fun (st, def) {
+    case def of
+     Var(ds) -> addNames(st, ds)
+     | Fun(name, args, body) -> addFunction(st, name, args, body)
+    esac
+  }, st, defs)
+}
+
+fun evalVar ([st, w], x) {
+  checkVar(st, x);
+  case lookup(st, x) of
+    Var (v) -> [[st, w], v]
   esac
 }
 
-(* Assignment *)
-fun eval (c@[s, w], expr) {
-    case expr of 
-    Assn (lhs, rhs) -> case evalList (c, {lhs, rhs}) of 
-        [[s, w], {Ref (name), value}] -> [[s <- [name, value], w], value]
-      esac
-  | Seq (s1, s2) -> case evalList (c, {s1, s2}) of
-        [c, {_, v}] -> [c, v]
-      esac
-  | Skip -> [c, Void]
-  | Read (n) -> case readWorld (w) of 
-        [v, w] -> [[s <- [n, v], w], Void]
-      esac
-  | Write (e) -> case eval (c, e) of 
-        [[s, w], v] -> [[s, writeWorld (v, w)], Void]
-      esac
-  | If (e, s1, s2) -> case eval (c, e) of 
-        [c, v] -> eval (c, if v != 0 then s1 else s2 fi)
-      esac
-  | While (e, inner) -> case eval (c, e) of 
-        [c, v] -> if v != 0 then eval (c, Seq (inner, expr)) else [c, Void] fi
-      esac
-  | DoWhile (inner, e) -> eval (c, Seq (inner, While (e, inner)))
-  | Var (n) -> [c, s.lookup (n)]
-  | Ref (n) -> [c, Ref (n)]
-  | Const (v) -> [c, v]
-  | Binop (op, l, r) -> case evalList (c, {l, r}) of 
-        [c, {vl, vr}] -> [c, evalOp (op, vl, vr)]
-      esac
-  | Scope (ds, e) -> case eval ([foldl (addScopeDef, s.enterScope, ds), w], e) of
-        [[s, w], v] -> [[s.leaveScope, w], v]
-      esac
-  | Call (n, args) -> case evalList (c, args) of
-        [[s, w], vals] -> case s.lookup (n) of
-            Fun (args, body) -> case eval ([foldl (fun (s, [n, v]) {s.addName (n, v)}, s.enterFunction, zip (args, vals)), w], body) of 
-                [[s2, w], v] -> [[s.leaveFunction (s2.getGlobal), w], v]
-              esac
+fun evalConst (c, v) {
+  [c, v]
+}
+
+fun evalBinop (c, op, e1, e2) {
+  case evalList(c, {e1, e2}) of
+    [new_c, {v1, v2}] -> [new_c, evalOp(op, v1, v2)]
+  esac
+}
+
+fun evalAssn (c@[st, w], e1, e2) {
+  case evalList(c, {e1, e2}) of
+    [[new_st, new_w], {Ref(x), v2}] ->
+      checkVar(st, x);
+      [[new_st <- [x, Var(v2)], new_w], v2]
+  esac
+}
+
+
+fun evalSeq (c, e1, e2) {
+  case eval(c, e1) of
+    [new_c, _] -> eval(new_c, e2)
+  esac
+}
+
+
+fun evalSkip (c) {
+  [c, 0]
+}
+
+
+fun evalRead (c@[st, w], x) {
+  checkVar(st, x);
+  case readWorld(w) of
+    [v, new_w] -> [[st <- [x, Var(v)], new_w], 0]
+  esac
+}
+
+fun evalWrite (c, e) {
+  case eval(c, e) of
+    [[new_st, new_w], v] -> [[new_st, writeWorld(v, new_w)], 0]
+  esac
+}
+
+fun evalIf (c, e1, e2, e3) {
+  case eval(c, e1) of
+    [new_c, 0] -> eval(new_c, e3)
+  | [new_c, _] -> eval(new_c, e2)
+  esac
+}
+
+fun evalWhile (c, e1, e2) {
+  case eval(c, e1) of
+    [new_c, 0] -> [new_c, 0]
+  | [new_c, _] -> case eval(new_c, e2) of
+                    [body_c, 0] -> eval(body_c, While (e1, e2))
+                  esac
+  esac
+}
+
+fun evalDoWhile (c, e1, e2) {
+  eval(c, Seq(e1, While(e2, e1)))
+}
+
+fun evalRef (c, x) {
+  [c, Ref(x)]
+}
+
+fun evalIgnore (c, e) {
+  case eval(c, e) of
+    [new_c, _] -> [new_c, 0]
+  esac
+}
+
+
+fun evalScope (c@[st, w], defs, expr) {
+  case eval([evalDefs(enterScope(st), defs), w], expr) of
+    [[st, w], v] -> [[leaveScope(st), w], v]
+  esac
+}
+
+fun evalCall (c@[st, w], name, args) {
+  var f = lookup(st, name);
+  checkFun(st, name);
+  case f of
+    Fun(fArgs, body) ->
+      case evalList(c, args) of
+        [[st, w], vals] ->
+          case eval([addNamesWithValues(enterFunction(st), fArgs, vals), w], body) of
+            [[newSt, w], v] -> [[leaveFunction(st, getGlobal(newSt)), w], v]
           esac
-      esac
-  | Ignore (e) -> case eval (c, e) of 
-        [c, v] -> [c, Void]
       esac
   esac
 }
-(* End *)
+
+fun evalList (c, exprs) {
+  case foldl (fun ([c, vals], e) {
+                case eval(c, e) of
+                  [c, v] -> [c, v : vals]
+                esac
+              },
+              [c, {}],
+              exprs) of
+    [c, vals] -> [c, reverse (vals)]
+  esac
+}
+
+fun evalDefs(st, defs) {
+  foldl(fun (st, def) {
+    case def of
+     Var(ds) -> addNames(st, ds)
+     | Fun(name, args, body) -> addFunction(st, name, args, body)
+    esac
+  }, st, defs)
+}
+
+public fun evalExpr (input, expr) {
+  case eval ([emptyState (), createWorld (input)], expr) of
+    [c, _] -> c.snd.getOutput
+  esac
+}
+
+fun eval (c, expr) {
+  case expr of
+    Var (x)             -> evalVar(c, x)
+  | Const (v)           -> evalConst(c, v)
+  | Binop (op, l, r)    -> evalBinop(c, op, l, r)
+  | Assn (e1, e2)       -> evalAssn(c, e1, e2)
+  | Seq (e1, e2)        -> evalSeq(c, e1, e2)
+  | Skip                -> evalSkip(c)
+  | Read (x)            -> evalRead(c, x)
+  | Write (e)           -> evalWrite(c, e)
+  | If (e1, e2, e3)     -> evalIf(c, e1, e2, e3)
+  | While (e1, e2)      -> evalWhile(c, e1, e2)
+  | DoWhile (e1, e2)    -> evalDoWhile(c, e1, e2)
+  | Ref (x)             -> evalRef(c, x)
+  | Ignore (e)          -> evalIgnore(c, e)
+  | Scope (defs, e)     -> evalScope(c, defs, e)
+  | Call (name, args)   -> evalCall(c, name, args)
+  | _                   -> failure ("Error. Unknown expression!\n")
+  esac
+}
+
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
