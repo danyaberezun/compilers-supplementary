@@ -1,4 +1,4 @@
-# Assignment 6: Scopes and functions (Interpretation mode only)
+# Assignment 7: Scopes and functions (SM and X86)
 
 **Repo structure**:
 * [`regression`](regression/) --- tests
@@ -11,14 +11,31 @@ Our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
 * (`-s` option) compilation to SM and SM program interpretation
 * (`-o` option) compilation to X86 (via SM)
 
-Corresponding lecture notes:  [Functions and Local Scopes](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/06.pdf)
+Corresponding lecture notes: [Functions in SM](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/07.pdf)
 
 **What is new, some important changes, and additional remarks**:
-1. New lecture notes ([Functions and Local Scopes](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/06.pdf)
+1. New lecture note ([Functions and Local Scopes](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/07.pdf)
 2. Note, we support syntactically nested functions in an *extremely* simple way:
-   + we do **not** support access to enclosing functions local variables
-3. Note, `;` used at the end of declarations does not match the sequence operator `;`
-
+   + we do **not** support access to enclosing functions local variables;
+     Thus, our state is just a pair of function's local state and program global state
+3. [`SM`](src/SM.lama): our compilation environment is extended: we now generate `SM` code via symbolic interpretation of the program `AST``
+4. How to compile a scope to `SM`:
+   1. Use `beginScope` to init/enter a new scope
+   2. Iterate over definitions:
+      1. Use `addVar` to add each variable declaration into the symbolic state. NB: do not forget to generate `GLOBAL` instructions for top-level variable declarations
+      2. In case of a function declaration use `genFunLabel` to generate a unique label for function and use `addFun` to add the function declaration into symbolic state
+   3. Iterate again over functions and for each function use `rememberFun` to add the function for further code generation
+   4. Compile scope expression in the updated state
+   5. Use `endScope` to leave the scope
+5. The overall flow for `SM` code generation:
+   1. generate the code for the topmost expression (the program itself)
+   2. take the list of nested functions definitions via `getFuns` and generate the code for each function
+   3. repeat the previous step until no function definitions appear
+   4. when compiling functions, do not forget to create a proper environment with `beginFun` and register arguments using `addArg`
+6. There are two new auxiliary functions in [`X86_64`](src/X86_64.lama): [`prologue`](src/X86_64.lama#L367) and [`epilogue`](src/X86_64.lama#L373);
+   Also see [guideline here](src/X86_64.lama#L458)
+   (corresponding 32-bit version: [`X86`](src/X86.lama): [`prologue`](src/X86.lama#L353) and [`epilogue`](src/X86.lama#L360);
+    Also see [guideline here](src/X86.lama#L428))
 
 **How to submit the task**:
 * For the fist task: fork the repo (or switch to the corresponding branch and stretch your changes)
@@ -31,10 +48,7 @@ Corresponding lecture notes:  [Functions and Local Scopes](https://github.com/da
 **Standard deadline**: one week
 
 **Task**:
-
-* Add scopes and functions (in interpretation mode only):
-  + Change parser to support scopes and functions
-  + Update language interpreter (`-i` mode) to support scopes and functions
+* Support compilation of scopes and functions in all modes
 
 **Compile and run tests (from the root folder)**:
 ```bash
