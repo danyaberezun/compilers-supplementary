@@ -541,59 +541,89 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
           esac
-      | LD (x) ->
-          case env.addGlobal (x).allocate of
-            [s, env] -> [env, code <+> move (env.loc (x), s)]
-          esac
-      | ST (x) ->
-          case env.addGlobal (x).pop of
-            [s, env] -> [push(env, loc(env, x)), code <+> move (s, env.loc (x))]
-          esac
+      | LD (x) -> let [s, env1] = allocate(env) in [env1, code <+> move(loc (env1, x), s)]
+      | ST (x) -> let [s, env1] = pop(env) in [push(env1, loc (env1, x)), code <+> move(s, loc(env1, x))]
       | CONST (x) -> 
           case env.allocate of
             [s, env] -> [env, code <+> move (L(x), s)]
           esac
       | BINOP (op) -> 
-        case env.pop2 of [y, x, env] -> 
-          case env.allocate of [s, env] ->          
-            (
-              var integerOperators = {["+" , true], ["-" , true], ["*" , true]};
-              var logicalOperators = {["&&" , [257, "e"]], ["!!" , [0, "g"]]};
-              var cmpOperators = {[">", true], [">=", true], ["<", true], ["<=", true], ["==", true], ["!=", true]};
-              if noneToBool(assoc(integerOperators, op)) then
-                [env, code <+ Mov(x, rax) <+ Binop(op, y, rax) <+ Mov(rax, s)]
-              elif noneToBool(assoc(logicalOperators, op)) then
-                case assoc(logicalOperators, op) of (Some([n, suff])) ->
-                    [env, code <+ Mov(L(0), rax) <+ Mov(L(0), rdx) <+
-                    Binop("cmp", L(0), y) <+ Set("ne", "%al") <+
-                    Binop("cmp", L(0), x) <+ Set("ne", "%ah") <+ Mov(L(n), rdx) <+ Binop("cmp", rdx, rax)
-                      <+ Mov(L(0), rax) <+ Set(suff, "%al") <+ Mov(rax, s)]
+        case env.pop2 of [x, y, env] ->       
+          (
+            var integerOperators = {["+" , true], ["-" , true], ["*" , true]};
+            var logicalOperators = {["&&" , [257, "e"]], ["!!" , [0, "g"]]};
+            var cmpOperators = {[">", true], [">=", true], ["<", true], ["<=", true], ["==", true], ["!=", true]};
+            if noneToBool(assoc(integerOperators, op)) then
+              [push(env, y), code <+> (if memOpnd(x) && memOpnd(y)
+                                       then singletonBuffer(Mov(x, rax)) <+ Binop(op, rax, y)
+                                       else singletonBuffer(Binop(op, x, y))
+                                       fi)]
+            elif noneToBool(assoc(logicalOperators, op)) then
+                case x of
+                  R(2) -> [push(env, rsi), code <+> withRDX(env, singletonBuffer(Binop("^", rax, rax)) <+ Binop("cmp", L(0), y) <+ Set(suffix("!="), "%al") <+ Binop("^", rsi, rsi) <+ Binop("cmp", L(0), x) <+ Set(suffix("!="), "%sil") <+ Binop(op, rax, rsi))]
+                  | _ -> [push(env, y), code <+> withRDX(env, singletonBuffer(Binop("^", rax, rax)) <+ Binop("cmp", L(0), y) <+ Set(suffix("!="), "%al") <+ Binop("^", rdx, rdx) <+ Binop("cmp", L(0), x) <+ Set(suffix("!="), "%dl") <+ Binop(op, rax, rdx) <+ Mov(rdx, y))]
+                esac
+            elif noneToBool(assoc(cmpOperators, op)) then
+                case x of
+                  R(2) -> [push(env, y), code <+> withRDX(env, (singletonBuffer(Binop("^", rcx, rcx)) <+> (
+                            singletonBuffer(Binop("cmp", x, y))
+                            ) <+ Set(suffix(op), "%cl") <+ Mov(rcx, y)))]
+                  | R(3) -> [push(env, y), code <+> withRDX(env, (singletonBuffer(Binop("^", r8, r8)) <+> (
+                            singletonBuffer(Binop("cmp", x, y))
+                            ) <+ Set(suffix(op), "%r8b") <+ Mov(r8, y)))]
+                  | _ -> [push(env, y), code <+> withRDX(env, (singletonBuffer(Binop("^", rdx, rdx)) <+> (
+                          if memOpnd(x) && memOpnd(y)
+                          then singletonBuffer(Mov(x, rax)) <+ Binop("cmp", rax, y)
+                          else singletonBuffer(Binop("cmp", x, y))
+                          fi) <+ Set(suffix(op), "%dl") <+ Mov(rdx, y)))]
                   esac
-              elif noneToBool(assoc(cmpOperators, op)) then
-                [env, code <+ Mov(L(0), rax) <+ Binop("cmp", y, x) <+ Set(suffix(op), "%al") <+ Mov(rax, s)]
-              elif compare(op, "/") == 0 then 
-                [env, code <+ Mov(x, rax) <+ Cltd <+ IDiv(y) <+ Mov(rax, s)]
-              elif compare(op, "%") == 0 then 
-                [env, code <+ Mov(L(0), rdx) <+ Mov(x, rax) <+ Cltd <+ IDiv(y) <+ Mov(rdx, s)]
-              else failure("Unknown Binop\n")
-              fi
-            )
-          esac
+            elif compare(op, "/") == 0 then 
+              case x of
+                R(2) -> [push(env, y), code <+> withRDX(env, singletonBuffer(Mov(rsi, rax)) <+ Mov(rdx, rsi) <+ Cltd <+ IDiv(rsi) <+ Mov(rax, rsi))]
+                | _ -> [push(env, y), code <+> withRDX(env, singletonBuffer(Mov(y, rax)) <+ Cltd <+ IDiv(x) <+ Mov(rax, y))]
+              esac
+            elif compare(op, "%") == 0 then 
+              case x of
+                R(2) -> [push(env, y), code <+> withRDX(env, singletonBuffer(Mov(rsi, rax)) <+ Mov(rdx, rsi) <+ Cltd <+ IDiv(rsi) <+ Mov(rdx, rsi))]
+                  | _ -> [push(env, y), code <+> withRDX(env, singletonBuffer(Mov(y, rax)) <+ Cltd <+ IDiv(x) <+ Mov(rdx, y))]
+              esac
+            else failure("Unknown Binop\n")
+            fi
+          )
         esac
       | LABEL (lbl) -> if isBarrier(env) then [retrieveStack(env, lbl), code <+ Label(lbl)] else [env, code <+ Label (lbl)] fi
       | JMP (lbl) -> [setBarrier(setStack(env, lbl)), code <+ Jmp (lbl)]
       | CJMP (s, lbl) -> case env.pop of [x, env] ->
           [setStack(env, lbl), code <+ Mov(L(0), rax) <+ Binop("+", rax, x) <+ CJmp (s, lbl)]
         esac
-      | STI -> case env.pop2 of [v, addr, env] -> [push(env, v), code <+ Mov (v, I(0, addr))] esac
-      | LDA (x) -> case env.addGlobal(x).allocate of
-          [s, env] -> [env, code <+ Lea(loc(env, x), s)]
-        esac
+      | LDA (x) ->  let [s, env1] = allocate(env) in [env1,
+                                                      code <+> if memOpnd(s)
+                                                               then (singletonBuffer(Lea(loc(env1, x), rax)) <+ Mov(rax, s))
+                                                               else singletonBuffer(Lea(loc(env1, x), s))
+                                                               fi]
+      | STI ->  let [v, r, env1] = pop2(env) in [push(env1, v), code <+> withRDX(env1,
+                                                                                  (
+                                                                                    if memOpnd(v)
+                                                                                    then
+                                                                                      if memOpnd(r)
+                                                                                      then singletonBuffer(Mov(v, rax)) <+> singletonBuffer(Mov(r, rdx)) <+ Mov(rax, I(0, rdx))
+                                                                                      else singletonBuffer(Mov(v, rax)) <+> singletonBuffer(Mov(rax, I(0, r)))
+                                                                                      fi
+                                                                                    else
+                                                                                      if memOpnd(r)
+                                                                                      then singletonBuffer(Mov(r, rdx)) <+ Mov(v, I(0, rdx))
+                                                                                      else singletonBuffer(Mov(v, I(0, r)))
+                                                                                      fi
+                                                                                    fi
+                                                                                  )
+                                                                                )]
       | DROP -> case env.pop of 
           [_, env] -> [env, code]
         esac
       | CALL (name, n) -> case call(env, name, n) of [env, ccode] -> [env, code <+> ccode] esac
       | GLOBAL (x) -> [addGlobal(env, x), code]
+      | END ->  let [env1, epiCode] = epilogue(env) in [env1, code <+> epiCode]
+      | BEGIN(fn, a, l) -> [enterFunction(env, fn, a, l), code <+> prologue(fn)]
       | _ -> [env, code]
       esac
     }, [env, emptyBuffer ()], code)
