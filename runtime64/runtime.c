@@ -47,7 +47,7 @@ void* Bsexp (long n, ...) {
   
   for (i = 0; i<=n; i++) {
     ai = va_arg(args, long);
-    if (i == n) r->tag = ai;
+    if (i == n) r->tag = (void*)ai;
     else ((long*) r->data.contents)[i] = ai;
   }
   
