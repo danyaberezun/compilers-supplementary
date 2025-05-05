@@ -478,7 +478,36 @@ fun savecode (env, nA) {
 -- 4. discard those parameters that were passed through stack from the stack;
 -- 5. restore saved live registers.         
 fun call (env, fLabel, nA) {
-  failure ("calls not implemented")
+  fun moveArgs(env, nA) {
+    if nA == 0 then
+      [env, emptyBuffer()]
+    elif stackDepth(env) == nA then 
+      case env.pop of
+        [_, env] -> moveArgs(env, nA - 1)
+      esac
+    else
+      case env.pop of
+        [x, env] -> 
+          case moveArgs(env, nA - 1) of
+            [env, code] ->
+              if nA <= nRegArgs then 
+                [env, code <+ Mov(x, R(nA - 1))]
+              else 
+                [env, code <+ Push(x)]
+              fi
+          esac
+      esac
+    fi
+  }
+
+  let [pushs, pops] = savecode(env, nA) in (var ra = min(nRegArgs, nA);
+  var sa = nA - ra;
+  let [env, code] = moveArgs(env, nA) in
+  let [x, env] = allocate(env) in [env, pushs <+> code
+                                              <+  Call(fLabel)
+                                              <+  Binop("+", L(sa * wordSize), rsp)
+                                              <+> pops
+                                              <+  Mov(rax, x)])
 }
 
 -- Gets a suffix for Set instruction from
@@ -519,6 +548,126 @@ fun compile (env, code) {
          -- 2. generate epilogue for END instruction.
       *)
         
+      | CONST (n) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (L(n), s)]
+          esac
+      | LD (x) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac
+      | ST (x) ->
+          case env.pop of
+            [s, env] -> [push(env, loc (env, x)), code <+> move(s, loc(env, x))]
+          esac
+      | BINOP(op) -> 
+          case env.pop2 of [y, x, env] ->
+              case op of
+                "+"  -> [push(env, x), code <+> if memOpnd(y) && memOpnd(x) then singletonBuffer(Mov(y, rax)) <+ Binop(op, rax, x) else singletonBuffer(Binop(op, y, x)) fi]
+              | "-"  -> [push(env, x), code <+> if memOpnd(y) && memOpnd(x) then singletonBuffer(Mov(y, rax)) <+ Binop(op, rax, x) else singletonBuffer(Binop(op, y, x)) fi]
+              | "*"  -> [push(env, x), code <+> if memOpnd(y) && memOpnd(x) then singletonBuffer(Mov(y, rax)) <+ Binop(op, rax, x) else singletonBuffer(Binop(op, y, x)) fi]
+              | "/"  ->
+                    case y of
+                          R(2) -> [push(env, x), code <+> withRDX(env, move(rsi, rax) <+ Mov(rdx, rsi) <+ Cltd <+ IDiv(rsi) <+ Mov(rax, rsi))]
+                        | _    -> [push(env, x), code <+> withRDX(env, move(x, rax) <+ Cltd <+ IDiv(y) <+ Mov(rax, x))]
+                    esac
+              | "%"  ->
+                    case y of
+                          R(2) -> [push(env, x), code <+> withRDX(env, move(rsi, rax) <+ Mov(rdx, rsi) <+ Cltd <+ IDiv(rsi) <+ Mov(rdx, rsi))]
+                        | _    -> [push(env, x), code <+> withRDX(env, move(x, rax) <+ Cltd <+ IDiv(y) <+ Mov(rdx, x))]
+                    esac
+              | "!!" ->
+                    case y of
+                          R(2) -> [push(env, x), code 
+                                        <+> withRDX(env, singletonBuffer(Binop("^", rax, rax))
+                                        <+ Binop("cmp", L(0), x)
+                                        <+ Set(suffix("!="), "%al")
+                                        <+ Binop("^", rsi, rsi)
+                                        <+ Binop("cmp", L(0), y)
+                                        <+ Set(suffix("!="), "%sil")
+                                        <+ Binop(op, rax, rsi)
+                                        <+ Mov(rsi, x))]
+                        | _    -> [push(env, x), code
+                                        <+> withRDX(env, singletonBuffer(Binop("^", rax, rax))
+                                        <+ Binop("cmp", L(0), x)
+                                        <+ Set(suffix("!="), "%al")
+                                        <+ Binop("^", rdx, rdx)
+                                        <+ Binop("cmp", L(0), y)
+                                        <+ Set(suffix("!="), "%dl")
+                                        <+ Binop(op, rax, rdx)
+                                        <+ Mov(rdx, x))]
+                    esac
+              | "&&" ->
+                    case y of
+                          R(2) -> [push(env, x), code 
+                                        <+> withRDX(env, singletonBuffer(Binop("^", rax, rax))
+                                        <+ Binop("cmp", L(0), x)
+                                        <+ Set(suffix("!="), "%al")
+                                        <+ Binop("^", rsi, rsi)
+                                        <+ Binop("cmp", L(0), y)
+                                        <+ Set(suffix("!="), "%sil")
+                                        <+ Binop(op, rax, rsi)
+                                        <+ Mov(rsi, x))]
+                        | _    -> [push(env, x), code
+                                        <+> withRDX(env, singletonBuffer(Binop("^", rax, rax))
+                                        <+ Binop("cmp", L(0), x)
+                                        <+ Set(suffix("!="), "%al")
+                                        <+ Binop("^", rdx, rdx)
+                                        <+ Binop("cmp", L(0), y)
+                                        <+ Set(suffix("!="), "%dl")
+                                        <+ Binop(op, rax, rdx)
+                                        <+ Mov(rdx, x))]
+                    esac
+              | _    ->
+                    case y of
+                          R(2) -> [push(env, x), code <+ Binop("^", rbx, rbx) <+ Binop("cmp", y, x) <+ Set(suffix(op), "%bl") <+ Mov(rbx, x)]
+                        | R(1) -> [push(env, x), code <+ Binop("^", rbx, rbx) <+ Binop("cmp", y, x) <+ Set(suffix(op), "%bl") <+ Mov(rbx, x)]
+                        | _    -> [push(env, x), code <+ Binop("^", rax, rax) <+ Binop("cmp", y, x) <+ Set(suffix(op), "%al") <+ Mov(rax, x)]
+                    esac
+              esac
+          esac
+      | LABEL (l) ->
+          if isBarrier(env) then
+            [retrieveStack(env, l), code <+ Label(l)]
+          else
+            [env, code <+ Label (l)]
+          fi
+      | JMP (l) ->
+          [setBarrier(setStack(env, l)), code <+ Jmp (l)]
+      | CJMP (c, l) ->
+          case env.pop of
+            [x, env] -> [setStack(env, l), code <+ Mov(L(0), rax) <+ Binop("+", rax, x) <+ CJmp (c, l)]
+          esac
+      | LDA (x) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> if memOpnd(s) then (singletonBuffer(Lea(loc(env, x), rax)) <+ Mov(rax, s))
+                                        else singletonBuffer(Lea(loc(env, x), s)) fi]
+          esac
+      | STI ->
+          case env.pop2 of
+            [v, addr, env] ->                                       
+              [push(env, v), code <+> withRDX(env, (if memOpnd(v) then
+              if memOpnd(addr) then singletonBuffer(Mov(v, rax)) <+> singletonBuffer(Mov(addr, rdx)) <+ Mov(rax, I(0, rdx))
+              else singletonBuffer(Mov(v, rax)) <+> singletonBuffer(Mov(rax, I(0, addr))) fi
+              else if memOpnd(addr) then singletonBuffer(Mov(addr, rdx)) <+ Mov(v, I(0, rdx))
+              else singletonBuffer(Mov(v, I(0, addr))) fi fi ))]
+          esac
+      | DROP ->
+          case env.pop of 
+            [_, env] -> [env, code]
+          esac
+      | CALL (f, n) ->
+          case call(env, f, n) of
+            [env, fcode] -> [env, code <+> fcode]
+          esac
+      | GLOBAL (x) ->
+          [addGlobal(env, x), code]
+      | END ->
+          case env.epilogue of
+            [env1, ecode] -> [env1, code <+> ecode]
+          esac
+      | BEGIN (fn, na, nl) ->
+          [enterFunction (env, fn, na, nl), code <+> prologue(fn)]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
