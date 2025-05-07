@@ -116,13 +116,61 @@ fun eval (env, w, insns) {
     inner (n, {}, list)
   }
 
+  fun beginCall (params, l) {
+    [listArray (params), initArray (l, fun (_) {0})]
+  }
+
   -- Core interpreter: takes a configuration and a program, returns a configuration
   (* Assignment *)
-  fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
-  }
-  (* End *)
-
+  fun eval ( c@[stack, cst, state, world], insns) {
+   case insns of
+     {} -> c
+     | head : tail -> 
+         case head of 
+           READ -> case readWorld (world) of [value, newWorld] -> eval ([value : stack, cst, state, newWorld], tail)
+             esac         
+          | WRITE -> case stack of value : stackTail -> case writeWorld (value, world) of newWorld -> eval ([stackTail, cst, state, newWorld], tail)
+                  esac
+              esac
+          | BINOP (op) -> case stack of rightOp : leftOp : stackTail -> eval ([evalOp (op, leftOp, rightOp) : stackTail, cst, state, world], tail)
+              esac 
+          | LD (variable) -> eval ([state (variable) : stack, cst, state, world], tail)
+          | ST (variable) -> case stack of value : stackTail -> eval ([value:stackTail, cst, state <- [variable, value], world], tail)
+              esac 
+          | CONST (value) -> eval ([value : stack, cst, state, world], tail)
+          | LABEL (label) -> eval ([stack, cst, state, world], tail)
+          | JMP (label) -> eval ([stack, cst, state, world], fromLabel (env, label))
+        | CJMP ("z", label) -> case stack of value : stackTail -> case value of 
+                  0 -> eval ([stackTail, cst, state, world], fromLabel (env, label))
+                | _ -> eval ([stackTail, cst, state, world], tail)
+                esac
+            esac
+        | CJMP ("nz", label) -> case stack of value : stackTail -> case value of
+                  0 -> eval ([stackTail, cst, state, world], tail)
+                | _ -> eval ([stackTail, cst, state, world], fromLabel (env, label))
+                esac 
+            esac
+          | DROP -> case stack of top : stNew -> eval([stNew, cst, state, world], tail) 
+              esac
+          | LDA (x) -> eval ([Ref (x) : stack, cst, state, world], tail)                            
+          | STI -> case stack of top : Ref (dst) : stEnd -> eval ([top : stEnd, cst, state <- [dst, top], world], tail)
+              esac 
+          | BEGIN(n, argc, n_loc) ->
+            let [stack, a] = take(stack, argc) in
+            let [_, l] = makeState(argc, n_loc) in
+            eval([stack, cst, [listArray(a), l], world], tail)
+        | END ->
+            case cst of
+                [state, cont]:cstTail -> eval([stack, cstTail, state, world], cont)
+              | _ -> c
+            esac
+        | CALL(n, _) -> eval([stack, [state, tail]:cst, state, world], fromLabel(env, n))
+        | GLOBAL(x) -> assign(state, Glb(x), 0); eval(c, tail)
+        | _ -> c       
+          esac
+   esac
+}
+  
   eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
 }
 
@@ -378,10 +426,95 @@ public fun compileSM (stmt) {
   fun compile (lab, env, stmt) {
     case stmt of
       Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
+    | Var    (x)        -> [false, env, singletonBuffer (LD (lookupVar (env, x)))]
+    | Ref    (x)        -> [false, env, singletonBuffer (LDA (lookupVar (env, x)))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 -> failure ("compileSM not implemented\n")
+    | Read  (x)         -> [false, env, singletonBuffer (READ) <+ ST (x) <+ DROP]
+    | Write (e) -> case env.genLabel of [lab, env] -> case compile (lab, env, e) of [prevLab, env, code] -> [false, env, code <+> label (lab, prevLab) <+ WRITE]
+            esac
+        esac 
+    | Assn (variable, e) -> case env.genLabels (2) of 
+          [varLab, eLab, env] -> case compile (varLab, env, variable) of
+              [varLabUsed, env, varCode] -> case compile (eLab, env, e) of
+                  [eLabUsed, env, eCode] -> [false, env, varCode <+> label (varLab, varLabUsed) <+> eCode <+> label (eLab, eLabUsed) <+ STI]
+                esac            
+            esac
+        esac
+    | Seq (s1, s2) -> case env.genLabel of
+          [s2Lab, env] -> case compile (s2Lab, env, s1) of
+              [s2LabUsed, env, s1Code] -> case compile (lab, env, s2) of
+                  [prevLab, env, s2Code] -> [prevLab, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
+                esac
+            esac
+        esac
+    | If (e, s1, s2) -> case env.genLabels(2) of 
+          [eLab, elseLbl, env] -> case compile(eLab, env, e) of
+              [eLabUsed, env, eCode] -> case compile (lab, env, s1) of 
+                  [_, env, s1Code] -> case compile(lab, env, s2) of 
+                      [_, env, s2Code] -> 
+                        [true, env, eCode <+> label (eCode, eLabUsed) <+ CJMP ("z", elseLbl) <+> s1Code <+ JMP (lab) <+ LABEL (elseLbl) <+> s2Code <+ JMP (lab)]
+                    esac
+                esac         
+            esac
+        esac
+      | While (e, s) -> case env.genLabels (2) of
+        [eLab, sLab , env] -> case compile (sLab, env, e) of
+            [sLabUsed, env, eCode] -> case compile (eLab, env, s) of
+                [_, env, sCode] ->
+                  [true, env, label (eLab, true) <+>  eCode <+ CJMP ("z", lab) <+> label (sLab, sLabUsed) <+>  sCode <+ JMP (eLab)]
+              esac
+          esac
+      esac
+      | DoWhile (e, s) -> case genLabels (env, 2) of [eLab, sLab, env] ->
+            case compile(eLab, env, s) of [sLabUsed, env, sCode] ->
+                case compile(sLab, env, e) of [_, env, eCode] ->
+                    [false, env, label (eLab, true) <+> eCode <+> label (sLab, sLabUsed) <+>  sCode <+ CJMP ("nz", eLab)]
+                esac
+            esac
+        esac
+      | Binop (op, leftOp, rightOp) -> case env.genLabels(2) of [lLab, rLab, env] ->
+            case compile (lLab, env, leftOp) of [lLabUsed, env, lCode] ->
+                case compile (rLab, env, rightOp) of [rLabUsed, env, rCode] ->
+                    [false, env, lCode <+> label (lLab, lLabUsed) <+> rCode <+> label (rLab, rLabUsed) <+ BINOP (op)]
+                esac
+            esac
+        esac   
+    | Ignore (e) -> case compile (lab, env, e) of [prevLab, env, code] -> [false, env, code <+> label(lab, prevLab) <+ DROP]
+      esac
+    | Scope(d, e) -> let env = beginScope(env) in
+        let env = foldl(fun(env, def) {
+            case def of
+                  Var(n) -> addVars(env, n)
+                | Fun(n, a, b) -> let [lab, env] = genFunLabel(env, n) in addFun(env, n, lab, size(a))
+            esac
+            }, env, d) in
+        let env = foldl(fun(env, d) {
+            case d of
+                Var(_) ->  env
+                | Fun(n, a, b) -> let [lab, env] = genFunLabel(env, n) in rememberFun(env, lab, a, b)
+            esac
+        }, env, d) in
+        let code = if isGlobal(env)
+        then foldl(fun(code, def) {
+            case def of
+                Var(n) -> foldl(fun(code, x) {
+                        code <+ GLOBAL (x)
+                    }, code, n)
+                | _ -> code
+            esac
+            }, emptyBuffer(), d)
+        else emptyBuffer()
+        fi in
+        let [lab, env, c] = compile (lab, env, e) in
+        [lab, endScope(env), code <+> c]
+    | Call(n, a) -> case a of
+              {} -> let Fun(n, a) = lookupFun(env, n) in [false, env, singletonBuffer(CALL(n, a))]
+            | _ ->
+                let [l1, env] = genLabel(env) in
+                let [l2, env, c] = compileMany(l1, env, a) in
+                let Fun(n, a) = lookupFun(env, n) in
+                [false, env, (c <+> label (l1, l2)) <+ CALL(n, a)]
+        esac  
     esac
   }
 
