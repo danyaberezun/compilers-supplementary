@@ -565,46 +565,51 @@ fun argLoc (idx) {
   else OnStack fi
 } 
 
--- @MergeEstimate(TODO)
 -- Generates a static call
 -- Don't forget to handle buitins (Barray/Bsexp), and
--- to clear rax before calling to variable arg funcations
+-- to clear rax before calling to variable arg funcations (FIXME?)
 fun call (env, fLabel, nA) {
-  generalCall (env, fLabel, nA, true)
+  generalCall (env, fLabel, nA, {})
 }
 
-fun voidCall (env, fLabel, nA) {
-  generalCall (env, fLabel, nA, false)
-}
-
-fun generalCall (env, fLabel, nA, hasReturnValue) {
-  fun storeArgs (env, nA, acc, nStackArgs) {
+fun generalCall (env, fLabel, nA, immArgs) {
+  fun takeArg (env, immArgs, idx) {
+    case immArgs of 
+      [i, v]:tail -> 
+        if i == idx 
+        then [v, tail, env]
+        else let [v, env] = pop (env) in [v, immArgs, env]
+        fi
+    | _ -> let [v, env] = pop (env) in [v, immArgs, env]
+    esac
+  }
+  fun storeArgs (env, nA, immArgs, acc, nStackArgs) {
     case nA of 
       0 -> [acc, nStackArgs, env]
     | _ ->
-      let [x, env] = pop (env) in 
-      let [moveCode, stackSlots] = case argLoc (nA - 1) of
-        OnStack -> [singletonBuffer (Push (x)), 1]
-      | loc -> [move (x, loc), 0]
+      let [x, immArgs, env] = takeArg (env, immArgs, nA - 1) in 
+      let [moveCode, stackSlots] = case [x, argLoc (nA - 1)] of
+        [M (_), OnStack] -> [singletonBuffer (Lea (x, rax)) <+ Push (rax), 1]
+      | [_, OnStack] -> [singletonBuffer (Push (x)), 1]
+      | [M (_), loc] -> [lea (x, loc), 0]
+      | [_, loc] -> [move (x, loc), 0]
       esac in
-        storeArgs (env, nA - 1, acc <+> moveCode, nStackArgs + stackSlots)
+        storeArgs (env, nA - 1, immArgs, moveCode <+> acc, nStackArgs + stackSlots)
     esac
   }
-  let [pushes, pops, saveSize] = savecode (env, nA) in
-  let [store, nStackArgs, env] = storeArgs (env, nA, emptyBuffer (), 0) in
+  let [pushes, pops, saveSize] = savecode (env, nA - size (immArgs)) in
+  let [store, nStackArgs, env] = storeArgs (env, nA, immArgs, emptyBuffer (), 0) in
   let [pushPadding, popPadding] = if (saveSize + nStackArgs) % 2 == 0 
     then [emptyBuffer (), emptyBuffer ()]
-    else [singletonBuffer (Push (rax)), singletonBuffer (Pop (rax))]
+    else [singletonBuffer (Binop ("-", L (wordSize), rsp)), singletonBuffer (Binop ("+", L (wordSize), rsp))]
   fi in
-  let [loadRes, env] = if hasReturnValue 
-    then let [res, env] = allocate (env) in [singletonBuffer (Mov (rax, res)), env] 
-    else [emptyBuffer (), env]
-  fi in
+  let [resLoc, env] = allocate (env) in 
+  let loadRes = singletonBuffer (Mov (rax, resLoc)) in
   let releaseCode = if nStackArgs > 0 
     then singletonBuffer (Binop ("+", L (nStackArgs * wordSize), rsp)) 
     else emptyBuffer ()
   fi in
-    [pushes <+> pushPadding <+> store <+ Call (fLabel) <+> releaseCode <+> loadRes <+> popPadding <+> pops, env]
+    [env, pushes <+> pushPadding <+> store <+ Call (fLabel) <+> releaseCode <+> loadRes <+> popPadding <+> pops]
 }
 
 -- Gets a suffix for Set instruction from
@@ -634,17 +639,8 @@ fun compile (env, code) {
 
       -- printf ("compiling %s\n", showSMInsn (i));
       
-      case i of      
-        READ ->
-          let [callCode, env] = call (env, "Lread", 0) in
-            [env, code <+> callCode]
-      | WRITE ->
-          -- @MergeEstimate(TODO)
-          -- was in base branch: call (env, "Lwrite", 1)
-          -- diff: drops return value (void) 
-          let [callCode, env] = voidCall (env, "Lwrite", 1) in
-            [env, code <+> callCode]
-      | LD (x) ->
+      case i of
+        LD (x) ->
           let [s, env] = allocate (env) in [env, code <+> move (loc (env, x), s)]
       | ST (x) ->
           let [s, env] = pop (env) in [env, code <+> move (s, loc (env, x))]
@@ -731,52 +727,13 @@ fun compile (env, code) {
           else 
            [env, code <+> move (v, I (0, ref)) <+> move (v, vNew)]
           fi
-      | STA ->
-          case call (env, "Bsta", 3) of
-            [env, callCode] -> [env, code <+> callCode]
-          esac
-      | ELEM ->
-          case call (env, "Belem", 2) of
-            [env, callCode] -> [env, code <+> callCode]
-          esac
-      | BUILTIN (f, n) ->
-          case call (env, "B" ++ f, n) of
-            [env, callCode] -> [env, code <+> callCode]
-          esac
-      | STRING (s) ->
-          case env.addString (s) of
-            [env, sym] ->
-              case env.allocate of
-                [y, env] ->
-                  case call (env, "Bstring", 1) of
-                    [env, callCode] -> [env, code <+> move (M ("$" ++ sym), y) <+> callCode]
-                  esac
-              esac
-          esac
       | DROP -> let [_, env] = pop (env) in [env, code]
       | DUP -> 
           let [x, env] = peek (env) in 
           let [s, env] = allocate (env) in
             [env, code <+> move (s, x)]
-      (* Assignment @MergeEstimate(shadow, done)
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-      *)         
       | CALL (f, n) -> 
-          let [callCode, env] = call (env, f, n) in
+          let [env, callCode] = call (env, f, n) in
             [env, code <+> callCode]
       | BEGIN (f, a, l) ->
           let env = enterFunction (env, f, a, l) in 
@@ -785,6 +742,27 @@ fun compile (env, code) {
           let [env, epilogue] = epilogue (env) in
             [env, code <+> epilogue]
       | GLOBAL (x) -> [addGlobal (env, x), code]
+      | STA ->
+          let [env, callCode] = call (env, "Bsta", 3) in
+            [env, code <+> callCode]
+      | ELEM ->
+          let [env, callCode] = call (env, "Belem", 2) in
+            [env, code <+> callCode]
+      | BUILTIN (f, n) ->
+          let [env, callCode] = call (env, "L" ++ f, n) in
+            [env, code <+> callCode]
+      | STRING (s) ->
+          let [env, name] = addString (env, s) in
+          let [y, env] = allocate (env) in     
+          let [env, callCode] = call (env, "Bstring", 1) in
+            [env, code <+> lea (M (name), y) <+> callCode]
+      | SEXP (t, n) -> 
+          let [env, tag] = addString (env, t) in
+          let [env, callCode] = generalCall (env, "Bsexp", n + 2, {[n + 1, M (tag)], [0, L (n)]}) in
+            [env, code <+> callCode]
+      | ARRAY  (n) ->
+          let [env, callCode] = generalCall (env, "Barray", n + 1, {[0, L (n)]}) in
+            [env, code <+> callCode]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", string (i))
       esac
     }, [env, emptyBuffer ()], code)
