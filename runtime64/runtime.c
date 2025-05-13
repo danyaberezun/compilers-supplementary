@@ -1,0 +1,187 @@
+# include <stdio.h>
+# include <stdarg.h>
+# include <malloc.h>
+# include <string.h>
+
+# define ALIGN_STACK asm ("andq $0xFFFFFFFFFFFFFFF0,%rsp")
+
+# define STRING_TAG 0x00000001
+# define SEXP_TAG   0x00000002
+# define ARRAY_TAG  0x00000003
+
+# define LEN(x) ((x & 0xFFFFFFFFFFFFFFF8) >> 3)
+# define TAG(x)  (x & 0x0000000000000007)
+
+# define TO_DATA(x) ((data*)((char*)(x)-sizeof(long)))
+# define TO_SEXP(x) ((sexp*)((char*)(x)-2*sizeof(long)))
+
+# define UNBOXED(x)  (((long) (x)) & 0x0000000000000001)
+# define UNBOX(x)    (((long) (x)) >> 1)
+# define BOX(x)      ((((long) (x)) << 1) | 0x0000000000000001)
+
+/*
+# define ASSERT_BOXED(memo, x)               \
+  do if (UNBOXED(x)) failure ("boxed value expected in %s\n", memo); while (0)
+# define ASSERT_UNBOXED(memo, x)             \
+  do if (!UNBOXED(x)) failure ("unboxed value expected in %s\n", memo); while (0)
+# define ASSERT_STRING(memo, x)              \
+  do if (!UNBOXED(x) && TAG(TO_DATA(x)->tag) \
+	 != STRING_TAG) failure ("string value expected in %s\n", memo); while (0)
+*/
+typedef struct {
+  long tag; 
+  char contents[0];
+} data; 
+
+typedef struct {
+  void *tag;
+  data  data;
+} sexp;
+  
+static void* alloc (size_t size) {
+  ALIGN_STACK;
+  return malloc (size);
+}
+
+long Llength (void *p) {
+  data *a = TO_DATA(p);
+  return BOX(LEN(a->tag));
+}
+
+void* Bsexp (long k, ...) {
+  va_list args; 
+  long    i, ai; 
+  sexp    *r;
+  long    n = UNBOX(k);
+
+  r = (sexp*) alloc (sizeof(long) * (n+2));
+
+  r->data.tag = SEXP_TAG | (n << 3);
+  
+  va_start(args, n);
+  
+  for (i = 0; i<=n; i++) {
+    ai = va_arg(args, long);
+    if (i == n) r->tag = ai;
+    else ((long*) r->data.contents)[i] = ai;
+  }
+  
+  va_end(args);
+
+  return r->data.contents;
+}
+
+void* Barray (long k, ...) {
+  va_list args; 
+  long    i, ai, n = UNBOX(k); 
+  data    *r; 
+
+  r = (data*) alloc (sizeof(long) * (n+1));
+
+  r->tag = ARRAY_TAG | (n << 3);
+  
+  va_start(args, n);
+  
+  for (i = 0; i<n; i++) {
+    ai = va_arg(args, long);
+    ((long*) r->contents)[i] = ai;
+  }
+  
+  va_end(args);
+
+  return r->contents;
+}
+
+void* Bstring (void *p) {
+  long  n = strlen (p);
+  data *s;
+
+  s = (data*) alloc (n + 1 + sizeof (long));
+  s->tag = STRING_TAG | (n << 3);
+
+  strncpy (s->contents, p, n + 1);
+  return s->contents;
+}
+
+void* Belem (void *p, long j) {
+  long  i = UNBOX(j);
+  data *a = TO_DATA(p);
+  
+  if (TAG(a->tag) == STRING_TAG) {
+    return (void*) BOX(a->contents[i]);
+  }
+  
+  return (void*) ((long*) a->contents)[i];
+}
+
+void* Bsta (void *x, void *j, void *v) {
+  if (UNBOXED(j)) {
+    long i = UNBOX(j);
+    
+    if (TAG(TO_DATA(x)->tag) == STRING_TAG)
+      ((char*) x)[i] = (char) UNBOX(v);
+    else ((long*) x)[i] = (long) v;
+  }
+  else * (void**) x = v;
+
+  return v;
+}
+
+extern long Btag (void *d, void *t, long n) {
+  data *r; 
+  
+  if (UNBOXED(d)) return BOX(0);
+  else {
+    r = TO_DATA(d);
+#ifndef DEBUG_PRINT
+    return BOX(TAG(r->tag) == SEXP_TAG && TO_SEXP(d)->tag == t && LEN(r->tag) == UNBOX(n));
+#else
+    return BOX(TAG(r->tag) == SEXP_TAG &&
+               GET_SEXP_TAG(TO_SEXP(d)->tag) == t && LEN(r->tag) == UNBOX(n));
+#endif
+  }
+}
+
+extern long Barray_patt (void *d, long n) {
+  data *r; 
+  
+  if (UNBOXED(d)) return BOX(0);
+  else {
+    r = TO_DATA(d);
+    return BOX(TAG(r->tag) == ARRAY_TAG && LEN(r->tag) == UNBOX(n));
+  }
+}
+
+extern long Bstring_patt (void *x, void *y) {
+  data *rx = (data *) BOX (NULL),
+       *ry = (data *) BOX (NULL);
+      
+  if (UNBOXED(x)) return BOX(0);
+  else {
+    rx = TO_DATA(x); ry = TO_DATA(y);
+
+    if (TAG(rx->tag) != STRING_TAG) return BOX(0);
+    
+    return BOX(strcmp (rx->contents, ry->contents) == 0 ? 1 : 0);
+  }
+}
+
+void Lwrite (long x) {
+  ALIGN_STACK;
+  printf ("%ld\n", UNBOX(x));
+}
+
+long Lread () {
+  long result;
+  
+  ALIGN_STACK;
+  scanf  ("%ld", &result);
+  
+  return BOX(result);
+}
+
+extern void Bmatch_failure (long line, long col) {
+  ALIGN_STACK;
+  printf ("match failure at %d:%d\n", UNBOX(line), UNBOX(col));
+  exit (0);
+}

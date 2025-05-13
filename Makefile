@@ -2,12 +2,12 @@
 
 all:
 	make -C src
-	make -C runtime
+	make -C runtime64
 	make -C regression
 
 clean:
 	make clean -C src
-	make clean -C runtime
+	make clean -C runtime64
 	make clean -C regression
 
 
