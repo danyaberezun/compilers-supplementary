@@ -1,41 +1,62 @@
-# Assignment 7: Scopes and functions (SM and X86)
+# Assignment 8: Data structures and builtin functions (all modes)
 
 **Repo structure**:
 * [`regression`](regression/) --- tests
 * [`src`](src/) contains sources of your compiler
-  + [`X86.lama`](src/X86.lama) and [`X86_64.lama`](src/X86_64.lama) --- compiler to X86_32 and X86_64 GAS AT&T syntax (see [instruction reference](https://www.felixcloutier.com/x86/) and [wikibook: Ассемблер в Linux для программистов C](https://ru.wikibooks.org/wiki/%D0%90%D1%81%D1%81%D0%B5%D0%BC%D0%B1%D0%BB%D0%B5%D1%80_%D0%B2_Linux_%D0%B4%D0%BB%D1%8F_%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B8%D1%81%D1%82%D0%BE%D0%B2_C))
-* [`runtime64`](runtime64/) (32-bit version [`runtime32`](runtime32/)) contains your compiler runtime; for now, it contains just two builtin functions [`Lread`](runtime64/runtime.c#L7) and [`Lwrite`](runtime64/runtime.c#L3)
+  + [`X86_64.lama`](src/X86_64.lama) (and 32-bit version [`X86.lama`](src/X86.lama)) --- compiler to X86 GAS AT&T syntax (see [instruction reference](https://www.felixcloutier.com/x86/) and [wikibook: Ассемблер в Linux для программистов C](https://ru.wikibooks.org/wiki/%D0%90%D1%81%D1%81%D0%B5%D0%BC%D0%B1%D0%BB%D0%B5%D1%80_%D0%B2_Linux_%D0%B4%D0%BB%D1%8F_%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B8%D1%81%D1%82%D0%BE%D0%B2_C))
+* [`runtime64`](runtime64/) contains your compiler runtime
 
 Our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
 * (`-i` option) direct interpretation of `.lama` files
 * (`-s` option) compilation to SM and SM program interpretation
 * (`-o` option) compilation to X86 (via SM)
 
-Corresponding lecture notes: [Functions in SM](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/07.pdf)
+[Corresponding lecture notes](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/08.pdf)
 
 **What is new, some important changes, and additional remarks**:
-1. New lecture note ([Functions and Local Scopes](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/07.pdf)
-2. Note, we support syntactically nested functions in an *extremely* simple way:
-   + we do **not** support access to enclosing functions local variables;
-     Thus, our state is just a pair of function's local state and program global state
-3. [`SM`](src/SM.lama): our compilation environment is extended: we now generate `SM` code via symbolic interpretation of the program `AST``
-4. How to compile a scope to `SM`:
-   1. Use `beginScope` to init/enter a new scope
-   2. Iterate over definitions:
-      1. Use `addVar` to add each variable declaration into the symbolic state. NB: do not forget to generate `GLOBAL` instructions for top-level variable declarations
-      2. In case of a function declaration use `genFunLabel` to generate a unique label for function and use `addFun` to add the function declaration into symbolic state
-   3. Iterate again over functions and for each function use `rememberFun` to add the function for further code generation
-   4. Compile scope expression in the updated state
-   5. Use `endScope` to leave the scope
-5. The overall flow for `SM` code generation:
-   1. generate the code for the topmost expression (the program itself)
-   2. take the list of nested functions definitions via `getFuns` and generate the code for each function
-   3. repeat the previous step until no function definitions appear
-   4. when compiling functions, do not forget to create a proper environment with `beginFun` and register arguments using `addArg`
-6. There are two new auxiliary functions in [`X86_64`](src/X86_64.lama): [`prologue`](src/X86_64.lama#L367) and [`epilogue`](src/X86_64.lama#L373);
-   Also see [guideline here](src/X86_64.lama#L458)
-   (corresponding 32-bit version: [`X86`](src/X86.lama): [`prologue`](src/X86.lama#L353) and [`epilogue`](src/X86.lama#L360);
-    Also see [guideline here](src/X86.lama#L428))
+1. [`runtime`](runtime/) is updated and extended
+   * Builtins: `Lread`, `Lwrite`, `Llength`
+   * Structure `data` represents arrays and strings
+      + Last 3 bits of `tag` field contains data structure tag (`STRING_TAG | ARRAY_TAG | SEXP_TAG`)
+      + All other bits of `tag` field contains data structure length
+   * Structure `sexp` represents s-expression
+      + `tag` field contains a hash of s-expression tag
+      + `data` field as in previous case
+   * Auxiliary builtins:
+     + `Barray` creates and initializes an array
+     + `Bsexp` creates and initializes s-expression
+     + `Bstring` creates and initializes a string
+     + `void* Bsta (void *x, int i, void *v)`  assigns value `v` to `x[i]`
+   * useful link: [Variadic functions in C](https://en.cppreference.com/w/c/variadic)
+   * useful link: [Arrays of Length Zero](https://gcc.gnu.org/onlinedocs/gcc/Zero-Length.html)
+2. New file: [Builtins.lama](src/Builtins.lama) contains function `evalBuiltin` that evaluates builtin functions
+   * Please look at [subsection 2.4.6 of the lama spec](https://github.com/PLTools/Lama/blob/1.10/lama-spec.pdf#subsection.2.4.6)
+3. [Expr.lama](src/Expr.lama):
+   * New expressions:
+     + `String (string)` --- a string
+     + `Array (expr list)` --- an array
+     + `Sexp (string, expr list)` -- s-expression
+     + `Elem (expr1, expr2)` --- value of `expr1[expr2]`
+     + `ElemRef (expr, expr)` --- reference (address) to an array element (l-value)
+     + `Builtin (string, expr list)` --- builtin function call
+   * `checkVar` renamed to `lookupVar`
+   * `checkFun` renamed to `lookupFun`
+   * `evalExpr` is updated by adding builtin functions into top-level scope
+4. [SM.lama](src/SM.lama)
+   * New SM instructions (see [lecture notes](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/08.pdf) for details):
+      + `STRING (s)`
+      + `ARRAY (n)`
+      + `STA`
+      + `ELEM`
+      + `BUILTIN (f, n)`
+      + `SEXP (s, n)`
+   * Global scope now has depth `2`, functions [`isGlobal`](src/SM.lama#L301) (see also [here](src/SM.lama#L222))  and check in [`genFunLabel`](src/SM.lama#L293) (see also [here](src/SM.lama#L214)) are updated
+5. [X86_64.lama](src/X86_64.lama)
+   * `dataDef` function is replaced with two new functions
+     + `stringDef` generates string definition
+     + `intDef` generates integer definition
+   * new function [`addString`](src/X86.lama#L270) registers a string literal and assigns it a name
+   * new function [`getStrings`](src/X86.lama#L286) gets a list of all string literals and their names
 
 **How to submit the task**:
 * For the fist task: fork the repo (or switch to the corresponding branch and stretch your changes)
@@ -48,7 +69,7 @@ Corresponding lecture notes: [Functions in SM](https://github.com/danyaberezun/c
 **Standard deadline**: one week
 
 **Task**:
-* Support compilation of scopes and functions in all modes
+* Support compilation of data structures (strings, arrays, s-expressions) and builtin functions (`read`, `write`, `length`) in all modes
 
 **Compile and run tests (from the root folder)**:
 ```bash
