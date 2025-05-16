@@ -511,7 +511,54 @@ fun savecode (env, nA) {
 -- Don't forget to handle buitins (Barray/Bsexp), and
 -- to clear rax before calling to variable arg funcations
 fun call (env, fLabel, nA) {
-  emptyBuffer ()
+  var codes = savecode(env, nA);
+  var code = codes[0];
+  if stackDepth(env) == nA
+    then
+      var clearCode;
+      for var i = nA;, i > 0, i := i - 1 do
+        case pop(env) of
+          [x, newEnv] ->  env := newEnv;
+                          code := if i > nRegArgs
+                                    then code <+ Mov(x, rax) <+ Push(rax)
+                                    else code
+                                  fi
+        esac
+      od;
+      case fLabel of
+        "Barray" -> clearCode := code <+ Binop("^", rax, rax)
+        | "Bsexp" -> clearCode := code <+ Binop("^", rax, rax)
+        | _ -> clearCode := code
+      esac;
+      if nA > nRegArgs
+        then let [s, env] = allocate(env) in [env, ((clearCode <+ Call(fLabel) <+ Binop("-", L(wordSize * (nA - nRegArgs)), rsp))
+                <+> codes[1]) <+ Mov(rax, s)]
+        else let [s, env] = allocate(env) in [env, ((clearCode <+ Call(fLabel)) <+> codes[1]) <+ Mov(rax, s)]
+      fi
+    else
+      var clearCode;
+      var revCode = emptyBuffer();
+      for var i = nA;, i > 0, i := i - 1 do
+        case pop(env) of
+          [x, newEnv] ->  env := newEnv;
+                          if i > nRegArgs
+                            then code := code <+ Mov(x, rax) <+ Push(rax)
+                            else revCode := singletonBuffer(Mov(x, R(i - 1))) <+> revCode
+                          fi
+        esac
+      od;
+      code := code <+> revCode;
+      case fLabel of
+        "Barray" -> clearCode := code <+ Binop("^", rax, rax)
+        | "Bsexp" -> clearCode := code <+ Binop("^", rax, rax)
+        | _ -> clearCode := code
+      esac;
+      if nA > nRegArgs
+        then let [s, env] = allocate(env) in [env, ((clearCode <+ Call(fLabel) <+ Binop("-", L(wordSize * (nA - nRegArgs)), rsp))
+                <+> codes[1]) <+ Mov(rax, s)]
+        else let [s, env] = allocate(env) in [env, ((clearCode <+ Call(fLabel)) <+> codes[1]) <+ Mov(rax, s)]
+      fi
+  fi
 }
 
 -- Gets a suffix for Set instruction from
@@ -557,13 +604,7 @@ fun compile (env, code) {
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of      
-        READ ->
-          let [env, callCode] = call (env, "Lread", 0) in
-	              [env, code <+> callCode]
-      | WRITE ->
-          let [env, callCode] = call (env, "Lwrite", 1) in
-	              [env, code <+> callCode]
-      | BINOP(s) -> case s of
+        BINOP(s) -> case s of
                       "+" -> simpleBinop("+", env, code)
                       | "-" -> simpleBinop("-", env, code)
                       | "*" -> mulBinop("*", env, code)
@@ -619,6 +660,25 @@ fun compile (env, code) {
                   [env, epiCode] -> [env, code <+> epiCode]
                 esac
       | BEGIN(f, a, l) -> [enterFunction(env, f, a, l), code <+> prologue(f)]
+      | STRING(s) ->  case addString(env, s) of
+                        [env, name] ->
+                          let [ps, env] = allocate(env) in 
+                            let [env, callCode] = call (env, "Bstring", 1) in
+                              [env, (code <+> move (L(name), ps)) <+> callCode]
+                      esac
+      | ARRAY(n) ->
+                      let [env, callCode] = call (env, "Barray", n + 1) in
+                            [env, code <+> callCode]
+      | STA ->  let [env, callCode] = call (env, "Bsta", 3) in
+                      [env, code <+> callCode]
+      | ELEM -> let [env, callCode] = call (env, "Belem", 2) in
+                      [env, code <+> callCode]
+      | BUILTIN(f, n) -> let [env, callCode] = call (env, sprintf ("L%s", f), n) in
+	                            [env, code <+> callCode]
+      | SEXP(tag, n) -> let [sym, env] = addTag(env, tag) in
+                        let [s, env] = allocate(env) in 
+                          let [env, callCode] = call (env, "Bsexp", n + 2) in
+                                [env, (code <+> leaHelper (env, M(sym), s)) <+> callCode]
       (* Assignment        
          -- Some guidelines for generating function calls:
          --
