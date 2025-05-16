@@ -1,4 +1,4 @@
-# Assignment 9: FIX-NUM
+# Assignment 10: S(syntactic)-expressions and pattern-matching (all modes)
 
 **Repo structure**:
 * [`regression`](regression/) --- tests
@@ -11,8 +11,30 @@ Our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
 * (`-s` option) compilation to SM and SM program interpretation
 * (`-o` option) compilation to X86 (via SM)
 
+Corresponding lecture notes: [Pattern-matching](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/09.pdf)
+
+**What is new, some important changes, and additional remarks**:
+1. New syntax category: Patterns $\mathcal{P}$ (see lecture notes)
+2. *Bindings* have to be implemented via syntactic extensions
+3. Parser is now implemented as a State monad
+    + see `createEnv`, `emptyEnv`, and `freshName`
+    + see module `STM.lama` from the standard library
+4. Runtime: `TO_SEXP`, `Bsexp` args: number of formal arguments, arguments themself, s-expression tag
+5. SM
+    + `SEXP (s, n)` creates an s-expression where `s` is a tag (string), `n` --- size (number of arguments)
+    + Also, see function `tagHash` from `Std` that returns the tag-hash of the given string
+    + `PATT (p)` which checks that the top value on the SM stack corresponds to the given pattern `p`; `p` is either
+        * `Tag (t, n)` i.e. s-expression with tag `t` and `n` arguments;
+        * `Array (n)` where `n` is the size
+    + `Label (s, f)` now has an extra argument `f` which stands if the label is forward, i.e. that there are no jumps on it before the label but there are some after it;
+    A forward label may appear only during a cycle (`while`) compilation;
+6. X86: see runtime:
+    + `Btag` checks that the given scrutinee is an s-expression with the given tag-hash of the given number of arguments
+    + `Barray_patt` checks that scrutinee `d` is an array of size `n`
+    + `Bmatch_failure`
+
 **How to submit the task**:
-* For the fist task: fork the repo (or switch to the corresponding branch and stretch your changes)
+* For the first task: fork the repo (or switch to the corresponding branch and stretch your changes)
 * For next tasks: merge your changes with updated files
 * implement the task
 * open pull-request to this repo to the branch with the corresponding task
@@ -22,7 +44,7 @@ Our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
 **Standard deadline**: one week
 
 **Task**:
-* Support fix-num
+* Support S-expression and pattern-matching in all modes
 
 **Compile and run tests (from the root folder)**:
 ```bash
