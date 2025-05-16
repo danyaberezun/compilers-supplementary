@@ -14,6 +14,10 @@
 
 # define TO_DATA(x) ((data*)((char*)(x)-sizeof(long)))
 
+# define UNBOXED(x)  (((long) (x)) & 0x0000000000000001)
+# define UNBOX(x)    (((long) (x)) >> 1)
+# define BOX(x)      ((((long) (x)) << 1) | 0x0000000000000001)
+
 typedef struct {
   long tag; 
   char contents[0];
@@ -31,13 +35,14 @@ static void* alloc (size_t size) {
 
 long Llength (void *p) {
   data *a = TO_DATA(p);
-  return LEN(a->tag);
+  return BOX(LEN(a->tag));
 }
 
-void* Bsexp (long n, ...) {
+void* Bsexp (long k, ...) {
   va_list args; 
   long    i, ai; 
-  sexp    *r; 
+  sexp    *r;
+  long    n = UNBOX(k);
 
   r = (sexp*) alloc (sizeof(long) * (n+2));
 
@@ -47,7 +52,7 @@ void* Bsexp (long n, ...) {
   
   for (i = 0; i<=n; i++) {
     ai = va_arg(args, long);
-    if (i == n) r->tag = (void*)ai;
+    if (i == n) r->tag = ai;
     else ((long*) r->data.contents)[i] = ai;
   }
   
@@ -56,9 +61,9 @@ void* Bsexp (long n, ...) {
   return r->data.contents;
 }
 
-void* Barray (long n, ...) {
+void* Barray (long k, ...) {
   va_list args; 
-  long    i, ai; 
+  long    i, ai, n = UNBOX(k); 
   data    *r; 
 
   r = (data*) alloc (sizeof(long) * (n+1));
@@ -88,27 +93,33 @@ void* Bstring (void *p) {
   return s->contents;
 }
 
-void* Belem (void *p, long i) {
+void* Belem (void *p, long j) {
+  long  i = UNBOX(j);
   data *a = TO_DATA(p);
   
   if (TAG(a->tag) == STRING_TAG) {
-    return (void*) a->contents[i];
+    return (void*) BOX(a->contents[i]);
   }
   
   return (void*) ((long*) a->contents)[i];
 }
 
-void* Bsta (void *x, long i, void *v) {
-  if (TAG(TO_DATA(x)->tag) == STRING_TAG)
-    ((char*) x)[i] = (char) v;
-  else ((long*) x)[i] = (long) v;
+void* Bsta (void *x, void *j, void *v) {
+  if (UNBOXED(j)) {
+    long i = UNBOX(j);
+    
+    if (TAG(TO_DATA(x)->tag) == STRING_TAG)
+      ((char*) x)[i] = (char) UNBOX(v);
+    else ((long*) x)[i] = (long) v;
+  }
+  else * (void**) x = v;
 
   return v;
 }
 
 void Lwrite (long x) {
   ALIGN_STACK;
-  printf ("%ld\n", x);
+  printf ("%ld\n", UNBOX(x));
 }
 
 long Lread () {
@@ -117,6 +128,6 @@ long Lread () {
   ALIGN_STACK;
   scanf  ("%ld", &result);
   
-  return result;
+  return BOX(result);
 }
 

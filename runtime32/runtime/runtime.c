@@ -3,9 +3,9 @@
 # include <stdarg.h>
 # include <string.h>
 
-# define UNBOXED(x)  (0)
-# define UNBOX(x)    (x)
-# define BOX(x)      (x)
+# define UNBOXED(x)  (((int) (x)) &  0x0001)
+# define UNBOX(x)    (((int) (x)) >> 1)
+# define BOX(x)      ((((int) (x)) << 1) | 0x0001)
 
 # define STRING_TAG  0x00000001
 # define ARRAY_TAG   0x00000003
@@ -108,7 +108,7 @@ void* Belem (void *p, int i0) {
 }
 
 void* Bsta (void *x, int i, void *v) {
-  if (!UNBOXED(i)) {
+  if (UNBOXED(i)) {
     if (TAG(TO_DATA(x)->tag) == STRING_TAG)((char*) x)[UNBOX(i)] = (char) UNBOX(v);
     else ((int*) x)[UNBOX(i)] = (int) v;
 
