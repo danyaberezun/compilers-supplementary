@@ -122,148 +122,63 @@ fun eval (env, w, insns) {
   }
 
   -- Core interpreter: takes a configuration and a program, returns a configuration
--- Основной цикл выполнения стековой машины
   fun eval (c@[st, cst, s, w], insns) {
     case insns of
-      insn : others ->
-        let [newC, nextInsns] = evalInstruction(c, insn, others) in
-          eval(newC, nextInsns)
-    | _ -> c
+      insn : others ->  case evalDefault(c, insn, others) of
+                          [newC, program] -> eval(newC, program)
+                        esac
+      | _ -> c
     esac
   }
 
-  fun evalInstruction(c@[stack, cst, state, w], insn, others) {
-    case insn of
-      CONST(n)       -> pushConst(stack, n, cst, state, w, others) |
-      BINOP(op)      -> evalBinOp(stack, op, cst, state, w, others) |
-      LD(x)          -> pushLoad(stack, x, state, cst, w, others) |
-      ST(x)          -> storeVar(stack, x, state, cst, w, others) |
-      LABEL(_)       -> [c, others] |
-      JMP(lab)       -> [c, fromLabel(env, lab)] |
-      LDA(x)         -> pushRef(stack, x, cst, state, w, others) |
-      CJMP("z", lab) -> cjmpZero(stack, cst, state, w, lab, others) |
-      CJMP("nz",lab) -> cjmpNonZero(stack, cst, state, w, lab, others) |
-      STI            -> storeIndirect(stack, state, cst, w, others) |
-      DROP           -> dropTop(stack, cst, state, w, others) |
-      END            -> handleEnd(stack, cst, state, w) |
-      GLOBAL(x)      -> assign(state, Glb(x), 0); [c, others] |
-      BEGIN(_, a, l) -> beginFrame(stack, a, l, cst, w, others) |
-      CALL(f, _)     -> [[stack, [state, others] : cst, state, w], fromLabel(env, f)] |
-      STRING(s)      -> [[s : stack, cst, state, w], others] |
-      ARRAY(n)       -> buildArray(stack, n, cst, state, w, others) |
-      STA            -> storeElement(stack, cst, state, w, others) |
-      ELEM           -> loadElement(stack, cst, state, w, others) |
-      BUILTIN(f, n)  -> evalBuiltinCall(stack, f, n, w, cst, state, others) |
-      SEXP(s, n)     -> buildSexp(stack, s, n, cst, state, w, others)
+  fun evalDefault(c@[stack, cst, state, w], insn, others) {
+    case insn of 
+      CONST(n) -> [[n : stack, cst, state, w], others] |
+      BINOP(op) -> let top1:top2:new_stack = stack in [[evalOp(op, top2, top1):new_stack, cst, state, w], others] |
+      LD(x) -> [[lookup(state, x) : stack, cst, state, w], others] |
+      ST(x) -> let v:_ = stack in assign(state, x, v); [[stack, cst, state, w], others] | 
+      LABEL(l) -> [c, others] |
+      JMP(l) -> [c, fromLabel(env, l)] |
+      LDA(x) -> [[Ref (x) : stack, cst, state, w], others] |
+      CJMP("z", l) -> let uv:new_stack = stack in [[new_stack, cst, state, w], if uv == 0 then fromLabel(env, l) else others fi] |
+      CJMP("nz", l) -> let uv:new_stack = stack in [[new_stack, cst, state, w], if uv != 0 then fromLabel(env, l) else others fi] |
+      STI -> let v:Ref(x):stack2 = stack in assign(state, x, v);
+                                   [[v : stack2, cst, state, w], others] |
+      DROP -> let v:stack2 = stack in [[stack2, cst, state, w], others] |
+      END ->  case cst of 
+                [state, program] : cst -> [[stack, cst, state, w], program] |
+                {} -> [c, {}]
+              esac |
+      GLOBAL(x) -> assign(state, Glb(x), 0);
+                    [c, others] |
+      BEGIN(_, a, l) -> let [s, new_state] = createLoc(stack, a, l) in [[s, cst, new_state, w], others] |
+      CALL(f, _) -> [[stack, [state, others] : cst, state, w], fromLabel(env, f)] |
+      STRING(s) -> [[s : stack, cst, state, w], others] |
+      ARRAY(n) -> let [_ : new_stack, lst] = take(stack, n) in [[listArray(lst) : new_stack, cst, state, w], others] |
+      STA ->
+        let v : (i@#val) : u : new_stack = stack in (
+          case u of
+            (arr@#array) -> arr[i] := v; [[v : new_stack, cst, state, w], others] |
+            (arr@#str) -> arr[i] := v; [[v : new_stack, cst, state, w], others] |
+            (arr@Sexp(s, a)) -> a[i] := v; [[v : new_stack, cst, state, w], others]
+          esac
+        ) |
+      ELEM -> let (i@#val) : u : new_stack = stack in (
+          case u of
+            (arr@#array) -> [[arr[i] : new_stack, cst, state, w], others] |
+            (arr@#str) -> [[arr[i] : new_stack, cst, state, w], others] |
+            (arr@Sexp(s, a)) -> [[a[i] : stack, cst, state, w], others]
+          esac
+        ) |
+      BUILTIN(f, n) ->
+        let [new_stack, lst]  = take(stack, n) in (
+          let [v, w]  = evalBuiltin(f, lst, w) in (
+            [[v : new_stack, cst, state, w], others]
+          )
+        ) | 
+      SEXP(s, n) -> let [_ : new_stack, lst] = take(stack, n) in [[Sexp(s, listArray(lst)) : new_stack, cst, state, w], others]
     esac
   }
-
-  fun pushConst(stack, n, cst, state, w, others) {
-    [[n : stack, cst, state, w], others]
-  }
-
-  fun evalBinOp(stack, op, cst, state, w, others) {
-    let top1:top2:new_stack = stack in
-      [[evalOp(op, top2, top1) : new_stack, cst, state, w], others]
-  }
-
-  fun pushLoad(stack, loc, state, cst, w, others) {
-    [[lookup(state, loc) : stack, cst, state, w], others]
-  }
-
-  fun storeVar(stack, loc, state, cst, w, others) {
-    let v:_ = stack in
-      assign(state, loc, v);
-      [[stack, cst, state, w], others]
-  }
-
-  fun pushRef(stack, loc, cst, state, w, others) {
-    [[Ref(loc) : stack, cst, state, w], others]
-  }
-
-  fun cjmpZero(stack, cst, state, w, label, others) {
-    let v : new_stack = stack in
-      [[new_stack, cst, state, w], if v == 0 then fromLabel(env, label) else others fi]
-  }
-
-  fun cjmpNonZero(stack, cst, state, w, label, others) {
-    let v : new_stack = stack in
-      [[new_stack, cst, state, w], if v != 0 then fromLabel(env, label) else others fi]
-  }
-
-  fun storeIndirect(stack, state, cst, w, others) {
-    let v : Ref(x) : rest = stack in
-      assign(state, x, v);
-      [[v : rest, cst, state, w], others]
-  }
-
-  fun dropTop(stack, cst, state, w, others) {
-    let _ : rest = stack in
-      [[rest, cst, state, w], others]
-  }
-
-  fun handleEnd(stack, cst, state, w) {
-    case cst of
-      [savedState, program] : rest -> [[stack, rest, savedState, w], program] |
-      {} -> [[stack, cst, state, w], {}]
-    esac
-  }
-
-  fun beginFrame(stack, nArgs, nLocals, cst, w, others) {
-    let [remainingStack, newState] = createLoc(stack, nArgs, nLocals) in
-      [[remainingStack, cst, newState, w], others]
-  }
-
-  fun buildArray(stack, n, cst, state, w, others) {
-    let [_ : rest, values] = take(stack, n) in
-      [[listArray(values) : rest, cst, state, w], others]
-  }
-
-  fun storeElement(stack, cst, state, w, others) {
-    let v : (i@#val) : container : rest = stack in
-      case container of
-        (arr@#array)     -> arr[i] := v |
-        (arr@#str)       -> arr[i] := v |
-        (arr@Sexp(_, a)) -> a[i] := v
-      esac;
-      [[v : rest, cst, state, w], others]
-  }
-
-  fun loadElement(stack, cst, state, w, others) {
-    let (i@#val) : container : rest = stack in
-      case container of
-        (arr@#array)     -> [ [arr[i] : rest, cst, state, w] : others ] |
-        (arr@#str)       -> [ [arr[i] : rest, cst, state, w] : others ] |
-        (arr@Sexp(_, a)) -> [ [a[i]   : stack, cst, state, w] : others ]
-  }
-
-  fun evalBuiltinCall(stack, f, n, w, cst, state, others) {
-    let [rest, args] = take(stack, n) in
-      let [result, newW] = evalBuiltin(f, args, w) in
-        [[result : rest, cst, state, newW], others]
-  }
-
-  fun buildSexp(stack, name, n, cst, state, w, others) {
-    let [_ : rest, values] = take(stack, n) in
-      [[Sexp(name, listArray(values)) : rest, cst, state, w], others]
-  }
-
-  fun createLoc(s, na, nl) {
-    let [rest, args] = take(s, na) in
-      [rest, [listArray(args), initArray(nl, fun (_) {0})]]
-  }
-
-  fun take (list, n) {
-    fun inner (n, acc, list) {
-      if n == 0
-      then [list, acc]
-      else inner (n-1, list.hd : acc, list.tl)
-      fi
-    }
-    inner (n, {}, list)
-  }
-
-
 
   fun createLoc(s, na, nl) {
      let [r, took] = take(s, na) in [r, [listArray(took), initArray(nl, fun (_) {0})]]
