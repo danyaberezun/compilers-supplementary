@@ -1,0 +1,235 @@
+-- Expression evaluator
+
+import List;
+import Array;
+import State;
+import World;
+import Lexer;
+import Parser;
+import Builtins;
+
+-- As association map which maps "\otimes" into "\oplus"
+var ops = {
+  ["+" , infix + ],
+  ["-" , infix - ],
+  ["*" , infix * ],
+  ["/" , infix / ],
+  ["%" , infix % ],
+  ["==", infix ==],
+  ["!=", infix !=],
+  ["<" , infix < ],
+  ["<=", infix <=],
+  [">" , infix > ],
+  [">=", infix >=],
+  ["&&", infix &&],
+  ["!!", infix !!]
+};
+
+-- The evaluator for infix operators: takes an operator as a string
+-- and two operand values, and returns the result
+public fun evalOp (op, l, r) {
+  case assoc (ops, op) of
+    Some (f) -> f (l, r)
+  esac
+}
+
+-- Evaluates an expression "expr" in a configuration "c".
+-- A configuration is a pair of a state "s" and a world "w".
+-- Returns a final configuration (if any)
+--
+-- A expression is represented by a data structure of the following shape:
+--
+-- expr = Assn    (string, expr)       |
+--        Seq     (expr, expr)         |
+--        Skip                         |
+--        if      (expr, expr, expr)   |
+--        While   (expr, expr)         |
+--        DoWhile (expr, expr)         |
+--        Var     (string)             |
+--        Ref     (string)             |
+--        Const   (int)                |
+--        Binop   (string, expr, expr) |
+--        Call    (string, expr list)  |
+--        Ignore  (expr)               |
+--        String  (string)             |
+--        Array   (expr list)          |
+--        Elem    (expr, expr)         |
+--        ElemRef (expr, expr)         |
+--        Sexp    (string, expr list)  |
+--        Builtin (string, expr list)
+
+-- Helper function: checks that given name designates a regular variable in
+-- a given state
+fun lookupVal (state, name) {
+  case state.lookup (name) of
+    x@Val (_) -> x
+  | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
+  esac
+}
+
+-- Helper function: checks that given name designates a function in
+-- a given state
+fun lookupFun (state, name) {
+  case state.lookup (name) of
+    x@Fun (_, _) -> x
+  | _            -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
+  esac
+}
+
+-- Helper function: adds a bunch of regular variables current scope
+fun addNames (state, names) {
+  foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
+}
+
+-- Helper function: adds a function in current scope
+fun addFunction (state, name, args, body) {
+  state.addName (name, Fun (args, body))
+}
+                                        
+-- Evaluates a list of expressions, properly threading a configurations.
+-- Returns the final configuration and the list of values
+fun evalList (c, exprs) {
+  case foldl (fun ([c, vals], e) {
+                case eval (c, e) of
+                  [c, vl] -> [c, vl : vals]
+                esac
+              },
+              [c, {}],
+              exprs) of
+    [c, vals] -> [c, reverse (vals)]
+  esac
+}
+
+fun bindVariables(state, names, values) {
+  var bindings = zip(names, values);
+  foldl(fun (s, [name, val]) {
+    s.addName(name, Val(val))
+  }, state, bindings)
+}
+
+fun applyDefinitions(state, definitions) {
+  foldl(fun (s, def) {
+    case def of
+      Var(varList) -> addNames(s, varList) |
+      Fun(name, args, body) -> addFunction(s, name, args, body)
+    esac
+  }, state, definitions)
+}
+
+fun evalAssignment([state, world], lhs, rhs) {
+  let [[newState, newWorld], {left, right}] = evalList([state, world], {lhs, rhs}) in
+    case left of
+      Ref(varName) -> 
+        lookupVal(state, varName);
+        [[newState <- [varName, Val(right)], newWorld], right] |
+
+      ElemRef(array@#array, idx@#val) -> 
+        array[idx] := right;
+        [[newState, newWorld], right] |
+
+      ElemRef(str@#str, idx@#val) -> 
+        str[idx] := right;
+        [[newState, newWorld], right] |
+
+      ElemRef(Sexp(_, args), idx@#val) -> 
+        args[idx] := right;
+        [[newState, newWorld], right]
+    esac
+}
+
+fun evalConditional(c, cond, ifTrue, ifFalse) {
+  let [new_c, condVal] = eval(c, cond) in
+    eval(new_c, if condVal then ifTrue else ifFalse fi)
+}
+
+fun evalWhileLoop(c, cond, body) {
+  let [new_c, condResult] = eval(c, cond) in
+    if condResult == 0 then [new_c, None]
+    else eval(new_c, Seq(body, While(cond, body)))
+}
+
+fun eval(c@[state, world], expr) {
+  case expr of
+    Skip -> [c, None] |
+
+    Ref(x) -> [c, Ref(x)] |
+
+    Const(x) -> [c, x] |
+
+    String(s) -> [c, s] |
+
+    Var(name) -> 
+      let Val(value) = lookupVal(state, name) in
+      [c, value] |
+
+    Binop(op, e1, e2) -> 
+      let [new_c, {l, r}] = evalList(c, {e1, e2}) in
+      [new_c, evalOp(op, l, r)] |
+
+    Seq(e1, e2) ->
+      let [new_c, {_, res}] = evalList(c, {e1, e2}) in
+      [new_c, res] |
+
+    Assn(lhs, rhs) -> evalAssignment(c, lhs, rhs) |
+
+    If(cond, e1, e2) -> evalConditional(c, cond, e1, e2) |
+
+    While(cond, body) -> evalWhileLoop(c, cond, body) |
+
+    DoWhile(body, cond) -> 
+      let [c1, _] = eval(c, body) in
+      evalWhileLoop(c1, cond, body) |
+
+    Ignore(e) ->
+      let [new_c, _] = eval(c, e) in
+      [new_c, None] |
+
+    Scope(defs, e) ->
+      let scopedState = enterScope(state) in
+      let [resultConfig, v] = eval([applyDefinitions(scopedState, defs), world], e) in
+      [[leaveScope(state), world], v] |
+
+    Call(name, args) -> 
+      var Fun(argNames, body) = lookupFun(state, name);
+      let [[st1, world], argVals] = evalList(c, args) in
+      let localScope = addNamesAndValues(enterFunction(state, "expr"), argNames, argVals) in
+      let [[resultState, world], resultVal] = eval([localScope, world], body) in
+      [[leaveFunction(state, getGlobal(resultState)), world], resultVal] |
+
+    Array(elements) -> 
+      let [[st1, w1], values] = evalList(c, elements) in
+      [[st1, w1], listArray(values)] |
+
+    Sexp(name, args) ->
+      let [[st1, w1], values] = evalList(c, args) in
+      [[st1, w1], Sexp(name, listArray(values))] |
+
+    Elem(arrExpr, idxExpr) ->
+      let [[st1, w1], {container, idx@#val}] = evalList(c, {arrExpr, idxExpr}) in
+        case container of
+          arr@#array -> [[st1, w1], arr[idx]] |
+          str@#str -> [[st1, w1], str[idx]] |
+          Sexp(_, args) -> [[st1, w1], args[idx]]
+        esac |
+
+    ElemRef(arrExpr, idxExpr) ->
+      let [c1, {container, idx}] = evalList(c, {arrExpr, idxExpr}) in
+      [c1, ElemRef(container, idx)] |
+
+    Builtin(fn, args) ->
+      let [[st1, w1], vals] = evalList(c, args) in
+      let [result, newWorld] = evalBuiltin(fn, vals, w1) in
+      [[st1, newWorld], result] |
+
+    _ -> failure("Error. Unknown expression!\n")
+  esac
+}
+
+-- Evaluates a program with a given input and returns an output
+public fun evalExpr (input, expr) {
+  case eval ([emptyState ().enterScope.addName ("read",   Fun ({}, External))
+                                      .addName ("write",  Fun ({"a"}, External))
+                                      .addName ("length", Fun ({"a"}, External)), createWorld (input)], expr) of
+    [c, _] -> c.snd.getOutput
+  esac
+}
