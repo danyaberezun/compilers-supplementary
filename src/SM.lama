@@ -123,10 +123,68 @@ fun eval (env, w, insns) {
 
   -- Core interpreter: takes a configuration and a program, returns a configuration
   fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+    case insns of
+      insn : others ->  case evalDefault(c, insn, others) of
+                          [newC, program] -> eval(newC, program)
+                        esac
+      | _ -> c
+    esac
+  }
+
+  fun evalDefault(c@[stack, cst, state, w], insn, others) {
+    case insn of 
+      CONST(n) -> [[n : stack, cst, state, w], others] |
+      BINOP(op) -> let top1:top2:new_stack = stack in [[evalOp(op, top2, top1):new_stack, cst, state, w], others] |
+      LD(x) -> [[lookup(state, x) : stack, cst, state, w], others] |
+      ST(x) -> let v:_ = stack in assign(state, x, v); [[stack, cst, state, w], others] | 
+      LABEL(l) -> [c, others] |
+      JMP(l) -> [c, fromLabel(env, l)] |
+      LDA(x) -> [[Ref (x) : stack, cst, state, w], others] |
+      CJMP("z", l) -> let uv:new_stack = stack in [[new_stack, cst, state, w], if uv == 0 then fromLabel(env, l) else others fi] |
+      CJMP("nz", l) -> let uv:new_stack = stack in [[new_stack, cst, state, w], if uv != 0 then fromLabel(env, l) else others fi] |
+      STI -> let v:Ref(x):stack2 = stack in assign(state, x, v);
+                                   [[v : stack2, cst, state, w], others] |
+      DROP -> let v:stack2 = stack in [[stack2, cst, state, w], others] |
+      END ->  case cst of 
+                [state, program] : cst -> [[stack, cst, state, w], program] |
+                {} -> [c, {}]
+              esac |
+      GLOBAL(x) -> assign(state, Glb(x), 0);
+                    [c, others] |
+      BEGIN(_, a, l) -> let [s, new_state] = createLoc(stack, a, l) in [[s, cst, new_state, w], others] |
+      CALL(f, _) -> [[stack, [state, others] : cst, state, w], fromLabel(env, f)] |
+      STRING(s) -> [[s : stack, cst, state, w], others] |
+      ARRAY(n) -> let [_ : new_stack, lst] = take(stack, n) in [[listArray(lst) : new_stack, cst, state, w], others] |
+      STA ->
+        let v : (i@#val) : u : new_stack = stack in (
+          case u of
+            (arr@#array) -> arr[i] := v; [[v : new_stack, cst, state, w], others] |
+            (arr@#str) -> arr[i] := v; [[v : new_stack, cst, state, w], others] |
+            (arr@Sexp(s, a)) -> a[i] := v; [[v : new_stack, cst, state, w], others]
+          esac
+        ) |
+      ELEM -> let (i@#val) : u : new_stack = stack in (
+          case u of
+            (arr@#array) -> [[arr[i] : new_stack, cst, state, w], others] |
+            (arr@#str) -> [[arr[i] : new_stack, cst, state, w], others] |
+            (arr@Sexp(s, a)) -> [[a[i] : stack, cst, state, w], others]
+          esac
+        ) |
+      BUILTIN(f, n) ->
+        let [new_stack, lst]  = take(stack, n) in (
+          let [v, w]  = evalBuiltin(f, lst, w) in (
+            [[v : new_stack, cst, state, w], others]
+          )
+        ) | 
+      SEXP(s, n) -> let [_ : new_stack, lst] = take(stack, n) in [[Sexp(s, listArray(lst)) : new_stack, cst, state, w], others]
+    esac
+  }
+
+  fun createLoc(s, na, nl) {
+     let [r, took] = take(s, na) in [r, [listArray(took), initArray(nl, fun (_) {0})]]
   }
   
-  eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
+  getOutput(eval ([{}, {}, makeState (0, 0), w], insns) [3])
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -181,7 +239,7 @@ fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
   
   -- Enters a function
   fun beginFun (state) {
-    makeCompEnv (nLabels, 2, enterFunction (state), 0, 0, functions)
+    makeCompEnv (nLabels, 2, enterFunction (state, "sm"), 0, 0, functions)
   }
 
   -- Get functions and empty functions list
@@ -242,7 +300,7 @@ fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
 
 -- Initialize a new compilation environment
 fun initCompEnv () {
-  makeCompEnv (0, 0, emptyState (), 0, 0, {})
+  makeCompEnv (0, 1, enterScope(emptyState ()), 0, 0, {})
 }
 
 -- Accessor functions
@@ -351,6 +409,199 @@ fun addVars (env, names) {
 --    environment (use env.beginFun) and register arguments
 --    (use env.addArg).
 *)
-public fun compileSM (expr) {
-  failure ("compileSM not implemented\n")
+public fun compileSM (stmt) {
+  fun label(lab, labUsed) {
+    if labUsed
+    then singletonBuffer (LABEL(lab))
+    else emptyBuffer()
+    fi
+  }
+  
+  fun compileMany (lab, env, exprs) {
+    case exprs of
+      {e}    -> compile (lab, env, e)
+    | e : es ->
+        case genLabel(env) of
+          [eLab, env] ->
+            case compile (eLab, env, e) of
+              [eUsed, env, eCode] ->
+                 case compileMany (lab, env, es) of
+                   [labUsed, env, esCode] -> [labUsed, env, eCode <+> label (eLab, eUsed) <+> esCode]
+                 esac
+            esac
+        esac
+    esac
+  }
+
+  fun compile (lab, env, stmt) {
+    case stmt of
+      Skip              -> [false, env, emptyBuffer ()]
+    | Var    (x)        -> [false, env, singletonBuffer (LD(lookupVar(env, x)))]
+    | Ref    (x)        -> [false, env, singletonBuffer (LDA(lookupVar(env, x)))]
+    | Const  (n)        -> [false, env, singletonBuffer (CONST(n))]
+    | Binop (s, e1, e2) -> let [lab1, lab2, env] = genLabels(env, 2) in (
+                          let [lab3, env, code1] = compile(lab1, env, e1) in (
+                            let [lab4, env, code2] = compile(lab2, env, e2) in
+                              [false, env, (((code1 <+> label(lab1, lab3)) <+> code2) <+> label(lab2, lab4)) <+ BINOP(s)]
+                          )
+                        )
+    | Ignore (e) -> let [lab1, env] = genLabel(env) in (
+                  let [lab2, env, code1] = compile(lab1, env, e) in
+                    [false, env, code1 <+> label(lab1, lab2) <+ DROP]
+                )
+    
+    | Assn  (Ref(x), e) -> let [lab1, env1] = genLabel(env) in (
+                            let [lab2, env2, code] = compile (lab1, env1, e) in [false, env2, code <+> label(lab1, lab2) <+ ST (lookupVar(env2, x))]
+                           )
+    | Assn  (er@ElemRef(a, i), e) -> let [elab1, env] = genLabel(env) in (
+                                       let [lab2, env, code] = compileMany (elab1, env, {er, e}) in (
+                                         [false, env, (code <+> label(elab1, lab2)) <+ STA]
+                                       )
+                                     )  
+    | Assn   (e1, e2)   -> let [lab1, lab2, env] = genLabels(env, 2) in (
+                             let [lab3, env, code1] = compile(lab1, env, e1) in (
+                               let [lab4, env, code2] = compile(lab2, env, e2) in
+                                 [false, env, (code1 <+> label(lab1, lab3) <+> code2 <+> label(lab2, lab4)) <+ STI]
+                             )
+                           )
+    | Seq   (s1, s2)    -> let [lab1, env] = genLabel(env) in (
+                             let [lab2, env, code1] = compile(lab1, env, s1) in (
+                               let [lab3, env, code2] = compile(lab, env, s2) in
+                                 [lab3, env, (code1 <+> label(lab1, lab2)) <+> code2]
+                             )
+                           )
+    | If (expr, s1, s2) -> let [lab1, lab2, env] = genLabels(env, 2) in (
+                             let [lab3, env, code1] = compile(lab2, env, expr) in (
+                               let [_, env, code2] = compile(lab, env, s1) in (
+                                 let [_, env, code3] = compile(lab, env, s2) in
+                                   [true, env, ((code1 <+> label(lab2, lab3)) <+ CJMP("z", lab1) <+> code2 <+ JMP(lab)) <+ LABEL (lab1) <+> code3]
+                               )
+                             )
+                           )
+    | While (expr, stmt) -> let [lab1, lab2, lab3, env] = genLabels(env, 3) in (
+                              let [lab4, env, code1] = compile(lab3, env, expr) in (
+                                let [_, env, code2] = compile(lab1, env, stmt) in
+                                  [false, env, singletonBuffer(JMP(lab1)) <+ LABEL(lab2) <+> code2 <+ LABEL(lab1) <+> code1 <+> label(lab3, lab4) <+ CJMP("nz", lab2)]
+                              )
+                            )
+    | DoWhile (stmt, expr) -> let [lab1, lab2, lab3, env] = genLabels(env, 3) in (
+                                let [lab4, env, exprCode] = compile(lab3, env, expr) in (
+                                  let [lab5, env, stmtCode] = compile(lab1, env, stmt) in
+                                    [false, env, singletonBuffer(LABEL(lab2)) <+> stmtCode <+> label(lab1, lab5) <+> exprCode <+> label(lab3, lab4) <+ CJMP("nz", lab2)]
+                                )
+                              )
+    | Scope (dfns, expr) ->
+                          var code = emptyBuffer();
+                          env := beginScope(env);
+                          env := foldl(fun(env, dfn) {
+                            case dfn of
+                              Fun(name, args, body) -> (let [fLab, env] = genFunLabel(env, name) in addFun(env, name, fLab, size(args))) |
+                              Var(xs) ->  addVars(env, xs)
+                            esac
+                          }, env, dfns);
+                          env := foldl(fun(env, dfn) {
+                            case dfn of
+                              Fun(name, args, body) -> (let [fLab, _] = genFunLabel(env, name) in rememberFun(env, fLab, args, body)) |
+                              Var(_) -> env
+                            esac
+                          }, env, dfns);
+                          code := if isGlobal(env)
+                                  then foldl(fun(code, dfn) {
+                                      case dfn of
+                                        Var(xs) ->  foldl(fun(code, x) {code <+ GLOBAL(x)}, code, xs)
+                                        | _ -> code
+                                      esac
+                                    },
+                                    code, dfns)
+                                  else code
+                                  fi;
+                          let [lab2, env, cd] = compile(lab, env, expr) in [lab2, endScope(env), code <+> cd]
+    | Call(name, args) -> case args of
+                            {} -> let Fun(fLabel, nArgs) = lookupFun(env, name) in (
+                                    if size(args) == nArgs
+                                    then [false, env, singletonBuffer(CALL(fLabel, nArgs))]
+                                    else failure ("size(args) != nArgs\n")
+                                    fi
+                                  )
+                            | _ ->    let [lab1, env] = genLabel(env) in (
+                                        let [lab2, env, cd] = compileMany(lab1, env, args) in (
+                                          let Fun(fLabel, nArgs) = lookupFun(env, name) in (
+                                            if size(args) == nArgs
+                                            then [false, env, (cd <+> label(lab1, lab2)) <+ CALL(fLabel, nArgs)]
+                                            else failure("size(args) != nArgs\n")
+                                            fi
+                                          )
+                                        )
+                                      )
+                          esac
+    | String (s) -> [false, env, singletonBuffer(STRING(s))]
+    | Array (exps) ->
+                      case exps of
+                        {} -> [false, env, singletonBuffer(CONST(0)) <+ ARRAY(0)] |
+                        _ ->
+                          var sz = size(exps);
+                          let [lab1, env1] = genLabel(env) in (
+                            let [lab2, env2, cd] = compileMany(lab1, env1, exps) in (
+                              [false, env2, (singletonBuffer(CONST(sz)) <+> cd <+> label (lab1, lab2)) <+ ARRAY(sz)]
+                            )
+                          )
+                      esac
+    | Sexp (name, exps) ->
+                      case exps of
+                        {} -> [false, env, singletonBuffer(CONST(0)) <+ SEXP(name, 0)] |
+                        _ ->
+                          var sz = size(exps);
+                          let [lab1, env1] = genLabel(env) in (
+                            let [lab2, env2, cd] = compileMany(lab1, env1, exps) in (
+                              [false, env2, (singletonBuffer(CONST(sz)) <+> cd <+> label(lab1, lab2)) <+ SEXP(name, sz)]
+                            )
+                          )
+                      esac
+    | Elem (e_array, e_index) -> let [lab1, env1] = genLabel(env) in (
+                                  let [lab2, env2, cd] = compileMany(lab1, env1, {e_array, e_index}) in (
+                                    [false, env2, (cd <+> label(lab1, lab2)) <+ ELEM]
+                                  )
+                                )
+    | ElemRef (e_array, e_index) ->  let [lab1, env1] = genLabel(env) in (
+                                      let [lab2, env2, cd] = compileMany(lab1, env1, {e_array, e_index}) in (
+                                        [false, env2, (cd <+> label(lab1, lab2))]
+                                      )
+                                    )
+    | Builtin (f, args) -> case args of
+                            {} -> [false, env, singletonBuffer(BUILTIN(f, 0))] |
+                            _ ->
+                                  let [lab1, env1] = genLabel(env) in (
+                                    let [lab2, env2, cd] = compileMany(lab1, env1, args) in (
+                                      [false, env2, (cd <+> label(lab1, lab2)) <+ BUILTIN(f, size(args))]
+                                    )
+                                  )
+                          esac
+    esac
+  }
+
+  fun compileFuns(env, main) {
+    fun iterate(env, flist) {
+      case flist of
+        {} -> case getFuns(env) of
+                [{}, env1] -> emptyBuffer() |
+                [fns, env1] -> iterate(env1, fns)
+              esac |
+        Fun (f, args, body, state) : fs ->
+          let [lab1, env] = genLabel(addArgs(beginFun(env, state), args)) in (
+            let [lab4, env, code] = compile(lab1, env, body) in (
+              singletonBuffer(LABEL(f)) <+ BEGIN(f, size(args), getLocals(env)) <+> code <+> label(lab1, lab4) <+ END <+> iterate(env, fs)
+            )
+          )
+      esac
+    }
+
+    main <+> iterate(env, {})
+  }
+
+  let [lab1, env] = genLabel(initCompEnv()) in (
+    let [lab3, env, code] = compile(lab1, env, stmt) in (
+      getBuffer $
+      compileFuns(env, singletonBuffer(LABEL("main")) <+ BEGIN("main", 0, getLocals(env)) <+> code <+> label(lab1, lab3) <+ END)
+    )
+  )
 }
