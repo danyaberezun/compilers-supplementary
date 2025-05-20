@@ -411,6 +411,10 @@ fun freeReg (env, r) {
 fun stackDepth (env) {
   env [19] ()
 }
+-- Compiles an expression into a stack machine code.
+-- Takes an expression, returns a list of stack machine
+-- instructions.
+
 
 fun addString (env, s) {
   env [20] (s)
@@ -487,10 +491,11 @@ fun memOpnd (opnd) {
 
 -- Enframes a rdx-using code with save/restore
 -- if RDX is occupied
-fun withRDX (env, args, code) {
+fun withRDX (env, code) {
   if freeReg (env, rdx)
-  then code (args)
-  else singletonBuffer (Push (rdx)) <+> code (mapArray (fun (arg) { case arg of R (2  ) -> I (0, rsp) | _ -> arg esac }, args)) <+ Pop (rdx) fi
+  then code  
+  else singletonBuffer (Push (rdx)) <+> code <+ Pop (rdx)
+  fi
 }
 
 -- Generates a move between locations, using
@@ -536,9 +541,9 @@ fun call (env, fLabel, nA) {
 
   [env,
      pushes 
-     <+> code 
-     <+> case fLabel of "Barray" -> singletonBuffer (Binop("^", rax, rax)) | "Bsexp" -> singletonBuffer (Binop("^", rax, rax)) | _ -> emptyBuffer () esac
-     <+ Call(fLabel)
+     <+> code
+     <+> case fLabel of "Barray" -> singletonBuffer (Binop("^", rax, rax)) | "Bsexp" -> singletonBuffer(Binop("^", rax, rax)) | _ -> emptyBuffer () esac
+     <+ Call(fLabel) 
      <+> if nA > nRegArgs then singletonBuffer (Binop("-", L(wordSize * (nA - nRegArgs)), rsp)) else emptyBuffer () fi 
      <+> pops 
      <+ Mov(rax, s)]
@@ -615,26 +620,32 @@ fun compile (env, code) {
         READ -> let [env, callCode] = call (env, "Lread", 0) in [env, code <+> callCode]
       | WRITE -> let [env, callCode] = call (env, "Lwrite", 1) in [env, code <+> callCode]
       | LD (x) -> let [s, env] = allocate (env) in [env, code <+> move (loc (env, x), s)]
-      | ST (x) -> let [s, env] = pop (env) in [env, code <+> move (s, loc (env, x))]
+      | ST (x) -> let [s, env] = pop (env) in [push (env, loc (env, x)), code <+> move (s, loc (env, x))]
       | CONST (n) -> let [s, env] = allocate (env) in [env, code <+ Mov(L (n), s)]
-      | BINOP (op) -> 
-         let oldEnv = env in
-         let [x, y, env] = pop2 (env) in
-         let [s, env] = allocate (env) in
-            let newcode = 
-               if isDivOp(op) 
-               then code <+> withRDX (oldEnv, [x, y, s], fun ([a1, a2, a3]) { singletonBuffer (Mov (a2, rax)) <+ Cltd <+ IDiv (a1) <+ Mov (divResReg(op), a3) })
-               elif isMathOp(op)
-               then code <+ Mov (y, rax) <+ Binop (op, x, rax) <+ Mov (rax, s)
-               elif isCmpOp(op)
-               then code <+ Mov (y, rax) <+ Binop ("cmp", x, rax) <+ Set (suffix (op), "%al") <+ Binop ("&&", L(1), rax) <+ Mov (rax, s)
-               elif isLogicOp(op)
-               then code <+ Binop ("cmp", L (0), x) <+ Set (suffix ("!="), "%al") <+ Binop ("&&", L(1), rax) <+ 
-                            Binop ("cmp", L (0), y) <+ Set (suffix ("!="), "%dl") <+ Binop ("&&", L(1), rdx) <+ 
-			                      Binop ("&&", rax, rdx) <+ Mov (rdx, s)
-               else failure("wrong op")	
+      | BINOP(op) -> 
+         case pop2(env) of 
+            [x, y, env] -> let newcode =
+               if isDivOp (op) then
+                  case x of
+                     R(2) -> code <+> withRDX(env, singletonBuffer(Mov(rsi, rax)) <+ Mov(rdx, rsi) <+ Cltd <+ IDiv(rsi) <+ Mov(divResReg (op), rsi))
+                     | _  -> code <+> withRDX(env, singletonBuffer(Mov(y, rax)) <+ Cltd <+ IDiv(x) <+ Mov(divResReg (op), y))
+                  esac
+               elif isMathOp (op) then code <+> (if memOpnd(x) && memOpnd(y) then singletonBuffer(Mov(x, rax)) <+ Binop(op, rax, y) else singletonBuffer(Binop(op, x, y)) fi)
+               elif isCmpOp (op) then
+                  case x of
+                     R(2) -> code <+> withRDX(env, (singletonBuffer(Binop("^", rcx, rcx)) <+> (singletonBuffer(Binop("cmp", x, y))) <+ Set(suffix(op), "%cl") <+ Mov(rcx, y)))
+                   | R(3) -> code <+> withRDX(env, (singletonBuffer(Binop("^", r8, r8)) <+> (singletonBuffer(Binop("cmp", x, y))) <+ Set(suffix(op), "%r8b") <+ Mov(r8, y)))
+                   | _    -> code <+> withRDX(env, (singletonBuffer(Binop("^", rdx, rdx)) <+> (if memOpnd(x) && memOpnd(y) then singletonBuffer(Mov(x, rax)) <+ Binop("cmp", rax, y) else singletonBuffer(Binop("cmp", x, y)) fi) <+ Set(suffix(op), "%dl") <+ Mov(rdx, y)))
+                  esac
+               elif isLogicOp (op) then 
+                  case x of
+                     R(2) -> code <+> withRDX(env, singletonBuffer(Binop("^", rax, rax)) <+ Binop("cmp", L(0), y) <+ Set(suffix("!="), "%al") <+ Binop("^", rsi, rsi) <+ Binop("cmp", L(0), x) <+ Set(suffix("!="), "%sil") <+ Binop(op, rax, rsi))
+                   | _    -> code <+> withRDX(env, singletonBuffer(Binop("^", rax, rax)) <+ Binop("cmp", L(0), y) <+ Set(suffix("!="), "%al") <+ Binop("^", rdx, rdx) <+ Binop("cmp", L(0), x) <+ Set(suffix("!="), "%dl") <+ Binop(op, rax, rdx) <+ Mov(rdx, y))
+                  esac
+               else failure ("wrong op")
                fi
-            in [env, newcode]
+            in [push(env, y), newcode]
+        esac
       | LABEL (x) -> let env = if isBarrier (env) then retrieveStack (env, x) else env fi in [env, code <+ Label (x)]
       | JMP (x) -> [setBarrier (setStack (env, x)), code <+ Jmp (x)]
       | CJMP (c, l) -> let [x, env] = pop (env) in
@@ -658,6 +669,10 @@ fun compile (env, code) {
       | ELEM -> let [env, callCode] = call (env, "Belem", 2) in [env, code <+> callCode]
       | STA -> let [env, callCode] = call (env, "Bsta", 3) in [env, code <+> callCode]
       | BUILTIN (f, n) -> let [env, callCode] = call (env, "L" ++ f, n) in [env, code <+> callCode]
+      | ARRAY(n) -> let [env, callCode] = call (env, "Barray", n + 1) in [env, code <+> callCode]
+      | SEXP(t, n) -> let [sym, env] = addTag(env, t) in
+         let [s, env] = allocate(env) in 
+            let [env, callCode] = call (env, "Bsexp", n + 2) in [env, (code <+> lea (M(sym), s)) <+> callCode]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", string (i))
       esac
     }, [env, emptyBuffer ()], code)
