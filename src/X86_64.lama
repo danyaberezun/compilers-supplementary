@@ -598,13 +598,17 @@ fun generalCall (env, fLabel, nA, immArgs) {
       0 -> [acc, nStackArgs, env]
     | _ ->
       let [x, immArgs, env] = takeArg (env, immArgs, nA - 1) in 
-      let [moveCode, stackSlots] = case [x, argLoc (nA - 1)] of
-        [M (_), OnStack] -> [singletonBuffer (Lea (x, rax)) <+ Push (rax), 1]
-      | [_, OnStack] -> [singletonBuffer (Push (x)), 1]
-      | [M (_), loc] -> [lea (x, loc), 0]
-      | [_, loc] -> [move (x, loc), 0]
+      let [acc, stackSlots] = case [x, argLoc (nA - 1)] of
+        [M (_), OnStack] -> [acc <+ Lea (x, rax) <+ Push (rax), 1]
+      | [_, OnStack] -> [singletonBuffer (Push (x)) <+> acc, 1]
+      | [M (_), loc] -> [acc <+> lea (x, loc), 0]
+      | [x@R (rx), y@R (ry)] -> 
+          if rx <= ry then [acc <+> move (x, y), 0]
+          else [move (x, y) <+> acc, 0]
+          fi
+      | [_, loc] -> [acc <+> move (x, loc), 0]
       esac in
-        storeArgs (env, nA - 1, immArgs, moveCode <+> acc, nStackArgs + stackSlots)
+        storeArgs (env, nA - 1, immArgs, acc, nStackArgs + stackSlots)
     esac
   }
   let [pushes, pops, saveSize] = savecode (env, nA - size (immArgs)) in
@@ -637,7 +641,10 @@ fun suffix (op) {
 
 -- Boxes an immediate value
 fun makeBox (n) {
-  n * 2 + 1
+  case n of 
+    Unboxed (n) -> n
+  | _ -> n * 2 + 1
+  esac
 }
 
 -- Generates a fixednum representation
@@ -664,15 +671,16 @@ fun compile (env, code) {
         LD (x) ->
           let [s, env] = allocate (env) in [env, code <+> move (loc (env, x), s)]
       | ST (x) ->
-          let [s, env] = pop (env) in [env, code <+> move (s, loc (env, x))]
+          let s = peek (env) in [env, code <+> move (s, loc (env, x))]
       | CONST (x) ->
-          let [s, env] = allocate (env) in [env, code <+> move (L (x), s)]
+          let [s, env] = allocate (env) in [env, code <+> move (L (makeBox (x)), s)]
       | LABEL (l) -> let env = if isBarrier (env) then retrieveStack (env, l) else env fi in [env, code <+ Label (l)]
       | JMP (l) -> [setStackBarrier (env, l), code <+ Jmp (l)]
-      | CJMP (cc, l) -> let [s, env] = pop (env) in [setStackBarrier (env, l), code <+ Binop ("cmp", L (0), s) <+ CJmp (cc, l)]
+      | CJMP (cc, l) -> let [s, env] = pop (env) in [setStackBarrier (env, l), code <+ Sar1 (s) <+ Binop ("cmp", L (0), s) <+ CJmp (cc, l)]
       | BINOP (op) ->
           let initEnv = env in
           let [y, x, env] = pop2 (env) in
+            code := code <+ Sar1 (x) <+ Sar1 (y);
             if memOpnd (x) && memOpnd (y) && op != "/" && op != "%" && op != "*" then 
               code := code <+ Mov (y, rax);
               y := rax
@@ -734,7 +742,7 @@ fun compile (env, code) {
                 <+ Mov (rax, x)
             esac;
             
-            [push (env, x), code]
+            [push (env, x), code <+> toFixedNum (x)]
       | LDA (x) -> let [s, env] = allocate (env) in [env, code <+ Lea (loc (env, x), s)]
       | STI -> 
         let [v, ref, env] = pop2 (env) in
@@ -779,10 +787,10 @@ fun compile (env, code) {
             [env, code <+> lea (M (name), y) <+> callCode]
       | SEXP (t, n) -> 
           let [env, tag] = addString (env, t) in
-          let [env, callCode] = generalCall (env, "Bsexp", n + 2, {[n + 1, M (tag)], [0, L (n)]}) in
+          let [env, callCode] = generalCall (env, "Bsexp", n + 2, {[n + 1, M (tag)], [0, L (makeBox (n))]}) in
             [env, code <+> callCode]
       | ARRAY  (n) ->
-          let [env, callCode] = generalCall (env, "Barray", n + 1, {[0, L (n)]}) in
+          let [env, callCode] = generalCall (env, "Barray", n + 1, {[0, L (makeBox (n))]}) in
             [env, code <+> callCode]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", string (i))
       esac

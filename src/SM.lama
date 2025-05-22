@@ -36,7 +36,7 @@ public fun showSMInsn (i) {
   | ST     (x)       -> sprintf ("ST %s", showLoc (x))
   | STI              -> "STI"
   | SEXP   (s, n)    -> sprintf ("SEXP ""%s"", %d", s, n)
-  | CONST  (n)       -> sprintf ("CONST %d", n)
+  | CONST  (n)       -> sprintf ("CONST %s", string (n))
   | LABEL  (s)       -> sprintf ("LABEL %s", s)
   | JMP    (l)       -> sprintf ("JMP %s", l)
   | CJMP   (c, l)    -> sprintf ("CJMP %s, %s", c, l)
@@ -152,7 +152,7 @@ fun eval (env, w, insns) {
       | WRITE        -> let v:stack = stack in [insns, [stack, cst, s, writeWorld (v, w)]]
       | BINOP (op)   -> let v2:v1:stack = stack in [insns, [evalOp (op, v1, v2):stack, cst, s, w]]
       | LD    (x)    -> [insns, [lookup (s, x):stack, cst, s, w]]
-      | ST    (x)    -> let v:stack = stack in [insns, [stack, cst, assign (s, x, v), w]]
+      | ST    (x)    -> let v:_ = stack in assign (s, x, v); [insns, [stack, cst, s, w]]
       | CONST (n)    -> [insns, [n:stack, cst, s, w]]
       | LABEL (s)    -> [insns, c]
       | JMP   (l)    -> [fromLabel (env, l), c]
@@ -184,7 +184,10 @@ fun eval (env, w, insns) {
             [insns, [Sexp (t, listArray (elems)):stack, cst, s, w]]
       | STA -> 
           let v:i:a:stack = stack in
-            resolveArrayLike (a)[i] := v;
+            case i of 
+              Unboxed (i) -> assign (s, a, v)
+            | _ -> resolveArrayLike (a)[i] := v
+            esac;
             [insns, [v:stack, cst, s, w]]
       | ELEM -> 
           let i:a:stack = stack in
@@ -488,23 +491,41 @@ public fun compileSM (expr) {
       }
 
       case inspect (t) of
-        MIXED -> error (sprintf ("Indirect assignment with mixed targets is not supported (yet): %s", string (t)), getLoc (t))
-      | ins -> ins
+        MIXED -> [true, STA]
+      | ins -> [false, ins]
       esac
+    }
+
+    fun transformAssnTarget (t, shouldTransform) {
+        fun transform (t) {
+          case t of 
+            Ref (_) -> Seq (t, Const (Unboxed (0)))
+          | ElemRef (_, _) -> t
+          | If (c, t1, t2) -> If (c, transform (t1), transform (t2))
+          | Seq (t1, t2) -> Seq (t1, transform (t2))
+          | _ -> error (sprintf ("Not a l-value: %s", string (t)), getLoc (t))
+          esac
+        }
+      if shouldTransform then transform (t) else t fi
     }
 
     case expr of
       Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (lookupVar (env, x)))]
+    | Var    (x)        -> [false, env, singletonBuffer (LD (lookupVal (env, x)))]
     | Ref    (x)        -> [false, env, singletonBuffer (LDA (lookupVar (env, x)))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
     | Assn    (t, e)    ->
+        let [shouldTransform, storeIns] = inspectAssnTarget (t) in
         let [tLab, env] = genLabel (env) in
-        let [tLabUsed, env, tCode] = compile (tLab, env, t) in
+        let [tLabUsed, env, tCode] = compile (tLab, env, transformAssnTarget (t, shouldTransform)) in
         let [eLab, env] = genLabel (env) in
         let [eLabUsed, env, eCode] = compile (eLab, env, e) in
-        let loadIns = inspectAssnTarget (t) in
-        let code = tCode <+> label (tLab, tLabUsed) <+> eCode <+> label (eLab, eLabUsed) <+ loadIns in
+        let code = tCode <+> label (tLab, tLabUsed) <+> eCode <+> label (eLab, eLabUsed) <+ storeIns in
+          [false, env, code]
+    | Set (i, e) ->
+        let [eLab, env] = genLabel (env) in
+        let [eLabUsed, env, eCode] = compile (eLab, env, e) in
+        let code = eCode <+> label (eLab, eLabUsed) <+ ST (lookupVar (env, i)) in
           [false, env, code]
     | Seq     (s1, s2)  ->
         case genLabel (env) of
