@@ -65,6 +65,10 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
+fun inbkts (p) {
+  inbr (s("("), p, s(")"))
+}
+
 -- A helper function to be used with super-combinator "expr"
 fun binop (op) {
   [syntax (pos -s[op]), fun (l, loc, r) {
@@ -225,8 +229,60 @@ var
                         | Some (args) -> chainST (args) => fun (args) {Sexp (x, args)}
                         esac, loc)}
     } |
-  
-    $(failure ("the rest of primary parsing in not implemented\n"))),
+    
+    inbkts[scopeExpr]
+    
+  | loc=pos kSkip { fun (a) { assertVoid (a, returnST $ Skip, loc) } }
+
+  | loc=pos kIf cond=exp kThen pbr=scopeExpr
+      brs=(kElif condi=exp kThen bri=scopeExpr { Br (condi, bri) })* 
+      nbr=(-kElse nbr=scopeExpr)? kFi
+      { fun (a) {
+        let cont = foldl (
+          fun (cont, Br (cond, br)) { fun (x) { 
+            chainST ({cond (Val), br (a)}) =>> fun ({cond, br}) { cont (If (cond, br, x)) }
+          } },
+          fun (x) { chainST ({cond (Val), pbr (a)}) => fun ({cond, pbr}) { If (cond, pbr, x) } },
+          brs
+        ) in 
+          case nbr of 
+            Some (nbr) -> nbr (a) =>> cont
+          | _          -> assertVoid (a, cont (Skip), loc)
+          esac
+    } }
+
+  | loc=pos kWhile cond=exp kDo body=scopeExpr kOd { fun (a) { 
+      assertVoid(a, chainST ({cond (Val), body (Void)}) => fun ({cond, body}) { While (cond, body) }, loc)
+    } }
+
+  | loc=pos kDo body=scopeExpr kWhile cond=exp kOd { fun (a) {
+      assertVoid(a, 
+        chainST ({cond (Val), body (Void)}) => fun ({cond, body}) { 
+          distributeScope (body, fun (body) { DoWhile (cond, body) }) 
+        },
+        loc
+      ) 
+    } }
+
+  | loc=pos kFor ini=scopeExpr s[","] cond=exp s[","] upd=exp kDo body=exp kOd { fun (a) {
+      assertVoid(
+        a,
+        chainST ({ini (Void), cond (Val), body (Void), upd (Void)}) => fun ({ini, cond, body, upd}) {
+          distributeScope (ini, fun (ini) { Seq (ini, While (cond, Seq (body, upd))) })
+        },
+        loc
+      )
+    } }
+
+  | loc=pos kCase target=exp kOf 
+        brs=list0By[memo $ eta syntax (p=patt s["->"] vl=exp { fun (a) { vl (a) => fun (vl) { [p, vl] } } }), s ("|")]
+      kEsac { fun (a) {
+        chainST (target (Val):map (fun (br) { br (a) }, brs)) =>> fun (target:brs) { fun (env) { 
+          let [env, n] = freshName (env) in
+            [env, Scope ({Val ({n})}, Seq (Ignore (Set (n, target)), Case (n, reifyPatternBindings (n, brs), loc)))]
+        } }
+    } }
+  ),
    
 
   basic = memo $ eta (
@@ -315,6 +371,19 @@ var
        }}
      }
    }
+  ),
+  
+  patt = memo $ eta syntax (
+    d=decimal { Decimal (stringInt (d)) }
+  | s["_"] { Wildcard }
+  | a=inbr[s ("["), list0 (patt), s ("]")] { Array (a) }
+  | tag=uident args=inbkts[list0 (patt)]? {
+      case args of
+        Some (args) -> Sexp (tag, args)
+      | _ -> Sexp (tag, {})
+      esac
+    }
+  | ident=lident binding=(p=(-s["@"] patt)? { case p of Some (p) -> p | _ -> Wildcard esac }) { Named (ident, binding) }
   );
 
 -- Public top-level parser
