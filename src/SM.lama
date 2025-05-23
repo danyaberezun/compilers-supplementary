@@ -13,6 +13,10 @@ import Expr;
 import Builtins;
 import Buffer;
 
+fun max (a, b) {
+  if a > b then a else b fi
+}
+
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
 public fun showSMInsn (i) {
@@ -83,7 +87,7 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
-fun evalCc(cc, value) {
+fun evalCc (cc, value) {
   case cc of 
     "z" -> value == 0
   | "nz" -> value != 0
@@ -198,6 +202,18 @@ fun eval (env, w, insns) {
           let [stack, params] = take (stack, n) in 
           let [res, w] = evalBuiltin (f, params, w) in
             [insns, [res:stack, cst, s, w]]
+      | PATT (p) ->
+          let v:stack = stack in
+          let v = case p of 
+            Array (n) -> case v of #array -> length (v) == n | _ -> false esac
+          | Tag (tag, n) -> case v of Sexp (t, args) -> compare (t, tag) == 0 && length (args) == n | _ -> false esac
+          | _ -> failure ("Illegal PATT argument %s\n", string (p))
+          esac in
+            [insns, [v:stack, cst, s, w]]
+      | META (m) ->
+        case m of 
+          MF (loc) -> error ("Match failure", loc)
+        esac
       esac
     }
     var state = [insns, c];
@@ -430,6 +446,19 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
+fun adequateGenLabels (env, n) {
+  fun inner (env, n, acc) {
+    if n == 0
+    then [env, listArray (acc)]
+    else case genLabel (env) of
+           [lab, env] -> inner (env, n-1, lab:acc)
+         esac
+    fi
+  }
+
+  inner (env, n, {})
+}
+
 -- Helper function: adds a bunch of arguments
 fun addArgs (env, names) {
   foldl (fun (env, name) {addArg (env, name)}, env, names)
@@ -512,6 +541,53 @@ public fun compileSM (expr) {
         }
       if shouldTransform then transform (t) else t fi
     }
+    
+    fun compileBranch (env, pattern, branch, breakLab) {
+      fun computeMaxDepth (p) {
+        case p of
+          Wildcard -> 1
+        | Named (_, p) -> computeMaxDepth (p)
+        | Decimal (d) -> 1
+        | Array (arr) -> foldr (fun (d, p) { max (d, computeMaxDepth (p) + 1) }, 1, arr)
+        | Sexp (tag, args) -> foldr (fun (d, p) { max (d, computeMaxDepth (p) + 1) }, 1, args)
+        | _ -> failure ("Unknown pattern %s\n", string (pattern))
+        esac
+      }
+      fun compileMatch (pattern, cleanupLabels, depth) {
+        fun compileArrayMatch (patt, args) {
+          let [code, _] = foldl (
+            fun ([code, i], pt) { 
+              let elemCode = compileMatch (pt, cleanupLabels, depth + 1) in
+                [code <+ DUP <+ CONST (i) <+ ELEM <+> elemCode <+ DROP, i + 1]
+            },
+            [singletonBuffer (DUP) <+ PATT (patt) <+ CJMP ("z", cleanupLabels[depth]), 0],
+            args
+          ) in
+            code
+        }
+        case pattern of
+          Wildcard -> emptyBuffer ()
+        | Named (_, p) -> compileMatch (p, cleanupLabels, depth)
+        | Decimal (d) -> singletonBuffer (DUP) <+ CONST (d) <+ BINOP ("-") <+ CJMP ("nz", cleanupLabels[depth])
+        | Array (arr) -> compileArrayMatch (Array (size (arr)), arr)
+        | Sexp (tag, args) -> compileArrayMatch (Tag (tag, size (args)), args)
+        | _ -> failure ("Unknown pattern %s\n", string (pattern))
+        esac
+      }
+      let [env, cleanupLabels] = adequateGenLabels (env, computeMaxDepth (pattern)) in
+      let matchCode = compileMatch (pattern, cleanupLabels, 0) in
+      let [_, env, branchCode] = compile (breakLab, env, branch) in
+        [
+          env, 
+          foldr (
+            fun (code, lab) { 
+              code <+ LABEL (lab, false) <+ DROP
+            },
+            matchCode <+ DROP <+> branchCode <+ JMP (breakLab),
+            tl (arrayList (cleanupLabels))
+          ) <+ LABEL (cleanupLabels[0], false)
+        ]
+    }
 
     case expr of
       Skip              -> [false, env, emptyBuffer ()]
@@ -529,7 +605,7 @@ public fun compileSM (expr) {
     | Set (i, e) ->
         let [eLab, env] = genLabel (env) in
         let [eLabUsed, env, eCode] = compile (eLab, env, e) in
-        let code = eCode <+> label (eLab, eLabUsed) <+ ST (lookupVar (env, i)) in
+        let code = eCode <+> label (eLab, eLabUsed) <+ ST (lookupVal (env, i)) in
           [false, env, code]
     | Seq     (s1, s2)  ->
         case genLabel (env) of
@@ -599,6 +675,12 @@ public fun compileSM (expr) {
                   if isGlobal (env) then listBuffer (map (fun (n) { GLOBAL (n) }, names)) else gCode fi,
                   funs
                 ]
+            | Val (names) -> 
+                [
+                  addVals (env, names), 
+                  if isGlobal (env) then listBuffer (map (fun (n) { GLOBAL (n) }, names)) else gCode fi,
+                  funs
+                ]
             esac
           },
           [beginScope (env), {}, {}],
@@ -655,6 +737,18 @@ public fun compileSM (expr) {
         let [argsLabUsed, env, argsCode] = compileMany (argsLab, env, exprs) in
         let code = argsCode <+> label (argsLab, argsLabUsed) <+ BUILTIN (name, size (exprs)) in
           [false, env, code]
+    
+    | Case (target, brs, loc) ->
+        let tCode = singletonBuffer (LD (lookupVal (env, target))) in
+        let [env, branchCode] = foldl (
+          fun ([env, code], [p, vl]) {
+            let [env, brCode] = compileBranch (env, p, vl, lab) in
+              [env, code <+> brCode]
+          },
+          [env, tCode],
+          brs
+        ) in
+          [true, env, branchCode <+ META (MF (loc))]
     esac
   }
 
