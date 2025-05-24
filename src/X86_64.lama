@@ -535,7 +535,35 @@ fun savecode (env, nA) {
 -- Don't forget to handle buitins (Barray/Bsexp), and
 -- to clear rax before calling to variable arg funcatio
 fun call (env, fLabel, nA) {
-  emptyBuffer ()
+  fun moveArgsInPlaces(env, nA) {
+    if nA == 0 then
+      [env, singletonBuffer(Binop("^", rax, rax))]
+    elif stackDepth(env) == nA && nA < nRegArgs then
+      let [x, env] = pop(env) in
+      moveArgsInPlaces(env, nA - 1)
+    else
+      let [x, env] = pop(env) in
+      let [env, moveCode] = moveArgsInPlaces(env, nA - 1) in
+      if nA <= nRegArgs then
+        [env, moveCode <+ Mov(x, R(nA - 1))]
+      else
+        [env, moveCode <+ Push(x)]
+      fi
+    fi
+  }
+
+  let [pushs, pops] = savecode (env, nA) in
+  let numRegArgs = min(nRegArgs, nA) in
+  let numStackArgs = nA - numRegArgs in
+  let [env, moveCode] = moveArgsInPlaces(env, nA) in
+  let [x, env] = allocate(env) in
+
+  [env, pushs
+    <+> moveCode
+    <+ Call(fLabel)
+    <+ Binop("+", L(numStackArgs * wordSize), rsp)
+    <+> pops
+    <+ Mov(rax, x)]
 }
 
 -- Gets a suffix for Set instruction from
@@ -571,7 +599,7 @@ fun compile (env, code) {
 
       -- printf ("compiling %s\n", showSMInsn (i));
       
-      case i of      
+      let result@[env, code] = case i of      
         READ ->
           let [env, callCode] = call (env, "Lread", 0) in
 	  [env, code <+> callCode]
@@ -597,8 +625,221 @@ fun compile (env, code) {
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
       *)         
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)      
-      esac        
+      | BINOP(op) ->
+          let [y, x, env] = env.pop2 in
+          let [env, opCode] =
+            let oldEnv = env in
+            let env = push(env, x) in
+          if
+            compare(op, "+") == 0 !!
+            compare(op, "-") == 0 !!
+            compare(op, "*") == 0
+          then
+            if memOpnd(x) && memOpnd(y) then
+              [env, singletonBuffer(Mov(y, rax)) <+ Binop(op, rax, x)]
+            else
+              [env, emptyBuffer() <+ Binop(op, y, x)]
+            fi
+          elif
+            compare(op, "/") == 0 !!
+            compare(op, "%") == 0
+          then
+            [env, emptyBuffer()
+              <+ Mov(x, rax)
+              <+> case x of
+                  R(2) ->
+                    singletonBuffer(Cltd)
+                    <+ IDiv(y)
+                    <+ case op of "/" -> Mov(rax, x) | "%" -> Mov(rdx, x) esac
+                | R(1) ->
+                    singletonBuffer(Mov(y, rcx))
+                    <+ Cltd
+                    <+ IDiv(rcx)
+                    <+ case op of "/" -> Mov(rax, x) | "%" -> Mov(rdx, x) esac
+                | _ ->
+                    withRDX(oldEnv, singletonBuffer(Cltd)
+                      <+ IDiv(y)
+                      <+ case op of "/" -> Mov(rax, x) | "%" -> Mov(rdx, x) esac)
+                esac]
+          elif
+            compare(op, "<") == 0  !! compare(op, ">=") == 0 !!
+            compare(op, "==") == 0 !! compare(op, "!=") == 0 !!
+            compare(op, ">") == 0  !! compare(op, "<=") == 0
+          then
+            case x of
+              R(2) ->
+                [env, emptyBuffer()
+                  <+ Binop("^", rbx, rbx)
+                  <+ Binop("cmp", y, x)
+                  <+ Set(suffix(op), "%bl")
+                  <+ Mov(rbx, x)]
+            | R(1) ->
+                [env, emptyBuffer()
+                  <+ Binop("^", rbx, rbx)
+                  <+ Binop("cmp", y, x)
+                  <+ Set(suffix(op), "%bl")
+                  <+ Mov(rbx, x)]
+            | _ ->
+              [env, emptyBuffer()
+                <+ Binop("^", rax, rax)
+                <+> (if memOpnd(x) && memOpnd(y) then
+                      withRDX(oldEnv, singletonBuffer(Mov(x, rdx)) <+
+                        Binop("cmp", y, rdx))
+                    else
+                      singletonBuffer(Binop("cmp", y, x))
+                    fi)
+                <+ Set(suffix(op), "%al")
+                <+ Mov(rax, x)]
+            esac
+          elif
+            compare(op, "&&") == 0 !!
+            compare(op, "!!") == 0
+          then
+            case x of
+              R(2) ->
+                [env, emptyBuffer()
+                  <+ Binop("^", rbx, rbx)
+                  <+ Binop("&&", y, y)
+                  <+ Set("nz", "%bl")
+                  <+ Binop("&&", x, x)
+                  <+ Set("nz", "%cl")
+                  <+ Binop(op, rcx, rbx)
+                  <+ Mov(rbx, x)]
+            | R(1) ->
+                [env, emptyBuffer()
+                  <+ Binop("^", rbx, rbx)
+                  <+ Binop("&&", y, y)
+                  <+ Set("nz", "%bl")
+                  <+ Binop("&&", x, x)
+                  <+ Set("nz", "%cl")
+                  <+ Binop(op, rcx, rbx)
+                  <+ Mov(rbx, x)]
+            | _ -> [env, emptyBuffer() <+>
+                withRDX(oldEnv, (if memOpnd(x) then
+                      singletonBuffer(Mov(x, rax)) <+
+                        Binop("&&", rax, rax)
+                    else
+                      singletonBuffer(Binop("&&", x, x))
+                    fi)
+                <+ Set("nz", "%dl")
+                <+> (if memOpnd(y) then
+                      singletonBuffer(Mov(y, rax)) <+
+                        Binop("&&", rax, rax)
+                    else
+                      singletonBuffer(Binop("&&", y, y))
+                    fi)
+                <+ Set("nz", "%al")
+                <+ Binop(op, rax, rdx)
+                <+ Binop("&&", L(1), rdx)
+                <+ Mov(rdx, x))]
+            esac
+          else
+            failure("Unsupported binop: " ++ op ++ "\n")
+          fi in
+          [env, code
+            <+ Sar1(x)
+            <+ Sar1(y)
+            <+> opCode
+            <+ Sal1(x)
+            <+ Or1(x)]
+      | CONST(x) ->
+          let [s, env] = env.allocate in
+          [env, code <+ Mov(L(x * 2 + 1), s)]
+      | LD(x) ->
+          let [s, env] = env.allocate in
+          if memOpnd(s) then
+            [env, code <+ Mov(env.loc(x), rax) <+ Mov(rax, s)]
+          else
+            [env, code <+ Mov(env.loc(x), s)]
+          fi
+      | ST(x) ->
+          let s = peek(env) in
+          if memOpnd(s) then
+            [env, code <+ Mov(s, rax) <+ Mov(rax, env.loc(x))]
+          else
+            [env, code <+ Mov(s, env.loc(x))]
+          fi
+      | JMP(l) -> 
+        let env = setStack(env, l) in
+        let env = setBarrier(env) in
+        [env, code <+ Jmp(l)]
+      | LABEL(l) ->
+        if isBarrier(env) then
+          let env = retrieveStack(env, l) in
+          [env, code <+ Label(l)]
+        else
+          [env, code <+ Label(l)]
+        fi
+      | CJMP(c, l) ->
+        let [x, env] = env.pop in
+        let env = setStack(env, l) in
+        let env = setBarrier(env) in
+        [env, code <+ Binop("cmp", L(1), x) <+ CJmp(c, l)]
+      | DROP ->
+        let [_, env] = pop(env) in [env, code]
+      | DUP ->
+        let top = peek(env) in
+        let [x, env] = allocate(env) in
+        [env, code <+> move(top, x)]
+      | LDA(v) ->
+        let [x, env] = env.allocate in
+        if memOpnd(x) then
+          [env, code <+ Lea(env.loc(v), rax) <+ Mov(rax, x)]
+        else
+          [env, code <+ Lea(env.loc(v), x)]
+        fi
+
+         -- Some guidelines for generating function calls:
+         --
+         -- 1. generate instructions to save live registers on the X86 stack (use
+         --    env.liveRegisters (number of arguments);
+         -- 2. generate instructions to move actual parameters from the symbolic
+         --    stack to the hardware one;
+         -- 3. generate the call itself;
+         -- 4. discard the actual parameters from the stack;
+         -- 5. restore saved live registers.
+         --
+
+         -- Some guidelines for generating functions (from different branch):
+         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
+         --    env.enterFunction to create a proper environment;
+         -- 2. generate epilogue for END instruction.
+      | BEGIN(fnName, numArgs, numLocals) ->
+        let env = enterFunction(env, fnName, numArgs, numLocals) in
+        [env, code <+> prologue(fnName)]
+      | GLOBAL(name) ->
+        let env = addGlobal(env, name) in
+        [env, code]
+      | END ->
+        let [env, epilogue] = epilogue(env) in
+        [env, code <+> epilogue]
+      | CALL(fnName, numArgs) ->
+          let [env, callCode] = call (env, fnName, numArgs) in
+          [env, code <+> callCode]
+      | BUILTIN(fnName, numArgs) ->
+          let [env, callCode] = call (env, "L" ++ fnName, numArgs) in
+          [env, code <+> callCode]
+      | STRING(s) ->
+          let [env, name] = addString(env, s) in
+          let [top, env] = env.allocate in
+          let [env, callCode] = call (env, "Bstring", 1) in
+          [env, code <+ Lea(M(name), rax) <+ Mov(rax, top) <+> callCode]
+      | ARRAY(n) ->
+          let [env, callCode] = call (env, "Barray", n + 1) in
+          [env, code <+> callCode]
+      | SEXP(tag, n) ->
+          let [env, name] = addString(env, tag) in
+          let [top, env] = env.allocate in
+          let [env, callCode] = call (env, "Bsexp", n + 2) in
+          [env, code <+ Lea(M(name), rax) <+ Mov(rax, top) <+> callCode]
+      | ELEM ->
+          let [env, callCode] = call (env, "Belem", 2) in
+          [env, code <+> callCode]
+      | STA ->
+          let [env, callCode] = call (env, "Bsta", 3) in
+          [env, code <+> callCode]
+      esac in
+      result
     }, [env, emptyBuffer ()], code)
 }
 

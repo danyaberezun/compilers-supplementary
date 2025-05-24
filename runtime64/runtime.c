@@ -83,6 +83,7 @@ void* Barray (long k, ...) {
 }
 
 void* Bstring (void *p) {
+  ALIGN_STACK;
   long  n = strlen (p);
   data *s;
 
