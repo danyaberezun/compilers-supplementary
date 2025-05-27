@@ -13,11 +13,21 @@
 # define TAG(x)  (x & 0x0000000000000007)
 
 # define TO_DATA(x) ((data*)((char*)(x)-sizeof(long)))
+# define TO_SEXP(x) ((sexp*)((char*)(x)-2*sizeof(long)))
 
 # define UNBOXED(x)  (((long) (x)) & 0x0000000000000001)
 # define UNBOX(x)    (((long) (x)) >> 1)
 # define BOX(x)      ((((long) (x)) << 1) | 0x0000000000000001)
 
+/*
+# define ASSERT_BOXED(memo, x)               \
+  do if (UNBOXED(x)) failure ("boxed value expected in %s\n", memo); while (0)
+# define ASSERT_UNBOXED(memo, x)             \
+  do if (!UNBOXED(x)) failure ("unboxed value expected in %s\n", memo); while (0)
+# define ASSERT_STRING(memo, x)              \
+  do if (!UNBOXED(x) && TAG(TO_DATA(x)->tag) \
+	 != STRING_TAG) failure ("string value expected in %s\n", memo); while (0)
+*/
 typedef struct {
   long tag; 
   char contents[0];
@@ -117,6 +127,45 @@ void* Bsta (void *x, void *j, void *v) {
   return v;
 }
 
+extern long Btag (void *d, void *t, long n) {
+  data *r; 
+  
+  if (UNBOXED(d)) return BOX(0);
+  else {
+    r = TO_DATA(d);
+#ifndef DEBUG_PRINT
+    return BOX(TAG(r->tag) == SEXP_TAG && TO_SEXP(d)->tag == t && LEN(r->tag) == UNBOX(n));
+#else
+    return BOX(TAG(r->tag) == SEXP_TAG &&
+               GET_SEXP_TAG(TO_SEXP(d)->tag) == t && LEN(r->tag) == UNBOX(n));
+#endif
+  }
+}
+
+extern long Barray_patt (void *d, long n) {
+  data *r; 
+  
+  if (UNBOXED(d)) return BOX(0);
+  else {
+    r = TO_DATA(d);
+    return BOX(TAG(r->tag) == ARRAY_TAG && LEN(r->tag) == UNBOX(n));
+  }
+}
+
+extern long Bstring_patt (void *x, void *y) {
+  data *rx = (data *) BOX (NULL),
+       *ry = (data *) BOX (NULL);
+      
+  if (UNBOXED(x)) return BOX(0);
+  else {
+    rx = TO_DATA(x); ry = TO_DATA(y);
+
+    if (TAG(rx->tag) != STRING_TAG) return BOX(0);
+    
+    return BOX(strcmp (rx->contents, ry->contents) == 0 ? 1 : 0);
+  }
+}
+
 void Lwrite (long x) {
   ALIGN_STACK;
   printf ("%ld\n", UNBOX(x));
@@ -131,3 +180,8 @@ long Lread () {
   return BOX(result);
 }
 
+extern void Bmatch_failure (long line, long col) {
+  ALIGN_STACK;
+  printf ("match failure at %d:%d\n", UNBOX(line), UNBOX(col));
+  exit (0);
+}

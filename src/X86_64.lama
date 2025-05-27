@@ -246,6 +246,16 @@ fun makeEnv (stack, stackSlots, globals, strings, stringIndex, barrier, stackMap
     esac
   }
 
+  -- Drops a barrier
+  fun dropBarrier () {
+    makeEnv (stack, stackSlots, globals, strings, stringIndex, false, stackMap, fLabel, nLocals)
+  }
+  
+  -- Checks if a stack is set for a label
+  fun hasStack (l) {
+    compare (findMap (stackMap, l), None) != 0
+  }
+
   -- Sets the label of current function
   fun enterFunction (fLabel, na, nl) {
     fun enter (env, n) {
@@ -337,7 +347,9 @@ fun makeEnv (stack, stackSlots, globals, strings, stringIndex, barrier, stackMap
    stackDepth,
    addString,
    getStrings,
-   addTag]
+   addTag,
+   hasStack,
+   dropBarrier]
 }
 -- Exported accessors
 fun envString (env) {
@@ -422,6 +434,14 @@ fun getStrings (env) {
 
 fun addTag (env, tag) {
   env [22] (tag)
+}
+
+fun hasStack (env, l) {
+  env [23] (l)
+}
+
+fun dropBarrier (env) {
+  env [24] ()
 }
 
 -- Creates an initial environment
@@ -521,7 +541,7 @@ fun savecode (env, nA) {
 
 -- Generates a static call
 -- Don't forget to handle buitins (Barray/Bsexp), and
--- to clear rax before calling to variable arg funcatio
+-- to clear rax before calling to variable arg funcations
 fun call (env, fLabel, nA) {
   var codes = savecode(env, nA);
   var code = codes[0];
@@ -622,95 +642,44 @@ fun moveToAddressHelper(v, r) {
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
-fun compile (env, code) {
+fun compile (args, env, code) {
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+
+      -- printf ("compiling %s\n", showSMInsn (i));
+     
+      -- This if removes unreachable code; otherwise
+      -- the stack invariants for the symbolic interpreter
+      -- are violated
+      if env.isBarrier 
+      then case i of
+             LABEL (l, true) -> [env.dropBarrier, code <+ Label (l)]
+           | LABEL (l, _)    -> if hasStack (env, l)
+                                then [retrieveStack (env, l), code <+ Label (l)]
+                                else [env, code]
+                                fi
+           | _               -> [env, code]
+           esac
+      else   
       case i of      
-        BINOP(s) -> case s of
-                      "+" -> simpleBinop("+", env, code)
-                      | "-" -> simpleBinop("-", env, code)
-                      | "*" -> mulBinop("*", env, code)
-                      | "/" -> divModBinop (env, code, rax)
-                      | "%" -> divModBinop (env, code, rdx)
-                      | "==" -> compareBinop ("==", env, code)
-                      | "!=" -> compareBinop ("!=", env, code)
-                      | "<=" -> compareBinop ("<=", env, code)
-                      | ">=" -> compareBinop (">=", env, code)
-                      | "<" -> compareBinop ("<", env, code)
-                      | ">" -> compareBinop (">", env, code)
-                      | "!!" -> case pop2(env) of
-                                  [x, y, env] -> case x of
-                                      R(2) -> [push(env, rsi), code <+> withRDX(env, singletonBuffer(Binop("^", rax, rax)) <+ Binop("cmp", L(1), y) <+ Set(suffix("!="), "%al") <+ Binop("^", rsi, rsi) <+
-                                    Binop("cmp", L(1), x) <+ Set(suffix("!="), "%sil") <+ Binop("!!", rax, rsi)) <+> toFixedNum(rsi)]
-                                      | _ -> [push(env, y), code <+> withRDX(env, singletonBuffer(Binop("^", rax, rax)) <+ Binop("cmp", L(1), y) <+ Set(suffix("!="), "%al") <+ Binop("^", rdx, rdx) <+
-                                    Binop("cmp", L(1), x) <+ Set(suffix("!="), "%dl") <+ Binop("!!", rax, rdx) <+ Mov(rdx, y)) <+> toFixedNum(y)]
-                                    esac
-                                esac
-                      | "&&" -> case pop2(env) of
-                                  [x, y, env] -> case x of
-                                      R(2) -> [push(env, rsi), code <+> withRDX(env, singletonBuffer(Binop("^", rax, rax))
-                                                <+ Binop("cmp", L(1), y) <+ Set(suffix("!="), "%al") <+ Binop("^", rsi, rsi) <+
-                                                Binop("cmp", L(1), x) <+ Set(suffix("!="), "%sil") <+ Binop("&&", rax, rsi)) <+> toFixedNum(rsi)]
-                                      | _ -> [push(env, y), code <+> withRDX(env, singletonBuffer(Binop("^", rax, rax))
-                                        <+ Binop("cmp", L(1), y) <+ Set(suffix("!="), "%al") <+ Binop("^", rdx, rdx) <+
-                                        Binop("cmp", L(1), x) <+ Set(suffix("!="), "%dl") <+ Binop("&&", rax, rdx) <+ Mov(rdx, y)) <+> toFixedNum(y)]
-                                    esac
-                                esac
-                  esac
-      | LD (x) -> let [s, env] = allocate(env) in [env, code <+> move (loc (env, x), s)]
-      | LDA (x) ->  let [s, env] = allocate(env) in [env, code <+> leaHelper (env, loc (env, x), s)]
-      | DROP -> [pop(env)[1], code]
-      | DUP ->  case pop(env) of
-                      [v, env] ->
-                        case allocate(push(env, v)) of
-                          [m, env] -> [env, code <+> move(v, m)]
-                        esac
-                esac
-      | CONST(n) -> case allocate(env) of
-                      [s, env] -> [env, code <+ Mov(L(makeBox(n)), s)]
-                    esac
-      | ST (x) -> case pop(env) of
-                      [s, env] -> [push(env, loc (env, x)), code <+> move (s, loc (env, x))]
-                  esac
-      | LABEL(l) -> if isBarrier(env)
-                      then [retrieveStack(env, l), code <+ Label(l)]
-                      else [env, code <+ Label(l)]
-                    fi
-      | JMP(l) -> [setBarrier(setStack(env, l)), code <+ Jmp(l)]
-      | CJMP(cond, l) ->  case pop(env) of
-                            [x, env] -> [setStack(env, l), code <+ Binop("cmp", L(1), x) <+ CJmp(cond, l)]
-                          esac
-      | CALL(f, n) -> case f[0] of
-                        '$' ->
-                          let [env, callCode] = call (env, sprintf ("L%s", substring(f, 1, f.length - 1)), n) in
-                            [env, code <+> callCode]
-                        | _ ->
-                          let [env, callCode] = call (env, f, n) in
-                            [env, code <+> callCode]
-                      esac
-      | GLOBAL(x) -> [addGlobal(env, x), code]
-      | END ->  case epilogue(env) of
-                  [env, epiCode] -> [env, code <+> epiCode]
-                esac
-      | BEGIN(f, a, l) -> [enterFunction(env, f, a, l), code <+> prologue(f)]
-      | STRING(s) ->  case addString(env, s) of
-                        [env, name] ->
-                          let [ps, env] = allocate(env) in 
-                            let [env, callCode] = call (env, "Bstring", 1) in
-                              [env, (code <+> leaHelper (env, M(name), ps)) <+> callCode]
-                      esac
-      | ARRAY(n) ->
-                      let [env, callCode] = call (env, "Barray", n + 1) in
-                            [env, code <+> callCode]
-      | STA ->  let [env, callCode] = call (env, "Bsta", 3) in
-                      [env, code <+> callCode]
-      | ELEM -> let [env, callCode] = call (env, "Belem", 2) in
-                      [env, code <+> callCode]
-      | SEXP(tag, n) -> let [sym, env] = addTag(env, tag) in
-                        let [s, env] = allocate(env) in 
-                          let [env, callCode] = call (env, "Bsexp", n + 2) in
-                                [env, (code <+> leaHelper (env, M(sym), s)) <+> callCode]
+        READ ->
+          let [env, callCode] = call (env, "Lread", 0) in
+	  [env, code <+> callCode]
+      | WRITE ->
+          let [env, callCode] = call (env, "Lwrite", 1) in
+	  [env, code <+> callCode]
+
+      | META (m) ->
+          case m of
+            MF ([line, col]) -> 
+              let [_   , env]     = env.pop      in
+              let [s1  , env]     = env.allocate in
+              let [s2  , env]     = env.allocate in                       
+              let [env, callCode] = call (env, "Bmatch_failure", 2) in      
+              [env.setBarrier, code <+ Mov (L (makeBox (line)), s1) <+ Mov (L (makeBox (col)), s2) <+> callCode]
+          esac
+	  
       (* Assignment        
          -- Some guidelines for generating function calls:
          --
@@ -727,9 +696,11 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-      *)          
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)      
-      esac        
+       *)    
+      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+           
+      esac
+      fi
     }, [env, emptyBuffer ()], code)
 }
 
@@ -779,7 +750,7 @@ fun compareBinop (s, env, code) {
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
 public fun compileX86 (args, code) {
-  case compile (initEnv (), code) of
+  case compile (args, initEnv (), code) of
     [env, code] ->
        var asmFile = getBaseName(args) ++ ".s",
            runtime = case getEnv ("LAMA_RUNTIME") of
