@@ -525,7 +525,20 @@ fun savecode (env, nA) {
 -- Don't forget to handle buitins (Barray/Bsexp), and
 -- to clear rax before calling to variable arg funcations
 fun call (env, fLabel, nA) {
-  emptyBuffer ()
+  let [pushs, pops] = savecode (env, nA) in
+  let code = emptyBuffer () in
+    for var i = nA;, i > 0, i := i - 1 do
+      let [x, e] = pop (env) in
+      code := if nA <= nRegArgs then singletonBuffer (Mov (x, R (i - 1))) <+> code else singletonBuffer (Push (x)) <+> code fi;
+      env := e
+    od;
+  let [x, env] = allocate (env) in 
+  [env, pushs <+> code
+    <+> case fLabel of "Barray" -> 
+        singletonBuffer (Binop("^", rax, rax)) 
+        | "Bsexp" -> singletonBuffer(Binop("^", rax, rax)) 
+        | _ -> emptyBuffer () esac
+    <+ Call(fLabel) <+> if nA > nRegArgs then singletonBuffer (Binop("-", L(wordSize * (nA - nRegArgs)), rsp)) else emptyBuffer () fi <+> pops <+ Mov(rax, x)]
 }
 
 -- Gets a suffix for Set instruction from
@@ -541,6 +554,40 @@ fun suffix (op) {
   esac
 }
 
+fun compareOp(env, code, x, y, op, reg, reg8) {
+    [env, code <+ Binop("^", reg, reg) <+ Binop("cmp", y, x) <+ Set(suffix(op), reg8) <+ Mov(reg, x)]
+}
+
+fun logicOp(env, code, x, y, op, reg1, reg2) {
+    [env, code <+ Binop("^", reg1, reg1) <+ Binop("&&", y, y) <+ Set("nz", "%bl") <+ Binop("&&", x, x)
+     <+ Set("nz", "%cl") <+ Binop(op, reg2, reg1) <+ Mov(reg1, x)]
+}
+
+fun logicOpMem(env, code, x, y, op, oldEnv) {
+    [env, code <+>
+        withRDX(oldEnv,
+            (if memOpnd(x) then singletonBuffer(Mov(x, rax)) <+ Binop("&&", rax, rax)
+            else singletonBuffer(Binop("&&", x, x)) fi)
+            <+ Set("nz", "%dl") <+> (if memOpnd(y) then singletonBuffer(Mov(y, rax)) <+ Binop("&&", rax, rax)
+                else singletonBuffer(Binop("&&", y, y)) fi)
+            <+ Set("nz", "%al") <+ Binop(op, rax, rdx) <+ Binop("&&", L(1), rdx) <+ Mov(rdx, x))]
+}
+
+fun divisionOp(env, code, x, y, op, oldEnv) {
+    [env, code <+ Mov(x, rax) <+> case x of
+            R(2) -> singletonBuffer(Cltd) <+ IDiv(y) <+ resultMov(op, x)
+          | R(1) -> singletonBuffer(Mov(y, rcx)) <+ Cltd <+ IDiv(rcx) <+ resultMov(op, x)
+          | _    -> withRDX(oldEnv, singletonBuffer(Cltd) <+ IDiv(y) <+ resultMov(op, x))
+        esac]
+}
+
+fun resultMov(op, x) {
+    case op of 
+        "/" -> Mov(rax, x)
+      | "%" -> Mov(rdx, x)
+    esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -551,13 +598,6 @@ fun compile (env, code) {
       -- printf ("compiling %s\n", showSMInsn (i));
       
       case i of      
-        READ ->
-          let [env, callCode] = call (env, "Lread", 0) in
-	  [env, code <+> callCode]
-      | WRITE ->
-          let [env, callCode] = call (env, "Lwrite", 1) in
-	  [env, code <+> callCode]
-	  
       (* Assignment        
          -- Some guidelines for generating function calls:
          --
@@ -574,9 +614,165 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-      *)         
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-      esac
+      *)
+      LD(x) ->
+            case env.allocate of [s, env] ->
+                [env, code <+ (if memOpnd(s) then 
+                    Mov(env.loc(x), rax) <+ Mov(rax, s)
+                else 
+                    Mov(env.loc(x), s)
+                fi)]
+            esac
+      | ST(x) ->
+          let s = peek(env) in
+          if memOpnd(s) then
+            [env, code <+ Mov(s, rax) <+ Mov(rax, env.loc(x))]
+          else
+            [env, code <+ Mov(s, env.loc(x))]
+          fi
+      | CONST(x) -> 
+        case env.allocate of
+          [s, env] -> [env, code <+ Mov (L(x), s)]
+        esac
+      | BINOP(op) ->
+        case env.pop2 of
+            [y, x, env] ->
+                let oldEnv = env in
+                let env = push(env, x) in
+
+                if compare(op, "==") == 0 !! compare(op, "!=") == 0 !! 
+                  compare(op, ">") == 0 !! compare(op, ">=") == 0 !!
+                  compare(op, "<") == 0 !! compare(op, "<=") == 0 then
+                    case x of
+                        R(2) -> compareOp(env, code, x, y, op, rbx, "%bl")
+                      | R(1) -> compareOp(env, code, x, y, op, rbx, "%bl")
+                      | _    -> compareOp(env, code, x, y, op, rax, "%al")
+                    esac
+
+                elif compare(op, "+") == 0 !! compare(op, "-") == 0 !! compare(op, "*") == 0 then
+                    if memOpnd(x) && memOpnd(y) then
+                        [env, code <+ Mov(y, rax) <+ Binop(op, rax, x)]
+                    else
+                        [env, code <+ Binop(op, y, x)]
+                    fi
+
+                elif compare(op, "&&") == 0 !! compare(op, "!!") == 0 then
+                    case x of
+                        R(2) -> logicOp(env, code, x, y, op, rbx, rcx)
+                      | R(1) -> logicOp(env, code, x, y, op, rbx, rcx)
+                      | _    -> logicOpMem(env, code, x, y, op, oldEnv)
+                    esac
+
+                elif compare(op, "/") == 0 !! compare(op, "%") == 0 then
+                    divisionOp(env, code, x, y, op, oldEnv)
+
+                else
+                    failure(op ++ "\n")
+                fi
+        esac
+        | LABEL (l) -> 
+          if isBarrier (env) then 
+              [retrieveStack (env, l), code <+ Label (l)] 
+          else 
+              [env, code <+ Label (l)]
+          fi
+        | JMP (l) -> [setBarrier (setStack (env, l)), code <+ Jmp (l)]
+        | CJMP (c, l) -> 
+          case env.pop of [s, env] ->
+              [setStack (env, l), code <+ Mov (L (0), rax) <+ Binop ("cmp", rax, s) <+ CJmp (c, l)]
+          esac
+        | STI ->
+          case env.pop2 of [value, addr, env] ->
+              case env.allocate of
+                  [x, env] -> 
+                      [env, code <+ Mov(value, rax) <+ Mov(rax, I(0, addr)) <+ Mov(rax, x)]
+              esac
+          esac
+        | DROP -> 
+            case env.pop of [_, env] -> 
+                [env, code]
+            esac
+        | LDA(v) ->
+          case env.allocate of [x, env] -> 
+              [env, code <+ (if memOpnd(x) then 
+                  Lea(env.loc(v), rax) <+ Mov(rax, x) 
+              else 
+                  Lea(env.loc(v), x) 
+              fi)]
+          esac
+
+        | BEGIN(name, num, l) ->
+          case enterFunction(env, name, num, l) of
+              env -> [env, code <+> prologue(name)]
+          esac
+        | GLOBAL(name) ->
+          case addGlobal(env, name) of
+              env -> [env, code]
+          esac
+        | END ->
+          case epilogue(env) of
+              [env, epilogue] -> [env, code <+> epilogue]
+          esac
+        | CALL(name, num) ->
+          case call(env, name, num) of
+              [env, callCode] -> [env, code <+> callCode]
+          esac
+        | STRING(s) ->
+          case addString(env, s) of
+              [env1, name] ->
+                  case allocate(env1) of
+                      [ps, env2] ->
+                          case call(env2, "Bstring", 1) of
+                              [env3, ccd] -> [
+                                  env3,
+                                  code <+> (
+                                      if memOpnd(ps) then
+                                          singletonBuffer(Lea(M(name), rax)) <+ Mov(rax, ps)
+                                      else
+                                          singletonBuffer(Lea(M(name), ps))
+                                      fi
+                                  ) <+> ccd
+                              ]
+                          esac
+                  esac
+          esac
+        | ARRAY(n) -> 
+          case call(env, "Barray", n + 1) of
+              [env_new, ccd] -> [env_new, code <+> ccd]
+          esac
+        | STA ->  
+          case call(env, "Bsta", 3) of
+              [env_new, ccd] -> [env_new, code <+> ccd]
+          esac
+        | ELEM -> 
+          case call(env, "Belem", 2) of
+              [env_new, ccd] -> [env_new, code <+> ccd]
+          esac
+        | BUILTIN(f, n) -> 
+          case call(env, sprintf("L%s", f), n) of
+              [env_new, ccd] -> [env_new, code <+> ccd]
+          esac
+        | SEXP (tag, n) -> 
+          case addTag(env, tag) of
+              [sym, env1] ->
+                  case allocate(env1) of
+                      [s, env2] ->
+                          case call(env2, "Bsexp", n + 2) of
+                              [env3, ccd] -> [
+                                  env3, 
+                                  code <+> (
+                                      if memOpnd(s) then
+                                          singletonBuffer(Lea(M(sym), rax)) <+ Mov(rax, s)
+                                      else
+                                          singletonBuffer(Lea(M(sym), s))
+                                      fi
+                                  ) <+> ccd
+                              ]
+                          esac
+                  esac
+          esac
+        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+        esac
     }, [env, emptyBuffer ()], code)
 }
 
