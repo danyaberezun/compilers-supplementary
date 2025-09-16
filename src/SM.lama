@@ -103,6 +103,19 @@ fun eval (env, w, insns) {
     esac
   }
 
+  fun listLength (xs) {
+    foldl (fun (n, _) {n + 1}, 0, xs)
+  }
+
+  fun setArgs (state@[args, locs], values, idx) {
+    case values of
+      {}       -> state
+    | v : rest ->
+        args[idx] := v;
+        setArgs (state, rest, idx + 1)
+    esac
+  }
+
   -- Takes n positions from the list, retursn a pair: the remaining list and the taken
   -- sublist
   fun take (list, n) {
@@ -119,7 +132,119 @@ fun eval (env, w, insns) {
   -- Core interpreter: takes a configuration and a program, returns a configuration
   (* Assignment *)
   fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+    case insns of
+      {} -> [st, cst, s, w]
+    | insn : rest ->
+        case insn of
+          READ ->
+            case readWorld (w) of
+              [n, new_w] -> eval ([n : st, cst, s, new_w], rest)
+            esac
+        | WRITE ->
+            case st of
+              v : stRest -> eval ([stRest, cst, s, writeWorld (v, w)], rest)
+            esac
+        | CONST (n) ->
+            eval ([n : st, cst, s, w], rest)
+        | LD (loc) ->
+            eval ([lookup (s, loc) : st, cst, s, w], rest)
+        | LDA (loc) ->
+            eval ([loc : st, cst, s, w], rest)
+        | ST (loc) ->
+            case st of
+              v : stRest ->
+                assign (s, loc, v);
+                eval ([stRest, cst, s, w], rest)
+            esac
+        | STI ->
+            case st of
+              v : loc : stRest ->
+                assign (s, loc, v);
+                eval ([v : stRest, cst, s, w], rest)
+            esac
+        | BINOP (op) ->
+            case st of
+              v2 : v1 : stRest ->
+                var res = case op of
+                            "+"  -> v1 + v2
+                          | "-"  -> v1 - v2
+                          | "*"  -> v1 * v2
+                          | "/"  -> v1 / v2
+                          | "%"  -> v1 % v2
+                          | "==" -> v1 == v2
+                          | "!=" -> v1 != v2
+                          | "<"  -> v1 < v2
+                          | "<=" -> v1 <= v2
+                          | ">"  -> v1 > v2
+                          | ">=" -> v1 >= v2
+                          | "!!" -> v1 !! v2
+                          | "&&" -> v1 && v2
+                          esac;
+                eval ([res : stRest, cst, s, w], rest)
+            esac
+        | LABEL (_) ->
+            eval (c, rest)
+        | JMP (lab) ->
+            eval ([st, cst, s, w], fromLabel (env, lab))
+        | CJMP (cond, lab) ->
+            case st of
+              v : stRest ->
+                case cond of
+                  "z"  -> if v == 0
+                           then eval ([stRest, cst, s, w], fromLabel (env, lab))
+                           else eval ([stRest, cst, s, w], rest)
+                  | "nz" -> if v != 0
+                             then eval ([stRest, cst, s, w], fromLabel (env, lab))
+                             else eval ([stRest, cst, s, w], rest)
+                esac
+            esac
+        | DUP ->
+            case st of
+              v : stRest -> eval ([v : v : stRest, cst, s, w], rest)
+            esac
+        | DROP ->
+            case st of
+              _ : stRest -> eval ([stRest, cst, s, w], rest)
+            esac
+        | GLOBAL (name) ->
+            var g = deref (globalState);
+            globalState ::= fun (y) {if compare (name, y) == 0 then 0 else g (y) fi};
+            eval ([st, cst, s, w], rest)
+        | BEGIN (_, nArgs, nLocals) ->
+            var args =
+              case cst of
+                frame : _ ->
+                  case frame of
+                    [_, _, values] -> values
+                  esac
+              | _ -> {};
+            if listLength (args) != nArgs
+            then failure ("wrong number of arguments\n")
+            else
+              var initState = setArgs (makeState (nArgs, nLocals), args, 0);
+              eval ([st, cst, initState, w], rest)
+        | END ->
+            case cst of
+              {} -> [st, cst, s, w]
+            | frame : restFrames ->
+                case frame of
+                  [contInsns, prevState, _] ->
+                    eval ([st, restFrames, prevState, w], contInsns)
+                esac
+            esac
+        | CALL (lab, n) ->
+            case take (st, n) of
+              [restStack, args] ->
+                if listLength (args) != n
+                then failure ("wrong number of arguments\n")
+                else
+                  eval ([restStack,
+                         [rest, s, args] : cst,
+                         s,
+                         w],
+                        fromLabel (env, lab))
+            esac
+        esac
   }
   (* End *)
 
@@ -375,13 +500,197 @@ public fun compileSM (stmt) {
     esac
   }
 
-  fun compile (lab, env, stmt) {
-    case stmt of
-      Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 -> failure ("compileSM not implemented\n")
+  fun listLength (xs) {
+    foldl (fun (n, _) {n + 1}, 0, xs)
+  }
+
+  fun compileArgs (env, exprs, cont) {
+    case exprs of
+      {} -> cont (env)
+    | e : es ->
+        case env.genLabel of
+          [eLab, env1] ->
+            case compile (eLab, env1, e) of
+              [used, env2, code] ->
+                case compileArgs (env2, es, cont) of
+                  [labUsed, env3, rest] ->
+                    [labUsed, env3, code <+> label (eLab, used) <+> rest]
+                esac
+            esac
+        esac
+    esac
+  }
+
+  fun compile (lab, env, expr) {
+    case expr of
+      Skip -> [false, env, emptyBuffer ()]
+
+    | Const (n) -> [false, env, singletonBuffer (CONST (n))]
+
+    | Var (x) -> [false, env, singletonBuffer (LD (lookupVar (env, x)))]
+
+    | Ref (x) -> [false, env, singletonBuffer (LDA (lookupVar (env, x)))]
+
+    | Ignore (e) ->
+        case env.genLabel of
+          [eLab, env1] ->
+            case compile (eLab, env1, e) of
+              [used, env2, code] -> [false, env2, code <+> label (eLab, used) <+ DROP]
+            esac
+        esac
+
+    | Binop (op, e1, e2) ->
+        case env.genLabels (2) of
+          [lab1, lab2, env1] ->
+            case compile (lab1, env1, e1) of
+              [used1, env2, code1] ->
+                case compile (lab2, env2, e2) of
+                  [used2, env3, code2] ->
+                    [false, env3,
+                     code1 <+> label (lab1, used1) <+>
+                     code2 <+> label (lab2, used2) <+ BINOP (op)]
+                esac
+            esac
+        esac
+
+    | Read (x) ->
+        [false, env, singletonBuffer (READ) <+ ST (lookupVar (env, x))]
+
+    | Write (e) ->
+        case env.genLabel of
+          [eLab, env1] ->
+            case compile (eLab, env1, e) of
+              [used, env2, code] -> [false, env2, code <+> label (eLab, used) <+ WRITE]
+            esac
+        esac
+
+    | Assn (lhs, rhs) ->
+        case env.genLabels (2) of
+          [lab1, lab2, env1] ->
+            case compile (lab1, env1, lhs) of
+              [used1, env2, code1] ->
+                case compile (lab2, env2, rhs) of
+                  [used2, env3, code2] ->
+                    [false, env3,
+                     code1 <+> label (lab1, used1) <+>
+                     code2 <+> label (lab2, used2) <+ STI]
+                esac
+            esac
+        esac
+
+    | Seq (e1, e2) ->
+        case env.genLabel of
+          [lab1, env1] ->
+            case compile (lab1, env1, e1) of
+              [used1, env2, code1] ->
+                case compile (lab, env2, e2) of
+                  [used2, env3, code2] ->
+                    [used2, env3, code1 <+> label (lab1, used1) <+> code2]
+                esac
+            esac
+        esac
+
+    | If (cond, tBranch, eBranch) ->
+        case env.genLabel of
+          [elseLab, env1] ->
+            case compile (lab, env1, tBranch) of
+              [usedT, env2, tCode] ->
+                case compile (lab, env2, eBranch) of
+                  [usedE, env3, eCode] ->
+                    case compile (elseLab, env3, cond) of
+                      [usedC, env4, cCode] ->
+                        [true, env4,
+                         cCode <+> label (elseLab, usedC) <+ CJMP ("z", elseLab) <+>
+                         tCode <+ JMP (lab) <+ LABEL (elseLab) <+> eCode]
+                    esac
+                esac
+            esac
+        esac
+
+    | While (cond, body) ->
+        case env.genLabels (3) of
+          [startLab, bodyLab, condLab, env1] ->
+            case compile (bodyLab, env1, body) of
+              [usedBody, env2, bodyCode] ->
+                case compile (condLab, env2, cond) of
+                  [usedCond, env3, condCode] ->
+                    [false, env3,
+                     LABEL (startLab) <+>
+                     condCode <+> label (condLab, usedCond) <+ CJMP ("z", lab) <+>
+                     bodyCode <+ LABEL (bodyLab) <+ JMP (startLab)]
+                esac
+            esac
+        esac
+
+    | DoWhile (body, cond) ->
+        case env.genLabels (2) of
+          [startLab, condLab, env1] ->
+            case compile (startLab, env1, body) of
+              [usedBody, env2, bodyCode] ->
+                case compile (condLab, env2, cond) of
+                  [usedCond, env3, condCode] ->
+                    [false, env3,
+                     LABEL (startLab) <+> bodyCode <+>
+                     condCode <+> label (condLab, usedCond) <+ CJMP ("nz", startLab)]
+                esac
+            esac
+        esac
+
+    | Call (name, args) ->
+        case lookupFun (env, name) of
+          Fun (fLabel, expected) ->
+            if listLength (args) != expected
+            then failure ("wrong number of arguments\n")
+            else
+              compileArgs (env,
+                           args,
+                           fun (envCall) {
+                             [false, envCall, singletonBuffer (CALL (fLabel, expected))]
+                           })
+        esac
+
+    | Scope (defs, expr) ->
+        var env1 = beginScope (env);
+        case foldl (
+               fun ([envAcc, codeAcc], def) {
+                 case def of
+                   Var (names) ->
+                     var isGlb = isGlobal (envAcc);
+                     case foldl (
+                            fun ([eCur, cCur], name) {
+                              var eNew = addVar (eCur, name);
+                              var cNew = if isGlb then cCur <+ GLOBAL (name) else cCur fi;
+                              [eNew, cNew]
+                            },
+                            [envAcc, codeAcc],
+                            names) of
+                       [eRes, cRes] -> [eRes, cRes]
+                 | Fun (fname, fargs, _) ->
+                     case genFunLabel (envAcc, fname) of
+                       [labelName, envLbl] -> [addFun (envLbl, fname, labelName, listLength (fargs)), codeAcc]
+                     esac
+                 esac
+               },
+               [env1, emptyBuffer ()],
+               defs) of
+          [env2, globalsCode] ->
+            var env3 = foldl (
+                           fun (eCur, def) {
+                             case def of
+                               Fun (fname, fargs, fbody) ->
+                                 case lookupFun (eCur, fname) of
+                                   Fun (labName, _) -> rememberFun (eCur, labName, fargs, fbody)
+                                 esac
+                             | _ -> eCur
+                             esac
+                           },
+                           env2,
+                           defs);
+            case compile (lab, env3, expr) of
+              [labUsed, envBody, bodyCode] ->
+                [labUsed, endScope (envBody), globalsCode <+> bodyCode]
+            esac
+
     esac
   }
 
@@ -426,4 +735,3 @@ public fun compileSM (stmt) {
        esac
   esac
 }
-

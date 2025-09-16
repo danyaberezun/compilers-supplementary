@@ -49,15 +49,8 @@ public fun evalOp (op, l, r) {
 --        Ref     (string)             |
 --        Const   (int)                |
 --        Binop   (string, expr, expr) |
---        Scope   (def list, expr)     |
 --        Call    (string, expr list)  |
 --        Ignore  (expr)
---
--- A definition is either a local variable definition or a function
--- definition:
---
--- def = Var (string list)                |
---       Fun (string, string list, expr)
 
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
@@ -86,6 +79,18 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
+
+fun bindArgs (state, names, values) {
+  case [names, values] of
+    [{}, {}] -> state
+  | [name : restNames, value : restValues] ->
+      bindArgs (state <- [name, Var (value)], restNames, restValues)
+  esac
+}
+
+fun listLength (xs) {
+  foldl (fun (n, _) {n + 1}, 0, xs)
+}
                                         
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
@@ -101,11 +106,112 @@ fun evalList (c, exprs) {
   esac
 }
 
-(* Assignment *)
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Var (x) ->
+      checkVar (s, x);
+      case lookup (s, x) of
+        Var (v) -> [c, v]
+      esac
+
+  | Const (n) -> [c, n]
+
+  | Ref (x) ->
+      checkVar (s, x);
+      [c, Ref (x)]
+
+  | Skip -> [c, Void]
+
+  | Binop (op, l, r) ->
+      case evalList (c, {l, r}) of
+        [new_c, {vl, vr}] -> [new_c, evalOp (op, vl, vr)]
+      esac
+
+  | Read (x) ->
+      checkVar (s, x);
+      case readWorld (w) of
+        [n, new_w] -> [[s <- [x, Var (n)], new_w], Void]
+      esac
+
+  | Write (e) ->
+      case eval (c, e) of
+        [new_c@[new_s, new_w], v] -> [[new_s, writeWorld (v, new_w)], Void]
+      esac
+
+  | Assn (l, r) ->
+      case evalList (c, {l, r}) of
+        [new_c@[new_s, new_w], {Ref (x), v}] -> [[new_s <- [x, Var (v)], new_w], v]
+      esac
+
+  | Seq (e1, e2) ->
+      case eval (c, e1) of
+        [c1, _] -> eval (c1, e2)
+      esac
+
+  | If (cond, tBranch, eBranch) ->
+      case eval (c, cond) of
+        [c1, v] -> if v != 0 then eval (c1, tBranch) else eval (c1, eBranch) fi
+      esac
+
+  | While (cond, body) ->
+      case eval (c, cond) of
+        [c1, v] ->
+          if v != 0 then
+            case eval (c1, body) of
+              [c2, _] -> eval (c2, While (cond, body))
+            esac
+          else [c1, Void]
+          fi
+      esac
+
+  | DoWhile (body, cond) ->
+      case eval (c, body) of
+        [c1, _] ->
+          case eval (c1, cond) of
+            [c2, v] -> if v != 0 then eval (c2, DoWhile (body, cond)) else [c2, Void] fi
+          esac
+      esac
+
+  | Call (name, args) ->
+      case evalList (c, args) of
+        [call_c@[call_state, call_world], vals] ->
+          checkFun (call_state, name);
+          case lookup (call_state, name) of
+            Fun (formals, body) ->
+              if listLength (formals) != listLength (vals)
+              then failure ("wrong number of arguments\n")
+              else
+                var fn_state = addNames (enterFunction (call_state), formals);
+                var fn_state_args = bindArgs (fn_state, formals, vals);
+                case eval ([fn_state_args, call_world], body) of
+                  [fn_c@[fn_state_res, fn_world], result] ->
+                    [[leaveFunction (call_state, getGlobal (fn_state_res)), fn_world], result]
+                esac
+              fi
+          esac
+      esac
+
+  | Scope (defs, body) ->
+      var scope_state = enterScope (s);
+      var scope_state_defs =
+        foldl (fun (st, def) {
+                 case def of
+                   Var (names) -> addNames (st, names)
+                 | Fun (fname, fargs, fbody) -> addFunction (st, fname, fargs, fbody)
+                 esac
+               },
+               scope_state,
+               defs);
+      case eval ([scope_state_defs, w], body) of
+        [res_c@[res_state, res_world], value] -> [[leaveScope (res_state), res_world], value]
+      esac
+
+  | Ignore (e) ->
+      case eval (c, e) of
+        [new_c, _] -> [new_c, Void]
+      esac
+  esac
 }
-(* End *)
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
