@@ -478,7 +478,63 @@ fun savecode (env, nA) {
 -- 4. discard those parameters that were passed through stack from the stack;
 -- 5. restore saved live registers.         
 fun call (env, fLabel, nA) {
-  failure ("calls not implemented")
+  fun collectArgs (env, n, acc) {
+    if n == 0
+    then [env, reverse (acc)]
+    else case pop (env) of
+           [arg, envRest] -> collectArgs (envRest, n-1, arg : acc)
+         esac
+    fi
+  }
+
+  fun length (xs) {
+    foldl (fun (n, _) {n + 1}, 0, xs)
+  }
+
+  fun popRegArgs (regs, count) {
+    if count == 0
+    then emptyBuffer ()
+    else case regs of
+           r : rest -> singletonBuffer (Pop (r)) <+ popRegArgs (rest, count - 1)
+         esac
+    fi
+  }
+
+  var regs = liveRegisters (env, nA);
+  var saved = length (regs);
+
+  case collectArgs (env, nA, {}) of
+    [envArgs, args] ->
+      var regArgs = if nA < nRegArgs then nA else nRegArgs fi;
+      var stackArgs = if nA > nRegArgs then nA - nRegArgs else 0 fi;
+      var returnsValue = compare (fLabel, "Lwrite") != 0;
+
+      var pushSaved = foldl (fun (buf, r) {buf <+ Push (r)}, emptyBuffer (), regs);
+      var restoreSaved = foldl (fun (buf, r) {buf <+ Pop (r)}, emptyBuffer (), reverse (regs));
+      var pushArgs = foldl (fun (buf, arg) {buf <+ Push (arg)}, emptyBuffer (), reverse (args));
+      var argRegs = {rdi, rsi, rdx, rcx, r8, r9};
+      var moveRegs = popRegArgs (argRegs, regArgs);
+
+      var needAlign = (saved + stackArgs) % 2 != 0;
+      var alignBuffer = if needAlign then singletonBuffer (Push (L (0))) else emptyBuffer () fi;
+      var stackCleanup = if needAlign then stackArgs + 1 else stackArgs fi;
+      var cleanupBuffer = if stackCleanup == 0 then emptyBuffer () else singletonBuffer (Binop ("+", L (stackCleanup * wordSize), rsp)) fi;
+
+      var callBuffer =
+        pushSaved <+>
+        pushArgs <+>
+        moveRegs <+>
+        alignBuffer <+>
+        singletonBuffer (Call (fLabel)) <+>
+        cleanupBuffer <+>
+        restoreSaved;
+
+      if returnsValue
+      then case allocate (envArgs) of
+             [dst, envRes] -> [envRes, callBuffer <+> move (rax, dst)]
+           esac
+      else [envArgs, callBuffer]
+  esac
 }
 
 -- Gets a suffix for Set instruction from
@@ -502,24 +558,90 @@ fun compile (env, code) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
 
       -- printf ("compiling %s\n", showSMInsn (i));
-      
-      case i of      
+
+      case i of
         READ ->
           let [env, callCode] = call (env, "Lread", 0) in
-	  [env, code <+> callCode]
+          [env, code <+> callCode]
       | WRITE ->
           let [env, callCode] = call (env, "Lwrite", 1) in
-	  [env, code <+> callCode]
-	  
-      (* Assignment        
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-      *)
-        
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+          [env, code <+> callCode]
+
+      | CONST (n) ->
+          case allocate (env) of
+            [dst, envRes] -> [envRes, code <+> move (L (n), dst)]
+          esac
+      | LD (location) ->
+          case allocate (env) of
+            [dst, envRes] -> [envRes, code <+> move (loc (env, location), dst)]
+          esac
+      | LDA (location) ->
+          [push (env, loc (env, location)), code]
+      | ST (location) ->
+          case pop (env) of
+            [value, envRes] -> [envRes, code <+> move (value, loc (env, location))]
+          esac
+      | STI ->
+          case pop2 (env) of
+            [value, target, envRest] ->
+              var envRes = push (envRest, value);
+              [envRes, code <+> move (value, target)]
+          esac
+      | BINOP (op) ->
+          case pop2 (env) of
+            [rhs, lhs, envRest] ->
+              case allocate (envRest) of
+                [dst, envRes] ->
+                  var binopCode =
+                    case op of
+                      "/" ->
+                        (withRDX (envRest,
+                                   move (lhs, rax) <+ Cltd <+ IDiv (rhs)) <+>
+                         move (rax, dst))
+                    | "%" ->
+                        withRDX (envRest,
+                                 move (lhs, rax) <+ Cltd <+ IDiv (rhs) <+ move (rdx, dst))
+                    | "==" -> move (lhs, rax) <+ Binop ("cmp", rhs, rax) <+ move (L (0), rax) <+ Set (suffix (op), "%al") <+ move (rax, dst)
+                    | "!=" -> move (lhs, rax) <+ Binop ("cmp", rhs, rax) <+ move (L (0), rax) <+ Set (suffix (op), "%al") <+ move (rax, dst)
+                    | "<"  -> move (lhs, rax) <+ Binop ("cmp", rhs, rax) <+ move (L (0), rax) <+ Set (suffix (op), "%al") <+ move (rax, dst)
+                    | "<=" -> move (lhs, rax) <+ Binop ("cmp", rhs, rax) <+ move (L (0), rax) <+ Set (suffix (op), "%al") <+ move (rax, dst)
+                    | ">"  -> move (lhs, rax) <+ Binop ("cmp", rhs, rax) <+ move (L (0), rax) <+ Set (suffix (op), "%al") <+ move (rax, dst)
+                    | ">=" -> move (lhs, rax) <+ Binop ("cmp", rhs, rax) <+ move (L (0), rax) <+ Set (suffix (op), "%al") <+ move (rax, dst)
+                    | _     -> move (lhs, rax) <+ Binop (op, rhs, rax) <+ move (rax, dst)
+                    esac;
+                  [envRes, code <+> binopCode]
+              esac
+          esac
+      | LABEL (lab) ->
+          [retrieveStack (env, lab), code <+ Label (lab)]
+      | JMP (lab) ->
+          [setBarrier (setStack (env, lab)), code <+ Jmp (lab)]
+      | CJMP (cond, lab) ->
+          case pop (env) of
+            [value, envRest] ->
+              var envRes = setStack (envRest, lab);
+              [envRes, code <+> move (value, rax) <+ Binop ("cmp", L (0), rax) <+ CJmp (cond, lab)]
+          esac
+      | CALL (lab, nArgs) ->
+          let [envRes, callCode] = call (env, lab, nArgs) in
+          [envRes, code <+> callCode]
+      | BEGIN (f, nArgs, locals) ->
+          [enterFunction (env, f, nArgs, locals), code <+> prologue (f)]
+      | GLOBAL (name) ->
+          [addGlobal (env, name), code]
+      | END ->
+          case epilogue (env) of
+            [envRes, epilogueCode] -> [envRes, code <+> epilogueCode]
+          esac
+      | DUP ->
+          var top = peek (env);
+          case allocate (env) of
+            [dst, envRes] -> [envRes, code <+> move (top, dst)]
+          esac
+      | DROP ->
+          case pop (env) of
+            [_, envRes] -> [envRes, code]
+          esac
       esac
     }, [env, emptyBuffer ()], code)
 }
