@@ -394,6 +394,60 @@ fun move (from, to) {
   fi
 }
 
+-- Saves and restores live registers around a call
+fun savecode (env, nA) {
+  var regs = env.liveRegisters (nA);
+
+  fun pushRegs (regs) {
+    foldl (fun (buf, r) { buf <+ Push (r) }, emptyBuffer (), regs)
+  }
+
+  fun popRegs (regs) {
+    case regs of
+      {}     -> emptyBuffer ()
+    | r : rs -> popRegs (rs) <+ Pop (r)
+    esac
+  }
+
+  [pushRegs (regs), popRegs (regs)]
+}
+
+-- Generates a static call sequence
+fun call (env, fLabel, nA) {
+  fun popArgs (env, k, acc) {
+    if k == 0
+    then [env, acc]
+    else case pop (env) of
+           [arg, env1] -> popArgs (env1, k-1, acc <+ Push (arg))
+         esac
+    fi
+  }
+
+  case savecode (env, nA) of
+    [saved, restored] ->
+      case popArgs (env, nA, emptyBuffer ()) of
+        [env1, argPush] ->
+          var callCode = saved <+> argPush <+ Call (fLabel);
+          var cleanup = if nA == 0
+                        then emptyBuffer ()
+                        else singletonBuffer (Binop ("+", L (nA * wordSize), esp))
+                        fi;
+
+          case allocate (env1) of
+            [dst, env2] ->
+              var moveRet =
+                case dst of
+                  R (4) -> emptyBuffer ()
+                | _     -> singletonBuffer (Mov (eax, dst))
+                esac;
+
+              [env2,
+               callCode <+> cleanup <+> moveRet <+> restored]
+          esac
+      esac
+  esac
+}
+
 -- Gets a suffix for Set instruction from
 -- source language comparison operator
 fun suffix (op) {
@@ -404,6 +458,13 @@ fun suffix (op) {
   | "!=" -> "ne"
   | ">=" -> "ge"
   | ">"  -> "g"
+  esac
+}
+
+fun stringMember (x, l) {
+  case l of
+    {}    -> false
+  | h : t -> if compare (x, h) == 0 then true else stringMember (x, t) fi
   esac
 }
 
@@ -441,6 +502,154 @@ fun compile (env, code) {
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
                
+        | BEGIN (fLabel, _, nL) ->
+            let env = enterFunction (env, fLabel, nL) in
+            [env, code <+> prologue (fLabel)]
+
+        | END ->
+            case epilogue (env) of
+              [env1, endCode] -> [env1, code <+> endCode]
+            esac
+
+        | CALL (fLabel, nA) ->
+            case call (env, fLabel, nA) of
+              [env1, callCode] -> [env1, code <+> callCode]
+            esac
+
+        | GLOBAL (x) -> [addGlobal (env, x), code]
+
+        | LABEL (l) ->
+            [if isBarrier (env)
+             then retrieveStack (env, l)
+             else env fi,
+             code <+ Label (l)]
+
+        | JMP (l) ->
+            [setBarrier (setStack (env, l)),
+             code <+ Jmp (l)]
+
+        | CJMP (cond, l) ->
+            case pop (env) of
+              [x, env1] ->
+                [setStack (env1, l),
+                 code <+ Binop ("cmp", L (0), x) <+ CJmp (cond, l)]
+            esac
+
+        | CONST (n) ->
+            case allocate (env) of
+              [dst, env1] -> [env1, code <+ Mov (L (n), dst)]
+            esac
+
+        | LD (x) ->
+            case allocate (env) of
+              [dst, env1] -> [env1, code <+> move (loc (env, x), dst)]
+            esac
+
+        | LDA (x) ->
+            case allocate (env) of
+              [dst, env1] ->
+                if memOpnd (dst)
+                then [env1, code <+ Lea (loc (env, x), eax) <+ Mov (eax, dst)]
+                else [env1, code <+ Lea (loc (env, x), dst)]
+                fi
+            esac
+
+        | ST (x) ->
+            [env, code <+> move (peek (env), loc (env, x))]
+
+        | STI ->
+            case pop2 (env) of
+              [value, ptr, env1] ->
+                let env2 = push (env1, value) in
+                let store =
+                  if memOpnd (ptr)
+                  then
+                    if memOpnd (value)
+                    then singletonBuffer (Mov (ptr, eax)) <+
+                         Mov (value, edx) <+
+                         Mov (edx, I (0, eax))
+                    else singletonBuffer (Mov (ptr, eax)) <+
+                         Mov (value, I (0, eax))
+                    fi
+                  else
+                    if memOpnd (value)
+                    then singletonBuffer (Mov (value, edx)) <+
+                         Mov (edx, I (0, ptr))
+                    else singletonBuffer (Mov (value, I (0, ptr)))
+                    fi
+                  fi
+                in [env2, code <+> store]
+            esac
+
+        | DROP ->
+            case pop (env) of
+              [_, env1] -> [env1, code]
+            esac
+
+        | DUP ->
+            var top = peek (env);
+            case allocate (env) of
+              [dst, env1] -> [env1, code <+> move (top, dst)]
+            esac
+
+        | BINOP (op) ->
+            case pop2 (env) of
+              [x, y, env1] ->
+                [push (env1, y),
+                 code <+>
+                 if stringMember (op, {"/", "%"})
+                 then singletonBuffer (Mov (y, eax)) <+
+                      Cltd <+
+                      IDiv (x) <+
+                      Mov (if compare (op, "/") == 0 then eax else edx fi, y)
+                 elif stringMember (op, {"<", "<=", "==", "!=", ">=", ">"})
+                 then
+                   if memOpnd (x)
+                   then singletonBuffer (Binop ("^", eax, eax)) <+
+                        Mov (x, edx) <+
+                        Binop ("cmp", edx, y) <+
+                        Set (suffix (op), "%al") <+
+                        Mov (eax, y)
+                   else singletonBuffer (Binop ("^", eax, eax)) <+
+                        Binop ("cmp", x, y) <+
+                        Set (suffix (op), "%al") <+
+                        Mov (eax, y)
+                   fi
+                 else case op of
+                        "*" -> if stackOpnd (x) && stackOpnd (y)
+                                then singletonBuffer (Mov (y, eax)) <+
+                                     Binop (op, x, eax) <+
+                                     Mov (eax, y)
+                                else singletonBuffer (Binop (op, x, y))
+                                fi
+
+                      | "&&" -> singletonBuffer (Mov (x, eax)) <+
+                                   Binop (op, x, eax) <+
+                                   Mov (L (0), eax) <+
+                                   Set ("ne", "%al") <+
+                                   Mov (y, edx) <+
+                                   Binop (op, y, edx) <+
+                                   Mov (L (0), edx) <+
+                                   Set ("ne", "%dl") <+
+                                   Binop (op, edx, eax) <+
+                                   Set ("ne", "%al") <+
+                                   Mov (eax, y)
+
+                      | "!!" -> singletonBuffer (Mov (y, eax)) <+
+                                   Binop (op, x, eax) <+
+                                   Mov (L (0), eax) <+
+                                   Set ("ne", "%al") <+
+                                   Mov (eax, y)
+
+                      | _ -> if stackOpnd (x) && stackOpnd (y)
+                             then singletonBuffer (Mov (x, eax)) <+
+                                  Binop (op, eax, y)
+                             else singletonBuffer (Binop (op, x, y))
+                             fi
+                      esac
+                 fi]
+            esac
+
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         (* End *)
         esac
@@ -455,11 +664,20 @@ fun compile (env, code) {
 public fun compileX86 (args, code) {
   case compile (initEnv (), code) of
     [env, code] ->
-       var asmFile = args.getBaseName ++ ".s",
-             runtime = case getEnv ("LAMA_RUNTIME") of
-                         #val -> "../runtime/"
-                       | path     -> path
-                       esac ++ "/runtime.o";
+        var asmFile = args.getBaseName ++ ".s",
+              runtime =
+                (case getEnv ("LAMA_RUNTIME") of
+                   #val -> "../runtime32/"
+                 | path ->
+                     if compare (path, "../../runtime64") == 0
+                     then "../../runtime32"
+                     elif compare (path, "../runtime64") == 0
+                     then "../runtime32"
+                     elif compare (path, "runtime64") == 0
+                     then "runtime32"
+                     else path
+                     fi
+                 esac) ++ "/runtime.o";
 
        fwrite (asmFile,
                map (insnString, 
