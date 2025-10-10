@@ -6,7 +6,7 @@ LAMAC=lamac
 
 .PHONY: all clean
 
-all: Parser.o Lexer.o X86_64.o SM.o Manifest.o
+all: Parser.o Lexer.o X86.o X86_64.o SM.o Manifest.o
 	$(LAMAC) -I . -o lama-impl Driver.lama
 
 Parser.o: Lexer.o
@@ -31,4 +31,3 @@ variate:
 
 clean:
 	rm -Rf *.s *.o *.i *~ *.html *.sm lama-impl
-
