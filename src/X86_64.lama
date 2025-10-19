@@ -10,27 +10,27 @@ import Manifest;
 -- Assembler language interface
 -- The registers:
   
-var regs = ["%rbx", "%rcx", "%rsi", "%rdi",
+var regs = ["%rbx", "%rcx", "%rsi",
             "%r8" , "%r9" , "%r10", "%r11",
 	    "%r12", "%r13", "%r14", "%r15",
-	    "%rax", "%rdx", "%rbp", "%rsp"];
+	     "%rdi", "%rax", "%rdx", "%rbp", "%rsp"];
 
--- We can not freely operate with all register; only with 4 by now
+-- We can not freely operate with all register; only with 11 by now
 var nRegs = regs.length - 5;
 
 -- For convenience we define the following synonyms for the registers: 
 var rbx = R (0),
     rcx = R (1),
     rsi = R (2),
-    rdi = R (3),
-    r8  = R (4),
-    r9  = R (5),
-    r10 = R (6),
-    r11 = R (7),
-    r12 = R (8),
-    r13 = R (9),
-    r14 = R (10),
-    r15 = R (11),
+    r8  = R (3),
+    r9  = R (4),
+    r10 = R (5),
+    r11 = R (6),
+    r12 = R (7),
+    r13 = R (8),
+    r14 = R (9),
+    r15 = R (10),
+    rdi = R (11),
     rax = R (12),
     rdx = R (13),
     rbp = R (14),
@@ -97,7 +97,10 @@ fun insnString (insn) {
   | Sal   (s)          -> sprintf ("\tsalq\t%s\n", s)
   | IDiv  (s1)         -> sprintf ("\tidivq\t%s\n", opndString (s1))
   | Binop (op, s1, s2) -> sprintf ("\t%s\t%s,\t%s\n", binopString (op), opndString (s1), opndString (s2))
-  | Mov   (s1, s2)     -> sprintf ("\tmovq\t%s,\t%s\n", opndString (s1), opndString (s2))
+  | Mov   (s1, s2)     -> 
+      if compare (s1, s2) != 0
+      then sprintf ("\tmovq\t%s,\t%s\n", opndString (s1), opndString (s2))
+      else "" fi
   | Lea   (s1, s2)     -> sprintf ("\tleaq\t%s,\t%s\n", opndString (s1), opndString (s2))
   | Push  (s)          -> sprintf ("\tpushq\t%s\n", opndString (s))
   | Pop   (s)          -> sprintf ("\tpopq\t%s\n", opndString (s))
@@ -333,9 +336,10 @@ fun stackOpnd (opnd) {
 -- Checks if an operand resides in memory
 fun memOpnd (opnd) {
   case opnd of
-    S (_) -> true
-  | M (_) -> true
-  | _     -> false
+    S (_)    -> true
+  | M (_)    -> true
+  | I (_, _) -> true
+  | _        -> false
   esac
 }
 
@@ -370,15 +374,55 @@ fun compile (env, code) {
         
       case i of
         READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (rax, s)]
-          esac             
+          let [s, env] = env.allocate in
+          [env, code <+ Call ("Lread") <+ Mov (rax, s)]       
       | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
+          let [s, env] = env.pop in
+          [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
+      | BINOP (op) ->
+          let [s1, env] = env.pop in
+          let [s2, env] = env.pop in
+          let [s , env] = env.allocate in
+          case op of
+            "/"  -> [env, code <+ Mov (s2, rax) <+ Cltd <+ IDiv (s1) <+ Mov (rax, s)]
+          | "%"  -> [env, code <+ Mov (s2, rax) <+ Cltd <+ IDiv (s1) <+ Mov (rdx, s)]
+          | "&&" -> [env, code <+ Binop ("cmp", L (0), s1) <+ Set ("ne", "%al") <+ Binop ("&&", L (1), rax) <+ Binop ("cmp", L (0), s2) <+ Set ("ne", "%dl") <+ Binop ("&&", L (1), rdx) <+ Binop ("&&", rdx, rax) <+ Mov (rax, s)]
+          | "!!" -> [env, code <+ Binop ("cmp", L (0), s1) <+ Set ("ne", "%al") <+ Binop ("&&", L (1), rax) <+ Binop ("cmp", L (0), s2) <+ Set ("ne", "%dl") <+ Binop ("&&", L (1), rdx) <+ Binop ("!!", rdx, rax) <+ Mov (rax, s)]
+          | _    -> case assoc ({ ["<", 0], ["<=", 0], ["==", 0], ["!=", 0], [">=", 0], [">", 0] }, op) of
+                      None     -> [env, code <+ Binop (op, s1, s2) <+ Mov (s2, s)]
+                    | Some (_) -> [env, code <+ Binop ("cmp", s1, s2) <+ Set (suffix (op), "%al") <+ Binop ("&&", L (1), rax) <+ Mov (rax, s)]
+                    esac
           esac
+      | LD (x) ->
+          let [s, env] = env.addGlobal (x).allocate in
+          [env, code <+> move (env.loc (x), s)]
+      | LDA (x) ->
+          let [s, env] = env.addGlobal (x).allocate in
+          [env, code <+ Lea (env.loc (x), s)]
+      | ST (x) ->
+          let [s, env] = env.addGlobal (x).pop in
+          [env, code <+> move (s, env.loc (x))]
+      | STI ->
+          let [sa, env] = env.pop in
+          let sx = env.peek in
+          [env, code <+> move (sx, I (0, sa))]
+      | CONST (n) ->
+          let [s, env] = env.allocate in
+          [env, code <+ Mov (L (n), s)]
+      | LABEL (l) -> [env.retrieveStack (l), code <+ Label (l)]
+      | JMP (l) -> [env.setStack (l), code <+ Jmp (l)]
+      | CJMP (c, l) -> 
+          let [s, env] = env.pop in
+          [env.setStack (l), code <+ Binop ("cmp", L (0), s) <+ CJmp (c, l)]
+      | DUP ->
+          let s = env.peek in
+          let [s1, env] = env.allocate in
+          [env, code <+ Mov (s, s1)]
+      | DROP ->
+          let [_, env] = env.pop in
+          [env, code]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
+      esac
     }, [env, emptyBuffer ()], code)
 }
 
