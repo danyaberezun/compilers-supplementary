@@ -57,6 +57,16 @@ fun binop (op) {
   ]
 }
 
+fun isBuiltin (name) {
+  case name of
+    "read"      -> true
+  | "write"     -> true
+  | "length"    -> true
+  | "stringval" -> true
+  | _            -> false
+  esac
+}
+
 -- Helper parser: parses a (possible empty) list of items separated by ","
 fun list0 (item) {
   list0By (item, s(","))
@@ -118,6 +128,14 @@ fun distributeScope (expr, exprConstructor) {
 }
  
 var primary    = memo $ eta syntax (
+                                      -- S-expression
+                                      loc=pos tag=uident
+                                              args=(args=inbr[s("("), list (syntax (e=exp {e (Val)})), s(")")]? {
+                                                      case args of
+                                                        Some (as) -> as
+                                                      | None       -> {}
+                                                      esac
+                                                    }) {fun (a) {assertValue (a, Sexp (tag, args), loc)}} |
                                       -- array constant
                                       loc=pos x=inbr[s("["), list0(syntax (e=exp {e(Val)})), s("]")] {fun (a) {assertValue (a, Array (x), loc)}}    |
                                       
@@ -132,22 +150,52 @@ var primary    = memo $ eta syntax (
 
                                       -- identifier
                                       x=lident args=inbr[s("("), list0(syntax(e=exp {e(Val)})), s(")")]? {fun (a) {
-                                                                                                            case args of
-                                                                                                              None -> case a of
-                                                                                                                        Ref  -> Ref (x)
-                                                                                                                      | Void -> Ignore (Var (x))
-                                                                                                                      | _    -> Var (x)
-                                                                                                                      esac
-                                                                                                            | Some (args) -> assertValue (a, Call (x, args))
-                                                                                                            esac
-                                                                                                         }} |
+                                                                                                           case args of
+                                                                                                             None -> case a of
+                                                                                                                       Ref  -> Ref (x)
+                                                                                                                     | Void -> Ignore (Var (x))
+                                                                                                                     | _    -> Var (x)
+                                                                                                                     esac
+                                                                                                           | Some (args) ->
+                                                                                                               if isBuiltin (x) then
+                                                                                                                 assertValue (a, Builtin (x, args), loc)
+                                                                                                               else
+                                                                                                                 assertValue (a, Call (x, args), loc)
+                                                                                                               fi
+                                                                                                           esac
+                                                                                                        }} |
 
-                                      -- S-expression
-                                      loc=pos x=uident args=inbr[s("("), list0(syntax(e=exp {e(Val)})), s(")")]? {fun (a) {assertValue (a, Sexp (x, case args of
-                                                                                                                                                      None        -> {}
-                                                                                                                                                    | Some (args) -> args
-                                                                                                                                                    esac), loc)}} |
-                                      $(failure ("the rest of primary parsing in not implemented\n"))),
+                                      e=inbr [s("("), scopeExpr, s(")")] |
+
+                                      loc=pos kWhile e=exp kDo s=scopeExpr kOd {fun (a) {assertVoid (a, While (e (Val), s (Void)), loc)}} |
+                                      loc=pos kDo s=scopeExpr kWhile e=exp kOd {fun (a) {
+                                        assertVoid (a,
+                                                    distributeScope (s (Void),
+                                                      fun (body) {DoWhile (body, e (Val))}),
+                                                    loc)
+                                      }} |
+                                      loc=pos kFor s1=scopeExpr s[","] e=exp s[","] s2=exp kDo s3=exp kOd {
+                                        fun (a) {
+                                          assertVoid (
+                                            a,
+                                            distributeScope (
+                                              s1 (Void),
+                                              fun (init) {
+                                                Seq (init,
+                                                     While (e (Val),
+                                                            Seq (s3 (Void), s2 (Void))))
+                                              }),
+                                            loc)
+                                        }
+                                      } |
+                                      loc=pos kSkip {fun (a) {assertVoid (a, Skip, loc)}} |
+                                      kIf e=exp kThen s1=scopeExpr s2=elif_ {fun (a) {If (e (Val), s1 (a), s2 (a))}}
+                                    ),
+      elif_      = memo $ eta syntax (
+                                       kElif e=exp kThen s1=scopeExpr s2=elif_ {fun (a) {If (e (Val), s1 (a), s2 (a))}} |
+                                       kElse s=scopeExpr kFi                       {fun (a) {s (a)}} |
+                                       loc=pos kFi                                 {fun (a) {assertVoid (a, Skip, loc)}}
+                                     ),
       basic      = memo $ eta (expr ({[Right, {[s (":="),
                                                 fun (l, loc, r) {
                                                   fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
@@ -167,8 +215,8 @@ var primary    = memo $ eta syntax (
                                                                                        | _   -> assertValue (a, Elem (e (Val), i), loc)
                                                                                        esac
                                                                                      }
-                                                                                 esac                                                                            
-                                                                               }, e, ps) (a)
+                                                                               esac                                                                            
+                                                                             }, e, ps) (a)
                                                               }}
                                      ),
       scopeExpr  = memo $ eta syntax (ds=definition* e=exp? {fun (a) {fun (e) {

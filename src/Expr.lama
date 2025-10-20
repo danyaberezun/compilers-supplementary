@@ -1,4 +1,4 @@
--- Expression evaluator
+-- Expression evaluator with fixnum-aware semantics
 
 import List;
 import Array;
@@ -6,93 +6,171 @@ import State;
 import World;
 import Lexer;
 import Parser;
-import Fun;
 import Builtins;
+
+fun fixBox (n) {
+  n * 2 + 1
+}
+
+fun fixUnbox (v) {
+  (v - 1) / 2
+}
+
+fun boolBox (cond) {
+  if cond != 0 then fixBox (1) else fixBox (0) fi
+}
+
+fun truthy (v) {
+  fixUnbox (v) != 0
+}
+
+fun fixAdd (l, r) {
+  fixBox (fixUnbox (l) + fixUnbox (r))
+}
+
+fun fixSub (l, r) {
+  fixBox (fixUnbox (l) - fixUnbox (r))
+}
+
+fun fixMul (l, r) {
+  fixBox (fixUnbox (l) * fixUnbox (r))
+}
+
+fun fixDiv (l, r) {
+  fixBox (fixUnbox (l) / fixUnbox (r))
+}
+
+fun fixMod (l, r) {
+  fixBox (fixUnbox (l) % fixUnbox (r))
+}
+
+fun fixEq (l, r) {
+  boolBox (fixUnbox (l) == fixUnbox (r))
+}
+
+fun fixNe (l, r) {
+  boolBox (fixUnbox (l) != fixUnbox (r))
+}
+
+fun fixLt (l, r) {
+  boolBox (fixUnbox (l) < fixUnbox (r))
+}
+
+fun fixLe (l, r) {
+  boolBox (fixUnbox (l) <= fixUnbox (r))
+}
+
+fun fixGt (l, r) {
+  boolBox (fixUnbox (l) > fixUnbox (r))
+}
+
+fun fixGe (l, r) {
+  boolBox (fixUnbox (l) >= fixUnbox (r))
+}
+
+fun fixAnd (l, r) {
+  boolBox (
+    if truthy (l) then
+      if truthy (r) then 1 else 0 fi
+    else 0
+    fi)
+}
+
+fun fixOr (l, r) {
+  boolBox (
+    if truthy (l) then
+      1
+    else
+      if truthy (r) then 1 else 0 fi
+    fi)
+}
+
+fun resolveContainer (value) {
+  case value of
+    Sexp (_, data) -> [data, false]
+  | s@#str        -> [s, true]
+  | arr           -> [arr, false]
+  esac
+}
 
 -- As association map which maps "\otimes" into "\oplus"
 var ops = {
-  ["+" , infix + ],
-  ["-" , infix - ],
-  ["*" , infix * ],
-  ["/" , infix / ],
-  ["%" , infix % ],
-  ["==", infix ==],
-  ["!=", infix !=],
-  ["<" , infix < ],
-  ["<=", infix <=],
-  [">" , infix > ],
-  [">=", infix >=],
-  ["&&", infix &&],
-  ["!!", infix !!]
+  ["+" , fixAdd],
+  ["-" , fixSub],
+  ["*" , fixMul],
+  ["/" , fixDiv],
+  ["%" , fixMod],
+  ["==", fixEq],
+  ["!=", fixNe],
+  ["<" , fixLt],
+  ["<=", fixLe],
+  [">" , fixGt],
+  [">=", fixGe],
+  ["&&", fixAnd],
+  ["!!", fixOr]
 };
 
--- The evaluator for infix operators: takes an operator as a string
--- and two operand values, and returns the result
 public fun evalOp (op, l, r) {
   case assoc (ops, op) of
     Some (f) -> f (l, r)
   esac
 }
 
--- Evaluates an expression "expr" in a configuration "c".
--- A configuration is a pair of a state "s" and a world "w".
--- Returns a final configuration (if any)
---
--- A expression is represented by a data structure of the following shape:
---
--- expr = Assn    (expr, expr)         |
---        Set     (string, expr)       |
---        Seq     (expr, expr)         |
---        Skip                         |
---        if      (expr, expr, expr)   |
---        While   (expr, expr)         |
---        DoWhile (expr, expr)         |
---        Var     (string)             |
---        Ref     (string)             |
---        Const   (int)                |
---        Binop   (string, expr, expr) |
---        Call    (string, expr list)  |
---        Ignore  (expr)               |
---        String  (string)             |
---        Array   (expr list)          |
---        Elem    (expr, expr)         |
---        ElemRef (expr, expr)         |
---        Builtin (string, expr list)
+fun makeVar (v) {
+  VarEntry (v)
+}
 
--- Helper function: checks that given name designates a regular variable in
--- a given state
-fun lookupVal (state, name) {
-  case state.lookup (name) of
-    x@Val (_) -> x
-  | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
+fun makeVal (assigned, v) {
+  ValEntry ([assigned, v])
+}
+
+fun bindingValue (binding, name) {
+  case binding of
+    VarEntry (v)          -> v
+  | ValEntry ([true, v])  -> v
+  | ValEntry ([false, _]) -> error (sprintf ("value ""%s"" is used before initialization", name), getLoc (name))
+  | _                     -> error (sprintf ("the name ""%s"" does not designate a value", name), getLoc (name))
   esac
 }
 
--- Helper function: checks that given name designates a function in
--- a given state
-fun lookupFun (state, name) {
+fun updateBinding (state, name, value) {
+  state <- [name, value]
+}
+
+fun storeBinding (state, name, value) {
   case state.lookup (name) of
-    x@Fun (_, _) -> x
-  | _            -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
+    VarEntry (_)          -> updateBinding (state, name, makeVar (value))
+  | ValEntry ([false, _]) -> updateBinding (state, name, makeVal (true, value))
+  | ValEntry ([true, _])  -> error (sprintf ("cannot assign to immutable value ""%s""", name), getLoc (name))
+  | _                     -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
   esac
 }
 
--- Helper function: adds a bunch of regular variables current scope
-fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
+fun ensureVariable (state, name) {
+  case state.lookup (name) of
+    VarEntry (v)          -> v
+  | ValEntry ([false, _]) -> error (sprintf ("value ""%s"" is used before initialization", name), getLoc (name))
+  | ValEntry ([true, _])  -> error (sprintf ("cannot take reference to immutable value ""%s""", name), getLoc (name))
+  | _                     -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
+  esac
 }
 
--- Helper function: adds a function in current scope
+fun addVarBinding (state, name) {
+  state.addName (name, makeVar (fixBox (0)))
+}
+
+fun addValBinding (state, name) {
+  state.addName (name, makeVal (false, fixBox (0)))
+}
+
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
--- Evaluates a list of expressions, properly threading a configurations.
--- Returns the final configuration and the list of values
+
 fun evalList (c, exprs) {
   case foldl (fun ([c, vals], e) {
                 case eval (c, e) of
-                  [c, v] -> [c, v : vals]
+                  [c, vl] -> [c, vl : vals]
                 esac
               },
               [c, {}],
@@ -101,16 +179,159 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun addDefs (state, defs) {
+  foldl (fun (s, def) {
+    case def of
+      Var (names) -> foldl (fun (st, defItem) {
+                             case defItem of
+                               [name, _] -> addVarBinding (st, name)
+                             | name      -> addVarBinding (st, name)
+                             esac
+                           }, s, names)
+    | Val (names) -> foldl (fun (st, defItem) {
+                             case defItem of
+                               [name, _] -> addValBinding (st, name)
+                             | name      -> addValBinding (st, name)
+                             esac
+                           }, s, names)
+    | Fun (name, args, body) -> addFunction (s, name, args, body)
+    esac
+  }, state, defs)
 }
 
+fun addVars (state, names, values) {
+  foldl (fun (s, binding) {
+    case binding of
+      [n, v] -> addName (s, n, makeVar (v))
+    esac
+  }, state, zip (names, values))
+}
 
--- Evaluates a program with a given input and returns an output
+fun getFunction (state, name) {
+  case state.lookup (name) of
+    f@Fun (_, _) -> f
+  | _            -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
+  esac
+}
+
+fun eval (c@[s, w], expr) {
+  case expr of
+    Assn (r, e) ->
+      let [c@[st, w], {ref, v}] = evalList (c, {r, e}) in
+      case ref of
+        Ref (x)                  -> [[storeBinding (st, x, v), w], v]
+      | ElemRef ([container, isString], i) ->
+          if isString
+          then container[i] := fixUnbox (v)
+          else container[i] := v
+          fi;
+          [c, v]
+      esac
+
+  | Set (name, e) ->
+      let [c@[st, w], v] = eval (c, e) in
+      [[storeBinding (st, name, v), w], v]
+
+  | Scope (defs, e) ->
+      case eval ([addDefs (enterScope (s), defs), w], e) of
+        [c@[s, w], v] -> [[leaveScope (s), w], v]
+      esac
+
+  | Seq (e1, e2) ->
+      case evalList (c, {e1, e2}) of
+        [c, {_, v2}] -> [c, v2]
+      esac
+
+  | Skip -> [c, Void]
+
+  | If (e, t, f) ->
+      case eval (c, e) of
+        [c, v] -> if truthy (v) then eval (c, t) else eval (c, f) fi
+      esac
+
+  | While (e, body) ->
+      case eval (c, e) of
+        [c, v] -> if truthy (v)
+                  then case eval (c, body) of
+                         [c, Void] -> eval (c, While (e, body))
+                       esac
+                  else [c, Void]
+                  fi
+      esac
+
+  | DoWhile (body, e) ->
+      case eval (c, body) of
+        [c, Void] -> case eval (c, e) of
+                       [c, v] -> if truthy (v) then eval (c, DoWhile (body, e)) else [c, Void] fi
+                     esac
+      esac
+
+  | Var (x) -> [c, bindingValue (lookup (s, x), x)]
+
+  | Ref (x) -> ensureVariable (s, x); [c, Ref (x)]
+
+  | Const (n) -> [c, fixBox (n)]
+
+  | Binop (op, l, r) ->
+      case evalList (c, {l, r}) of
+        [c, {vl, vr}] -> [c, evalOp (op, vl, vr)]
+      esac
+
+  | Ignore (e) ->
+      case eval (c, e) of
+        [c, _] -> [c, Void]
+      esac
+
+  | Call (name, args) ->
+      let Fun (params, body) = getFunction (s, name) in
+      let [c@[s, w], values] = evalList (c, args) in
+      let s' = addVars (enterFunction (s), params, values) in
+      let [c@[s', w], v] = eval ([s', w], body) in
+      [[leaveFunction (s, getGlobal (s')), w], v]
+
+  | Builtin (name, args) ->
+      let [c@[s, w], values] = evalList (c, args) in
+      let [v, w] = evalBuiltin (name, values, w) in
+      [[s, w], v]
+
+  | String (v) -> [c, v]
+
+  | Array (es) ->
+      let [c, vals] = evalList (c, es) in
+      [c, listArray (vals)]
+
+  | Elem (arrExpr, idxExpr) ->
+      let [c, arrVal] = eval (c, arrExpr) in
+      let [c, idxVal] = eval (c, idxExpr) in
+      let i = fixUnbox (idxVal) in
+      case resolveContainer (arrVal) of
+        [container, true]  -> [c, fixBox (container[i])]
+      | [container, false] -> [c, container[i]]
+      esac
+
+  | ElemRef (arrExpr, idxExpr) ->
+      let [c, arrVal] = eval (c, arrExpr) in
+      let [c, idxVal] = eval (c, idxExpr) in
+      let i = fixUnbox (idxVal) in
+      case resolveContainer (arrVal) of
+        [container, isString] -> [c, ElemRef ([container, isString], i)]
+      esac
+
+  | Sexp (tag, es) ->
+      let [c, vals] = evalList (c, es) in
+      [c, Sexp (tag, listArray (vals))]
+
+  esac
+}
+
 public fun evalExpr (input, expr) {
-  case eval ([emptyState ().enterScope.addName ("read",   Fun ({}, External))
-                                      .addName ("write",  Fun ({"a"}, External))
-                                      .addName ("length", Fun ({"a"}, External)), createWorld (input)], expr) of
+  case eval ([emptyState ().enterScope
+                               .addName ("read",   Fun ({}, External))
+                               .addName ("write",  Fun ({"a"}, External))
+                               .addName ("length", Fun ({"a"}, External))
+                               .addName ("stringval", Fun ({"a"}, External)),
+                 createWorld (input)],
+               expr) of
     [c, _] -> c.snd.getOutput
   esac
 }
