@@ -93,26 +93,23 @@ void* Bstring (void *p) {
   return s->contents;
 }
 
-void* Belem (void *p, long j) {
+long Belem (void *p, long j) {
   long  i = UNBOX(j);
   data *a = TO_DATA(p);
   
   if (TAG(a->tag) == STRING_TAG) {
-    return (void*) BOX(a->contents[i]);
+    return BOX(a->contents[i]);
   }
   
-  return (void*) ((long*) a->contents)[i];
+  return ((long*) a->contents)[i];
 }
 
-void* Bsta (void *x, void *j, void *v) {
-  if (UNBOXED(j)) {
-    long i = UNBOX(j);
-    
-    if (TAG(TO_DATA(x)->tag) == STRING_TAG)
-      ((char*) x)[i] = (char) UNBOX(v);
-    else ((long*) x)[i] = (long) v;
-  }
-  else * (void**) x = v;
+long Bsta (void *x, long j, long v) {
+  long i = UNBOX(j);
+  
+  if (TAG(TO_DATA(x)->tag) == STRING_TAG)
+    ((char*) x)[i] = (char) UNBOX(v);
+  else ((long*) x)[i] = v;
 
   return v;
 }
@@ -131,3 +128,71 @@ long Lread () {
   return BOX(result);
 }
 
+long Bread () {
+  return Lread ();
+}
+
+long Bwrite (long x) {
+  Lwrite (x);
+  return BOX(0);
+}
+
+long Blength (void *p) {
+  return Llength (p);
+}
+
+static inline long box_bool (long cond) {
+  return BOX(cond ? 1 : 0);
+}
+
+long Badd (long x, long y) {
+  return BOX (UNBOX (x) + UNBOX (y));
+}
+
+long Bsub (long x, long y) {
+  return BOX (UNBOX (x) - UNBOX (y));
+}
+
+long Bmul (long x, long y) {
+  return BOX (UNBOX (x) * UNBOX (y));
+}
+
+long Bdiv (long x, long y) {
+  return BOX (UNBOX (x) / UNBOX (y));
+}
+
+long Bmod (long x, long y) {
+  return BOX (UNBOX (x) % UNBOX (y));
+}
+
+long Beq (long x, long y) {
+  return box_bool (UNBOX (x) == UNBOX (y));
+}
+
+long Bneq (long x, long y) {
+  return box_bool (UNBOX (x) != UNBOX (y));
+}
+
+long Blt (long x, long y) {
+  return box_bool (UNBOX (x) < UNBOX (y));
+}
+
+long Ble (long x, long y) {
+  return box_bool (UNBOX (x) <= UNBOX (y));
+}
+
+long Bgt (long x, long y) {
+  return box_bool (UNBOX (x) > UNBOX (y));
+}
+
+long Bge (long x, long y) {
+  return box_bool (UNBOX (x) >= UNBOX (y));
+}
+
+long Band (long x, long y) {
+  return box_bool ((UNBOX (x) != 0) && (UNBOX (y) != 0));
+}
+
+long Bor (long x, long y) {
+  return box_bool ((UNBOX (x) != 0) || (UNBOX (y) != 0));
+}
