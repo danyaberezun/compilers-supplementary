@@ -2,6 +2,7 @@
 -- We use stack machine programs as intermediate representation
 import SM;
 import Collection;
+import Array;
 import List;
 import Buffer;
 import Fun;
@@ -112,7 +113,10 @@ fun insnString (insn) {
   | Sal   (s)          -> sprintf ("\tsalq\t%s\n", s)
   | IDiv  (s1)         -> sprintf ("\tidivq\t%s\n", opndString (s1))
   | Binop (op, s1, s2) -> sprintf ("\t%s\t%s,\t%s\n", binopString (op), opndString (s1), opndString (s2))
-  | Mov   (s1, s2)     -> sprintf ("\tmovq\t%s,\t%s\n", opndString (s1), opndString (s2))
+  | Mov   (s1, s2)     -> 
+      if compare (s1, s2) != 0
+      then sprintf ("\tmovq\t%s,\t%s\n", opndString (s1), opndString (s2))
+      else "" fi
   | Lea   (s1, s2)     -> sprintf ("\tleaq\t%s,\t%s\n", opndString (s1), opndString (s2))
   | Push  (s)          -> sprintf ("\tpushq\t%s\n", opndString (s))
   | Pop   (s)          -> sprintf ("\tpopq\t%s\n", opndString (s))
@@ -402,7 +406,7 @@ fun dataDef (name) {
 fun prologue (fLabel) {
   singletonBuffer (Push  (rbp)) <+
   Mov   (rsp, rbp) <+
-  Binop ("-", L (sprintf ("$%s_SIZE", fLabel)), rsp)  
+  Binop ("-", L (sprintf ("$%s_SIZE", fLabel)), rsp)
 }
 
 fun epilogue (env) {
@@ -427,9 +431,10 @@ fun stackOpnd (opnd) {
 -- Checks if an operand resides in memory
 fun memOpnd (opnd) {
   case opnd of
-    S (_) -> true
-  | M (_) -> true
-  | _     -> false
+    S (_)    -> true
+  | M (_)    -> true
+  | I (_, _) -> true
+  | _        -> false
   esac
 }
 
@@ -478,7 +483,27 @@ fun savecode (env, nA) {
 -- 4. discard those parameters that were passed through stack from the stack;
 -- 5. restore saved live registers.         
 fun call (env, fLabel, nA) {
-  failure ("calls not implemented")
+  let regs = env.liveRegisters (nA) in
+  let saveRegCode = foldl (fun (buf, reg) {
+    buf <+ Push (reg)
+  }, emptyBuffer (), regs) in
+  let [env, putArgCode, nArgsOnStack] = foldl (fun ([env, putArgCode, nArgsOnStack], i) {
+    if i < nRegArgs then
+      let [s, env] = env.pop in
+      [env, putArgCode <+ Mov (s, R (i)), nArgsOnStack]
+    else
+      let [s, env] = env.pop in
+      [env, putArgCode <+ Push (s), nArgsOnStack + 1]
+    fi
+  }, [env, emptyBuffer (), 0], initArray (nA, id).arrayList.reverse) in
+  let discardArgCode = foldl (fun (discardArgCode, i) {
+    discardArgCode <+ Pop (rdx)
+  }, emptyBuffer (), initArray (nArgsOnStack, id).arrayList) in
+  let loadRegCode = foldl (fun (buf, reg) {
+    buf <+ Pop (reg)
+  }, emptyBuffer (), regs.reverse) in
+  let [s, env] = env.allocate in
+  [env, saveRegCode <+> putArgCode <+ Call (fLabel) <+> discardArgCode <+> loadRegCode <+ Mov (rax, s)]
 }
 
 -- Gets a suffix for Set instruction from
@@ -497,28 +522,100 @@ fun suffix (op) {
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
+  fun correctDiv (s1, s2, s, resReg) {
+    case s1 of
+      R (2) -> emptyBuffer () <+ Push (rcx) <+ Mov (rdx, rcx) <+ Mov (s2, rax) <+ Cltd <+ IDiv (rcx) <+ Mov (resReg, s) <+ Mov (rcx, rdx) <+ Pop (rcx)  -- да, костыль ¯\_(ツ)_/¯
+    | _     -> emptyBuffer () <+ Mov (s2, rax) <+ Cltd <+ IDiv (s1) <+ Mov (resReg, s)
+    esac
+  }
+  
+  -- DEBUG
+  -- if compare(sysargs[1], "test031.lama") == 0
+  -- then failure (showSM (code))
+  -- fi;
+
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
 
+      -- DEBUG
       -- printf ("compiling %s\n", showSMInsn (i));
       
-      case i of      
-        READ ->
+      case i of
+
+      -- == ARITHMETICS ==
+        CONST (n) ->
+          let [s, env] = env.allocate in
+          [env, code <+ Mov (L (n), s)]
+      | BINOP (op) ->
+          let [s1, env] = env.pop in
+          let [s2, env] = env.pop in
+          let [s , env] = env.allocate in
+          case op of
+            "/"  -> [env, code <+> correctDiv (s1, s2, s, rax)]
+          | "%"  -> [env, code <+> correctDiv (s1, s2, s, rdx)]
+          | "&&" -> [env, code <+ Binop ("cmp", L (0), s1) <+ Set ("ne", "%al") <+ Binop ("&&", L (1), rax) <+ Binop ("cmp", L (0), s2) <+ Set ("ne", "%dl") <+ Binop ("&&", L (1), rdx) <+ Binop ("&&", rdx, rax) <+ Mov (rax, s)]
+          | "!!" -> [env, code <+ Binop ("cmp", L (0), s1) <+ Set ("ne", "%al") <+ Binop ("&&", L (1), rax) <+ Binop ("cmp", L (0), s2) <+ Set ("ne", "%dl") <+ Binop ("&&", L (1), rdx) <+ Binop ("!!", rdx, rax) <+ Mov (rax, s)]
+          | _    -> case assoc ({ ["<", 0], ["<=", 0], ["==", 0], ["!=", 0], [">=", 0], [">", 0] }, op) of
+                      None     -> [env, code <+ Binop (op, s1, s2) <+ Mov (s2, s)]
+                    | Some (_) -> [env, code <+ Binop ("cmp", s1, s2) <+ Set (suffix (op), "%al") <+ Binop ("&&", L (1), rax) <+ Mov (rax, s)]
+                    esac
+          esac
+      | DUP ->
+          let s = env.peek in
+          let [s1, env] = env.allocate in
+          [env, code <+ Mov (s, s1)]
+      | DROP ->
+          let [_, env] = env.pop in
+          [env, code]
+
+      -- == MEMORY ==
+      | LD (x) ->
+          let [s, env] = env.allocate in
+          [env, code <+> move (env.loc (x), s)]
+      | LDA (x) ->
+          let [s, env] = env.allocate in
+          [env, code <+ Lea (env.loc (x), s)]
+      | ST (x) ->
+          let [s, env] = env.pop in
+          [env, code <+> move (s, env.loc (x))]
+      | STI ->
+          let [sa, env] = env.pop in
+          let sx = env.peek in
+          [env, code <+> move (sx, I (0, sa))]
+      | GLOBAL (x) ->
+          let env = env.addGlobal (x) in
+          [env, code]
+
+      -- == IO ==  
+      | READ ->
           let [env, callCode] = call (env, "Lread", 0) in
-	  [env, code <+> callCode]
+	        [env, code <+> callCode]
       | WRITE ->
           let [env, callCode] = call (env, "Lwrite", 1) in
-	  [env, code <+> callCode]
-	  
-      (* Assignment        
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-      *)
-        
+          let [_, env] = env.pop in
+	        [env, code <+> callCode]
+
+      -- == CONTROL FLOW ==
+      | LABEL (l) -> [env.retrieveStack (l), code <+ Label (l)]
+      | JMP (l) -> [env.setStack (l), code <+ Jmp (l)]
+      | CJMP (c, l) -> 
+          let [s, env] = env.pop in
+          [env.setStack (l), code <+ Binop ("cmp", L (0), s) <+ CJmp (c, l)]
+
+      -- == FUNCTIONS ==
+      | CALL (f, n) ->
+          let [env, callCode] = call (env, f, n) in
+          [env, code <+> callCode]
+      | BEGIN (f, na, nl) ->
+          let env = env.enterFunction (f, na, nl) in
+          [env, code <+> prologue (f)]
+      | END ->
+          -- printf ("end %s\n", env.currentFunction);
+          let [env, endCode] = epilogue (env) in
+          [env, code <+> endCode]
+
+      -- == OTHER ==
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
