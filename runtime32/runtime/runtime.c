@@ -2,6 +2,7 @@
 # include <stdlib.h>
 # include <stdarg.h>
 # include <string.h>
+# include <stdlib.h>
 
 # define UNBOXED(x)  (((int) (x)) &  0x0001)
 # define UNBOX(x)    (((int) (x)) >> 1)
