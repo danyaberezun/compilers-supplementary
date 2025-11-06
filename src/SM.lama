@@ -63,22 +63,49 @@ fun fromLabel (env, lab) {
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-   foldl(fun (c, x) {
-        case x of
-          READ     -> (
-                         var value = readWorld(c[2]);
-                         
-                         c[2] := value[1];
-                         pushS(c, value[0])
-                      )
-        | WRITE    -> (c[2] := writeWorld(popS(c), c[2]))
-        | BINOP(s) -> pushS(c, evalOp(s, popS(c), popS(c)))
-        | LD(x)    -> pushS(c, c[1](x))
-        | ST(x)    -> (c[1] := c[1] <- [x, popS(c)])
-        | CONST(n) -> pushS(c, n)
-        esac;
-        c
-     }, c, insns)
+   fun run(c, insn) {
+      var tgt = None;
+      case insn of
+         READ     -> (
+                        var value = readWorld(c[2]);
+                        
+                        c[2] := value[1];
+                        pushS(c, value[0])
+                     )
+      | WRITE    -> (c[2] := writeWorld(popS(c), c[2]))
+      | BINOP(s) -> pushS(c, evalOp(s, popS(c), popS(c)))
+      | LD(x)    -> pushS(c, c[1](x))
+      | ST(x)    -> (c[1] := c[1] <- [x, popS(c)])
+      | CONST(n) -> pushS(c, n)
+      | LABEL(s) -> true  -- do nothing
+      | JMP(l)   -> (tgt := Some(l))
+      | CJMP(j, l) -> (
+         var value = popS(c);
+         case j of
+           "z"  -> if value == 0 then tgt := Some(l) else 0 fi
+         | "nz" -> if value == 0 then 0 else tgt := Some(l) fi
+         esac
+      )
+      esac;
+      [c, tgt]
+   }
+
+  fun evalInsns(c, insns) {
+   case insns of
+        [] -> c
+      | {} -> c
+      | x:xs -> (
+        let [c, tgt] = run(c, x) in
+        case tgt of
+          None -> evalInsns(c, xs)
+        | Some(x) -> evalInsns(c, env.fromLabel(x))
+        esac
+      )
+   esac
+  }
+
+  -- printf("%s\n", insns.string); c
+  evalInsns(c, insns)
 }
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM (input, insns) {
@@ -111,9 +138,9 @@ fun genLabels (env, n) {
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
    case expr of
-     Var(x)                 -> {LD(x)}
-   | Const(x)               -> {CONST(x)}
-   | Binop(op, left, right) -> compileExpr(right) +++ compileExpr(left) +++ {BINOP(op)}
+     Var(x)                 -> singletonBuffer(LD(x))
+   | Const(x)               -> singletonBuffer(CONST(x))
+   | Binop(op, left, right) -> compileExpr(right) <+> compileExpr(left) <+ BINOP(op)
    esac
 }
 -- Compiles a statement into a stack machine code.
@@ -150,7 +177,25 @@ public fun compileSM (stmt) {
                                                                        esac
                                          esac
                        esac
-      | _           -> failure("compileSM not implemented\n")
+      | While(cond, code) ->
+        let [checkLab, env] = env.genLabel in
+        let [startLab, env] = env.genLabel in
+        let [_, env, codeIn] = compile(checkLab, env, code) in
+        [false, env, singletonBuffer(JMP(checkLab)) <+ LABEL(startLab) <+> codeIn <+ LABEL(checkLab) <+>
+         compileExpr(cond) <+ CJMP("nz", startLab)]
+      | DoWhile(cond, code) ->
+        let [checkLab, env] = env.genLabel in
+        let [startLab, env] = env.genLabel in
+        let [checkLabUsed, env, codeIn] = compile(checkLab, env, code) in
+        [false, env, emptyBuffer()                  <+ LABEL(startLab) <+> codeIn <+> label(checkLab, checkLabUsed) <+>
+         compileExpr(cond) <+ CJMP("nz", startLab)]
+      | If(cond, tru, fls) ->
+        let [truLab, env] = env.genLabel in
+        let [_, env, codeFls] = compile(lab, env, fls) in
+        let [_, env, codeTru] = compile(lab, env, tru) in
+        [true, env, compileExpr(cond) <+ CJMP("nz", truLab) <+> codeFls <+ JMP(lab) <+
+         LABEL(truLab) <+> codeTru]  -- LABEL(lab) auto inserted
+      | _           -> failure("compileSM not implemented: %s\n", stmt.string)
       esac
    }
    
