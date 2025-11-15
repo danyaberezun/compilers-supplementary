@@ -72,6 +72,44 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+
+fun pushS (c, value) {
+   c[0] := value : c[0]
+}
+fun popS (c) {
+   case c[0] of
+     {}    -> failure("empty stack")
+   | x: xs -> case x of
+                #val -> (
+                 c[0] := xs;
+                 x
+                )
+              | _ -> failure("Expected a value on stack, got %s", x.string)
+              esac
+   esac
+}
+fun topS (c) {
+   case c[0] of
+     {}    -> failure("empty stack")
+   | x: xs -> case x of
+                #val -> x
+              | _ -> failure("Expected a value on stack, got %s", x.string)
+              esac
+   esac
+}
+fun popRefS (c) {
+   case c[0] of
+     {}    -> failure("empty stack")
+   | x: xs -> case x of
+                #str -> (
+                 c[0] := xs;
+                 x
+                )
+              | _ -> failure("Expected a reference on stack, got %s", x.string)
+              esac
+   esac
+}
+
 -- Stack machine interpreter. Takes an environment, a world and a program,
 -- returns a final output
 fun eval (env, w, insns) {
@@ -119,7 +157,60 @@ fun eval (env, w, insns) {
   -- Core interpreter: takes a configuration and a program, returns a configuration
   (* Assignment *)
   fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+
+   fun run(c, insn) {
+      var tgt = None;
+      case insn of
+         READ     -> (
+                        var value = readWorld(c[2]);
+
+                        c[2] := value[1];
+                        pushS(c, value[0])
+                     )
+      | WRITE    -> (c[2] := writeWorld(popS(c), c[2]))
+      | BINOP(s) -> pushS(c, evalOp(s, popS(c), popS(c)))
+      | LD(x)    -> pushS(c, c[1](x))
+      | LDA(x)   -> pushS(c, x)
+      | ST(x)    -> (c[1] := c[1] <- [x, topS(c)])
+      | STI      -> (
+        var value = popS(c);
+        var ref = popRefS(c);
+        c[1] := c[1] <- [ref, value];
+        pushS(c, value)
+      )
+      | CONST(n) -> pushS(c, n)
+      | LABEL(s) -> skip
+      | JMP(l)   -> (tgt := Some(l))
+      | CJMP(j, l) -> (
+         var value = popS(c);
+         case j of
+           "z"  -> if value == 0 then tgt := Some(l) else 0 fi
+         | "nz" -> if value == 0 then 0 else tgt := Some(l) fi
+         esac
+      )
+      | DUP     -> pushS(c, topS(c))
+      | DROP    -> popS(c)
+      esac;
+      -- printf("Exec %s, ended up with %s\n", insn.string, c.string);
+      [c, tgt]
+   }
+
+  fun evalInsns(c, insns) {
+   case insns of
+        [] -> c
+      | {} -> c
+      | x:xs -> (
+        let [c, tgt] = run(c, x) in
+        case tgt of
+          None -> evalInsns(c, xs)
+        | Some(x) -> evalInsns(c, env.fromLabel(x))
+        esac
+      )
+   esac
+  }
+
+  -- printf("%s\n", insns.string); c
+  evalInsns(c, insns)
   }
   (* End *)
   
@@ -362,10 +453,48 @@ public fun compileSM (stmt) {
   fun compile (lab, env, stmt) {
     case stmt of
       Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 ->  failure ("compileSM not implemented\n")
+    | Var   (x)         -> [false, env, singletonBuffer (LD (x))]
+    | Ref   (x)         -> [false, env, singletonBuffer (LDA (x))]
+    | Const (n)         -> [false, env, singletonBuffer (CONST (n))]
+    | Read  (x)         -> [false, env, singletonBuffer (READ) <+ ST(x) <+ DROP]
+    | Write (e)         -> let [labUsed, env, buf] = compile(lab, env, e) in [false, env, buf <+> label(lab, labUsed) <+ WRITE]
+    | Assn  (Ref(x), f) -> let [labUsed, env, buf] = compile(lab, env, f) in [false, env, buf <+> label(lab, labUsed) <+ ST(x)]
+    | Assn  (x, f)      -> let [lab2, env] = env.genLabel in
+                           let [labUsed, env, buf] = compile(lab, env, f) in
+                           let [lab2Used, env, buf2] = compile(lab2, env, x) in
+                           [false, env, buf2 <+> label(lab2, lab2Used) <+> buf <+> label(lab, labUsed) <+ STI]
+    | Binop (op, l, r)  -> let [lab2, env] = env.genLabel in
+                           let [labUsed, env, buf] = compile(lab, env, l) in
+                           let [lab2Used, env, buf2] = compile(lab2, env, r) in
+                           [false, env, buf2 <+> label(lab2, lab2Used) <+> buf <+> label(lab, labUsed) <+ BINOP(op)]
+    | Ignore(e)         -> let [labUsed, env, buf] = compile(lab, env, e) in [false, env, buf <+> label(lab, labUsed) <+ DROP]
+    | Seq   (l, r)      -> let [lab2, env] = env.genLabel in
+                           let [labUsed, env, buf] = compile(lab, env, r) in
+                           let [lab2Used, env, buf2] = compile(lab2, env, l) in
+                           [labUsed, env, buf2 <+> label(lab2, lab2Used) <+> buf]
+    | While(cond, code) ->
+      let [checkLab, env] = env.genLabel in
+      let [startLab, env] = env.genLabel in
+      let [_, env, codeIn] = compile(checkLab, env, code) in
+      let [labUsed, env, codeCond] = compile(lab, env, cond) in
+      [false, env, singletonBuffer(JMP(checkLab)) <+ LABEL(startLab) <+> codeIn <+ LABEL(checkLab) <+>
+        codeCond <+> label(lab, labUsed) <+ CJMP("nz", startLab)]
+    | DoWhile(cond, code) ->
+      let [checkLab, env] = env.genLabel in
+      let [startLab, env] = env.genLabel in
+      let [checkLabUsed, env, codeIn] = compile(checkLab, env, code) in
+      let [labUsed, env, codeCond] = compile(lab, env, cond) in
+      [false, env, emptyBuffer()                  <+ LABEL(startLab) <+> codeIn <+> label(checkLab, checkLabUsed) <+>
+        codeCond <+> label(lab, labUsed) <+ CJMP("nz", startLab)]
+    | If(cond, tru, fls) ->
+      let [truLab, env] = env.genLabel in
+      let [condLab, env] = env.genLabel in
+      let [_, env, codeFls] = compile(lab, env, fls) in
+      let [_, env, codeTru] = compile(lab, env, tru) in
+      let [labUsed, env, codeCond] = compile(condLab, env, cond) in
+      [true, env, codeCond <+> label(condLab, labUsed) <+ CJMP("nz", truLab) <+> codeFls <+ JMP(lab) <+
+        LABEL(truLab) <+> codeTru]  -- LABEL(lab) auto inserted
+    | _                 -> failure ("compileSM not implemented on %s\n", stmt.string)
     esac
   }
 
