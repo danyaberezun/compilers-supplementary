@@ -25,7 +25,7 @@ var regs = ["%rdi", "%rsi", "%rdx", "%rcx",
 -- We can not freely operate with all register; only with 13 by now;
 -- we also notify that the 6 first register are used to
 -- pass arguments to a function
-var nRegs    = regs.length - 4,
+var nRegs    = regs.length - 5,
     nRegArgs = 6;
 
 -- For convenience we define the following synonyms for the registers: 
@@ -196,7 +196,10 @@ fun makeEnv (stack, stackSlots, globals, strings, stringIndex, barrier, stackMap
 
   -- Peeks the top of the symbolic stack
   fun peek () {
-    stack.fst
+    case stack of
+      x:xs -> x
+    | {} -> failure("Attempted to peek at empty stack\n")
+    esac
   }
   
   -- Adds a global variable; returns an updated environment
@@ -303,7 +306,7 @@ fun makeEnv (stack, stackSlots, globals, strings, stringIndex, barrier, stackMap
   }
 
   fun freeReg (R (i)) {
-    stack.size <= i  
+    stack.size <= i
   }
 
   fun stackDepth () {
@@ -433,6 +436,16 @@ fun addTag (env, tag) {
   env [22] (tag)
 }
 
+fun popN(env, n) {
+  var x, pops = {};
+  for var i; i := 0, i < n, i := i + 1 do
+    x := pop(env);
+    pops := x[0] : pops;
+    env := x[1]
+  od;
+  [pops, env]
+}
+
 -- Creates an initial environment
 fun initEnv () {
   makeEnv ({}, 0, emptySet (compare), emptySet (compare), 0, false, emptyMap (compare), "", 1)
@@ -494,12 +507,13 @@ fun memOpnd (opnd) {
   esac
 }
 
--- Enframes a rdx-using code with save/restore
--- if RDX is occupied
-fun withRDX (env, code) {
-  if env.freeReg (rdx)
-  then code  
-  else singletonBuffer (Push (rdx)) <+> code <+ Pop (rdx)
+(* Enframes a X-using code with save/restore if register Y is occupied *)
+fun withSave (env, x, y, code) {
+  if env.freeReg (y)
+  then code
+  -- forgive me
+  -- else singletonBuffer (Push (x)) <+> code <+ Pop (x)
+  else singletonBuffer (Mov (x, rbx)) <+> code <+ Mov (rbx, x)
   fi
 }
 
@@ -527,15 +541,59 @@ fun savecode (env, nA) {
            [singletonBuffer (Push (r)) <+> pushs, pops <+ Pop (r)]
          },
 	 [emptyBuffer (), emptyBuffer ()],
-	 env.liveRegisters (nA)
+	 liveRegisters (env, nA)
   )
+}
+
+fun moveArgs(pops, start, moveDirection) {
+  fun moveArgsN(pops, idx) {
+    fun doMove(x, xs) {
+      case moveDirection of
+        Positive -> singletonBuffer(Mov(x, R(idx))) <+> moveArgsN(xs, idx + 1)
+      | Negative -> moveArgsN(xs, idx + 1) <+ Mov(x, R(idx))
+      esac
+    }
+
+    case pops of
+      {} -> emptyBuffer()
+    | x:xs ->
+      if idx >= nRegArgs then
+        moveArgsN(xs, idx + 1) <+ Push(x)
+      else
+        case x of
+          R(u) -> if u == idx then moveArgsN(xs, idx + 1) else doMove(x, xs) fi
+        | _ -> doMove(x, xs)
+        esac
+      fi
+    esac
+  }
+
+  moveArgsN(pops, start)
 }
 
 -- Generates a static call
 -- Don't forget to handle buitins (Barray/Bsexp), and
 -- to clear rax before calling to variable arg funcatio
 fun call (env, fLabel, nA) {
-  emptyBuffer ()
+  let [env, pushs, code] = callShifted(env, fLabel, nA, 0)
+  in [env, pushs <+> code]
+}
+
+(* Same as call, but also keeps nShifts registers on the bottom of symbolic stack to be filled before the call *)
+fun callShifted(env, fLabel, nA, nS) {
+  let [pushs, pops] = savecode(env, nA + nS) in
+  let [movedStack, env] = popN(env, nA) in
+  -- If arguments move down the stack (i.e. rsi -> rdi, rdx -> rsi, rcx -> rdx), we should start from the highest argument
+  -- If arguments move up the stack (i.e. rdx -> rcx, rsi -> rdx, rdi -> rsi), we should start from the lowest argument
+  -- The only case when the latter happens is when we try to call a function with big nS (i.e. 1) and empty stack
+  -- (or rather, "empty enough" stack) 
+  let moveDirection = case movedStack of
+    {} -> Positive
+  | R(k):xs -> if k < nS then Negative else Positive fi
+  | _ -> Positive
+  esac in
+  let [pos, env] = env.allocate in
+  [env, pushs <+> moveArgs(movedStack, nS, moveDirection), singletonBuffer(Call (fLabel)) <+> pops <+ Mov(rax, pos)]
 }
 
 -- Gets a suffix for Set instruction from
@@ -562,6 +620,50 @@ fun toFixedNum (r) {
   singletonBuffer (Sal1 (r)) <+ Or1 (r)
 }
 
+fun compileCmp(env, left, op, right) {
+  emptyBuffer()
+    <+ Mov (right, rax) <+ Binop("cmp", rax, left) <+ Mov(L(0), rax) <+ Set(suffix(op), "%al")
+}
+
+(* Fixes code that unfortunately is hardcoded in the CPU to clobber the rdx register, so it works when its operand is itself rdx.
+   After callee finishes, rdx will return to its previous state, so results must be gathered earlier. *)
+fun rdxSwap(field, code) {
+  fun doSwap() {
+    emptyBuffer() <+ Mov(rdx, rbx) <+> code(rbx) <+ Mov(rbx, rdx)
+  }
+
+  case field of
+    R(n) -> if n == rdx[0] then doSwap() else code(field) fi
+  | _ -> code(field)
+  esac
+}
+
+fun compileBinop(env, left, op, right) {
+  case op of
+       "+" -> emptyBuffer() <+ Mov (left, rax) <+ Binop(op, right, rax)
+    |  "*" -> withSave(env, rdx, rdx, emptyBuffer() <+ Mov (left, rax) <+ Binop(op, right, rax))
+    |  "-" -> emptyBuffer() <+ Mov (left, rax) <+ Binop(op, right, rax)
+    |  "/" -> withSave(env, rdx, rdx, emptyBuffer() <+ Mov (left, rax) <+> rdxSwap(right, fun(t) { singletonBuffer(Cltd) <+ IDiv(t) }))
+    |  "%" -> withSave(env, rdx, rdx, emptyBuffer() <+ Mov (left, rax) <+> rdxSwap(right, fun(t) { singletonBuffer(Cltd) <+ IDiv(t) <+ Mov(rdx, rax) }))
+    |  "<" -> compileCmp(env, left, op, right)
+    |  ">" -> compileCmp(env, left, op, right)
+    | "==" -> compileCmp(env, left, op, right)
+    | "!=" -> compileCmp(env, left, op, right)
+    | "<=" -> compileCmp(env, left, op, right)
+    | ">=" -> compileCmp(env, left, op, right)
+    | "!!" -> emptyBuffer() <+ Mov(L(0), rax)
+      <+ Binop("cmp", L(0), left)  <+ Set("nz", "%al") <+ Mov(rax, left)
+      <+ Binop("cmp", L(0), right) <+ Set("nz", "%al")
+      <+ Binop("!!", left, rax)
+    | "&&" ->
+      emptyBuffer() <+ Mov(L(0), rax)
+      <+ Binop("cmp", L(0), left)  <+ Set("nz", "%al") <+ Mov(rax, left)
+      <+ Binop("cmp", L(0), right) <+ Set("nz", "%al")
+      <+ Binop("&&", left, rax)
+    |    _ -> failure ("Binop %s not yet implemented\n", op)
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -571,41 +673,91 @@ fun compile (env, code) {
 
       -- printf ("compiling %s\n", showSMInsn (i));
       
-      case i of      
-        READ ->
-          let [env, callCode] = call (env, "Lread", 0) in
-	  [env, code <+> callCode]
-      | WRITE ->
-          let [env, callCode] = call (env, "Lwrite", 1) in
-	  [env, code <+> callCode]
-	  
-      (* Assignment
-        1
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-      *)         
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)      
-      esac        
+      case i of
+        ST(x) ->
+          let s = env.peek in
+          let env = case x of
+              Glb(y) -> env.addGlobal(y)
+            | Arg(_) -> env
+            | Loc(_) -> env
+            | _ -> failure("Unexpected ST instruction operand %s\n", x.string)
+          esac in
+          [env, code <+> move(s, env.loc(x))]
+      | STI ->
+          let [value, env] = env.pop in
+          let [addr, env] = env.pop in
+          let env = env.push(value) in
+          [env, code <+> move(value, I(0, addr))]
+      | LD(x) ->
+          let [s, env] = env.allocate in
+          [env, code <+> move(env.loc(x), s)]
+      | LDA(x) ->
+          let [s, env] = env.allocate in
+          [env, code <+ Lea(env.loc(x), s)]
+      | CONST(n) ->
+          let [s, env] = env.allocate in
+          [env, code <+> move(L(n), s)]
+      | BINOP(p) ->
+          let [fst, env] = env.pop in
+          let [snd, env] = env.pop in
+          let binopCode = compileBinop(env, fst, p, snd) in
+          let [s, env] = env.allocate in
+          [env, code <+> binopCode <+ Mov(rax, s)]
+      | LABEL(x) ->
+          let env = if env.isBarrier then env.retrieveStack(x) else env fi in
+          [env, code <+ Label(x)]
+      | JMP(x) ->
+          let env = env.setStack(x) in
+          let env = env.setBarrier in
+          [env, code <+ Jmp(x)]
+      | CJMP(c, x) ->
+          let [k, env] = env.pop in
+          let env = env.setStack(x) in
+          [env, code <+ Binop("cmp", L(0), k) <+ CJmp(c, x)]
+      | DROP ->
+          let [s, env] = env.pop in
+          [env, code]
+      -- TODO: stack calling conventions might require editing this.
+      | BEGIN(label, a, l) ->
+          let env = enterFunction(env, label, a, l) in
+          [env, code <+> prologue(label)]
+      | END ->
+          let [env, compiled] = epilogue(env) in
+          [env, code <+> compiled]
+      | CALL(lab, nArgs) ->
+          let [env, compiled] = call(env, lab, nArgs) in
+          [env, code <+> compiled]
+      | BUILTIN(lab, nArgs) ->
+          let [env, compiled] = call(env, sprintf("L%s", lab), nArgs) in
+          [env, code <+> compiled]
+      | STRING(string) ->
+          let [env, stidx] = env.addString(string) in
+          let [s, env] = env.allocate in
+          let [env, compiled] = call(env, "Bstring", 1) in
+          [env, code <+ Lea(M(stidx), s) <+> compiled]
+      | ELEM ->
+          let [env, compiled] = call(env, "Belem", 2) in
+          [env, code <+> compiled]
+      | STA ->
+          let [env, compiled] = call(env, "Bsta", 3) in
+          [env, code <+> compiled]
+      | ARRAY(n) ->
+          let [env, saves, compiled] = callShifted(env, "Barray", n, 1) in
+          [env, code <+> saves <+> withSave(env, R(0), R(1), move(L(n), R(0)) <+> compiled)]
+      | SEXP(tag, nargs) ->
+          let [env, stidx] = env.addString(tag) in
+          let [s, env] = env.allocate in
+          let [env, saves, compiled] = callShifted(env, "Bsexp", nargs + 1, 1) in
+          [env, code <+ Lea(M(stidx), s) <+> saves <+> withSave(env, R(0), R(1), move(L(nargs), R(0)) <+> compiled)]
+      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      esac
     }, [env, emptyBuffer ()], code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
-public fun compileX86 (args, code) {
-  case compile (initEnv (), code) of
+public fun compileX86 (args, code1) {
+  case compile (initEnv (), code1) of
     [env, code] ->
        var asmFile = args.getBaseName ++ ".s",
            runtime = case getEnv ("LAMA_RUNTIME") of

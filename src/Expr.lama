@@ -8,6 +8,7 @@ import Lexer;
 import Parser;
 import Fun;
 import Builtins;
+import Values;
 
 -- As association map which maps "\otimes" into "\oplus"
 var ops = {
@@ -59,27 +60,13 @@ public fun evalOp (op, l, r) {
 --        ElemRef (expr, expr)         |
 --        Builtin (string, expr list)
 
--- Helper function: checks that given name designates a regular variable in
--- a given state
-fun lookupVal (state, name) {
-  case state.lookup (name) of
-    x@Val (_) -> x
-  | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
-  esac
-}
-
--- Helper function: checks that given name designates a function in
--- a given state
-fun lookupFun (state, name) {
-  case state.lookup (name) of
-    x@Fun (_, _) -> x
-  | _            -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
-  esac
-}
-
 -- Helper function: adds a bunch of regular variables current scope
 fun addNames (state, names) {
   foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
+}
+
+fun addNamesValues (state, names, values) {
+  foldl (fun (s, [name, value]) { s.addName(name, value) }, state, zip(names, values))
 }
 
 -- Helper function: adds a function in current scope
@@ -101,8 +88,143 @@ fun evalList (c, exprs) {
   esac
 }
 
+fun evalRef(c, expr) {
+  let [c, out] = eval(c, expr) in
+  case out of
+    Ref(_) -> [c, out]
+  | ArrRef(_, _) -> [c, out]
+  | _ -> failure("Expected ref, got %s", out.string)
+  esac
+}
+
+fun evalVal(c, expr) {
+  let [c, out] = eval(c, expr) in
+  case out of
+    Val(x) -> [c, x]
+  | _ -> failure("Expected val, got %s", out.string)
+  esac
+}
+
+fun evalComposite(c, expr) {
+  let [c, out] = eval(c, expr) in
+  case out of
+    Composite(x) -> [c, x]
+  | _ -> failure("Expected composite, got %s", out.string)
+  esac
+}
+
+fun evalFun(c, expr) {
+  let [c, out] = eval(c, expr) in
+  case out of
+    Fun(u, f) -> [c, [u, f]]
+  | _ -> failure("Expected fun, got %s", out.string)
+  esac
+}
+
+fun evalObject(c, expr) {
+  let [c, out] = eval(c, expr) in
+  case out of
+    Val(x) -> [c, out]
+  | Composite(x) -> [c, out]
+  | _ -> failure("Expected obj, got %s", out.string)
+  esac
+}
+
+fun evalVoid(c, expr) {
+  let [c, out] = eval(c, expr) in
+  case out of
+    None -> [c, out]
+  | _ -> failure("Expected void, got %s", out.string)
+  esac
+}
+
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+      Assn(to, from) ->
+        let [c, ref] = evalRef(c, to) in
+        let [[s, w], output] = evalObject(c, from) in
+        case ref of
+          Ref(ref) -> [[s <- [ref, output], w], output]
+        | ArrRef(arr, idx) -> (tryAssign(arr, idx, output); [[s, w], output])
+        esac
+    | Seq(fst, snd) ->
+        let [c, out] = evalVoid(c, fst) in eval(c, snd)
+    | Skip -> [c, None]
+    | If(cond, tru, fls) ->
+        let [c, check] = evalVal(c, cond) in
+        if check then eval(c, tru) else eval(c, fls) fi
+    | While(cond, code) -> (
+        var continue, temp;
+        temp := evalVal(c, cond); c := temp[0]; continue := temp[1];
+        while continue do
+          temp := evalVoid(c, code); c := temp[0];
+          temp := evalVal(c, cond); c := temp[0]; continue := temp[1]
+        od;
+        [c, None]
+      )
+    | DoWhile(cond, code) -> (
+        var continue = true, temp;
+        while continue do
+          temp := evalVoid(c, code); c := temp[0];
+          temp := evalVal(c, cond); c := temp[0]; continue := temp[1]
+        od;
+        [c, None]
+      )
+    | Var(name) -> [c, s.lookup(name)]
+    | Ref(name) -> [c, Ref(name)]
+    | Const(x) -> [c, Val(x)]
+    | Binop(op, left, right) ->
+      let [c, leftV] = evalVal(c, left) in
+      let [c, rightV] = evalVal(c, right) in
+      [c, Val(evalOp(op, leftV, rightV))]
+    | Ignore(expr) -> let [c, dropped] = eval(c, expr) in [c, None]
+    | Scope(decls, stmt) ->
+      let s = s.enterScope in
+      let c = evalDecls([s, w], decls) in
+      let [[s, w], x] = eval(c, stmt) in
+      let s = s.leaveScope in
+      [[s, w], x]
+    | Call(nm, args) ->
+      let [c, [argdefs, code]] = evalFun(c, Var(nm)) in
+      let [[s, w], xs] = c.evalList(args) in
+      let s1 = s in
+      case code of
+        External -> let [rv, w] = evalBuiltin(nm, map(unval, xs), w) in [[s, w], Val(rv)]
+      | _ ->
+        let s = s.enterFunction.addNamesValues(argdefs, xs) in
+        let [[s, w], rv] = eval([s, w], code) in
+        let s = s1.leaveFunction(s.getGlobal) in
+        [[s, w], rv]
+      esac
+    | String(string) -> [[s, w], Composite(string)]
+    | Elem(arr, idx) ->
+      let [c, arr] = evalComposite(c, arr) in
+      let [c, idx] = evalVal(c, idx) in
+      [[s, w], mkBox(tryRead(arr, idx))]
+    | ElemRef(arr, idx) ->
+      let [c, arr] = evalComposite(c, arr) in
+      let [c, idx] = evalVal(c, idx) in
+      [c, ArrRef(arr, idx)]
+    | Array(xs) ->
+      let [[s, w], xs] = c.evalList(xs) in
+      [[s, w], Composite(listArray(map(unval, xs)))]
+    | Sexp(tag, args) ->
+      let [[s, w], args] = c.evalList(args) in
+      [[s, w], Composite(Sexp(tag, listArray(map(unval, args))))]
+    | _ -> failure("Unknown instruction: %s\n", expr.string)
+  esac
+}
+
+fun evalDecls(c, exprs) {
+  fun oneDecl(c@[s, w], expr) {
+    case expr of
+        Var(xs) -> let s = s.addNames(xs) in [s, w]
+      | Fun(nm, args, code) -> let s = s.addFunction(nm, args, code) in [s, w]
+      | _ -> failure("Unknown declaration: %s", expr.string)
+    esac
+  }
+
+  foldl(oneDecl, c, exprs)
 }
 
 

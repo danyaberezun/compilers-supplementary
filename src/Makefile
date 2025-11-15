@@ -15,9 +15,9 @@ Builtins.o: World.o
 
 State.o: Lexer.o Parser.o
 
-Expr.o: State.o Builtins.o
+Expr.o: State.o Builtins.o Values.o
 
-SM.o: State.o World.o Expr.o Parser.o Lexer.o Builtins.o
+SM.o: State.o World.o Expr.o Parser.o Lexer.o Builtins.o Values.o
 
 X86.o: SM.o Manifest.o
 
