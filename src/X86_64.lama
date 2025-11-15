@@ -113,6 +113,7 @@ fun insnString (insn) {
   | IDiv  (s1)         -> sprintf ("\tidivq\t%s\n", opndString (s1))
   | Binop (op, s1, s2) -> sprintf ("\t%s\t%s,\t%s\n", binopString (op), opndString (s1), opndString (s2))
   | Mov   (s1, s2)     -> sprintf ("\tmovq\t%s,\t%s\n", opndString (s1), opndString (s2))
+  | CMov  (c, s1, s2)  -> sprintf ("\tcmov%s\t%s,\t%s\n", c, opndString(s1), opndString(s2))
   | Lea   (s1, s2)     -> sprintf ("\tleaq\t%s,\t%s\n", opndString (s1), opndString (s2))
   | Push  (s)          -> sprintf ("\tpushq\t%s\n", opndString (s))
   | Pop   (s)          -> sprintf ("\tpopq\t%s\n", opndString (s))
@@ -494,6 +495,40 @@ fun suffix (op) {
   esac
 }
 
+
+fun compileCmp(left, op, right) {
+  emptyBuffer()
+    <+ Mov (right, rax) <+ Binop("cmp", rax, left)
+    <+ Mov (L(1), r15) <+ Mov(L(0), rax) <+ CMov(suffix(op), r15, rax)
+}
+
+fun compileBinop(left, op, right) {
+  case op of
+       "+" -> emptyBuffer() <+ Mov (left, rax) <+ Binop(op, right, rax)
+    |  "*" -> emptyBuffer() <+ Mov (left, rax) <+ Binop(op, right, rax)
+    |  "-" -> emptyBuffer() <+ Mov (left, rax) <+ Binop(op, right, rax)
+    |  "/" -> emptyBuffer() <+ Mov (left, rax) <+ Cltd <+ IDiv(right)
+    |  "%" -> emptyBuffer() <+ Mov (left, rax) <+ Cltd <+ IDiv(right) <+ Mov(rdx, rax)
+    |  "<" -> compileCmp(left, op, right)
+    |  ">" -> compileCmp(left, op, right)
+    | "==" -> compileCmp(left, op, right)
+    | "!=" -> compileCmp(left, op, right)
+    | "<=" -> compileCmp(left, op, right)
+    | ">=" -> compileCmp(left, op, right)
+    | "!!" ->
+      emptyBuffer()
+      <+ Mov (L(1), r15)  <+ Mov(L(0), rax)
+      <+ Mov (left, rdx)  <+ Binop("cmp", L(0), rdx) <+ CMov("nz", r15, rax)
+      <+ Mov (right, rdx) <+ Binop("cmp", L(0), rdx) <+ CMov("nz", r15, rax)
+    | "&&" ->
+      emptyBuffer()
+      <+ Mov (L(0), r15)  <+ Mov(L(1), rax)
+      <+ Mov (left, rdx)  <+ Binop("cmp", L(0), rdx) <+ CMov("z", r15, rax)
+      <+ Mov (right, rdx) <+ Binop("cmp", L(0), rdx) <+ CMov("z", r15, rax)
+    |    _ -> failure ("Binop %s not yet implemented\n", op)
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -506,19 +541,47 @@ fun compile (env, code) {
       case i of      
         READ ->
           let [env, callCode] = call (env, "Lread", 0) in
-	  [env, code <+> callCode]
+	        [env, code <+> callCode]
       | WRITE ->
           let [env, callCode] = call (env, "Lwrite", 1) in
-	  [env, code <+> callCode]
-	  
-      (* Assignment        
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-      *)
-        
+	       [env, code <+> callCode]
+      | ST(x) ->
+          let s = env.peek in
+          [env.addGlobal(x), code <+> move(s, env.loc(x))]
+      | STI ->
+          let [value, env] = env.pop in
+          let [addr, env] = env.pop in
+          let env = env.push(value) in
+          [env, code <+> move(value, I(0, addr))]
+      | LD(x) ->
+          let [s, env] = env.allocate in
+          [env, code <+> move(env.loc(x), s)]
+      | LDA(x) ->
+          let [s, env] = env.allocate in
+          [env, code <+ Lea(env.loc(x), s)]
+      | CONST(n) ->
+          let [s, env] = env.allocate in
+          [env, code <+> move(L(n), s)]
+      | BINOP(p) ->
+          let [fst, env] = env.pop in
+          let [snd, env] = env.pop in
+          let binopCode = compileBinop(fst, p, snd) in
+          let [s, env] = env.allocate in
+          [env, (code <+> binopCode) <+ Mov(rax, s)]
+      | LABEL(x) ->
+          let env = if env.isBarrier then env.retrieveStack(x) else env fi in
+          [env, code <+ Label(x)]
+      | JMP(x) ->
+          let env = env.setStack(x) in
+          let env = env.setBarrier in
+          [env, code <+ Jmp(x)]
+      | CJMP(c, x) ->
+          let [k, env] = env.pop in
+          let env = env.setStack(x) in
+          [env, code <+ Binop("cmp", L(0), k) <+ CJmp(c, x)]
+      | DROP ->
+          let [s, env] = env.pop in
+          [env, scode]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
@@ -526,8 +589,8 @@ fun compile (env, code) {
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
-public fun compileX86 (args, code) {
-  case compile (initEnv (), code) of
+public fun compileX86 (args, code1) {
+  case compile (initEnv (), code1) of
     [env, code] ->
        var asmFile = args.getBaseName ++ ".s",
            runtime = case getEnv ("LAMA_RUNTIME") of
