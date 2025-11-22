@@ -52,27 +52,13 @@ public fun evalOp (op, l, r) {
 --        Call    (string, expr list)  |
 --        Ignore  (expr)
 
--- Helper function: checks that given name designates a regular variable in
--- a given state
-fun checkVar (state, name) {
-  case state.lookup (name) of
-    Var (_) -> skip
-  | _       -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
-  esac
-}
-
--- Helper function: checks that given name designates a function in
--- a given state
-fun checkFun (state, name) {
-  case state.lookup (name) of
-    Fun (_, _) -> skip
-  | _          -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
-  esac
-}
-
 -- Helper function: adds a bunch of regular variables current scope
 fun addNames (state, names) {
   foldl (fun (s, name) {s.addName (name, Var (0))}, state, names)
+}
+
+fun addNamesValues (state, names, values) {
+  foldl (fun (s, [name, value]) { s.addName(name, value) }, state, zip(names, values))
 }
 
 -- Helper function: adds a function in current scope
@@ -97,7 +83,7 @@ fun evalList (c, exprs) {
 fun evalRef(c, expr) {
   let [c, out] = eval(c, expr) in
   case out of
-    #str -> [c, out]
+    Ref(x) -> [c, x]
   | _ -> failure("Expected ref, got %s", out.string)
   esac
 }
@@ -105,8 +91,25 @@ fun evalRef(c, expr) {
 fun evalVal(c, expr) {
   let [c, out] = eval(c, expr) in
   case out of
-    #val -> [c, out]
+    Val(x) -> [c, x]
   | _ -> failure("Expected val, got %s", out.string)
+  esac
+}
+
+fun evalFun(c, expr) {
+  let [c, out] = eval(c, expr) in
+  case out of
+    Fun(u, f) -> [c, [u, f]]
+  | _ -> failure("Expected fun, got %s", out.string)
+  esac
+}
+
+fun evalObject(c, expr) {
+  let [c, out] = eval(c, expr) in
+  case out of
+    Val(x) -> [c, out]
+  | Fun(f) -> [c, out]
+  | _ -> failure("Expected obj, got %s", out.string)
   esac
 }
 
@@ -122,13 +125,13 @@ fun eval (c@[s, w], expr) {
   case expr of
       Assn(to, from) ->
         let [c, ref] = evalRef(c, to) in
-        let [[s, w], output] = evalVal(c, from) in
+        let [[s, w], output] = evalObject(c, from) in
         [[s <- [ref, output], w], output]
     | Seq(fst, snd) ->
         let [c, out] = evalVoid(c, fst) in eval(c, snd)
     | Skip -> [c, None]
     | Read(name) ->
-        let [out, w] = readWorld(w) in [[s <- [name, out], w], None]
+        let [out, w] = readWorld(w) in [[s <- [name, Val(out)], w], None]
     | Write(expr) ->
         let [[s, w], out] = evalVal(c, expr) in [[s, writeWorld(out, w)], None]
     | If(cond, tru, fls) ->
@@ -151,16 +154,43 @@ fun eval (c@[s, w], expr) {
         od;
         [c, None]
       )
-    | Var(name) -> [c, s(name)]
-    | Ref(name) -> [c, name]
-    | Const(x) -> [c, x]
+    | Var(name) -> [c, s.lookup(name)]
+    | Ref(name) -> [c, Ref(name)]
+    | Const(x) -> [c, Val(x)]
     | Binop(op, left, right) ->
       let [c, leftV] = evalVal(c, left) in
       let [c, rightV] = evalVal(c, right) in
-      [c, evalOp(op, leftV, rightV)]
+      [c, Val(evalOp(op, leftV, rightV))]
     | Ignore(expr) -> let [c, dropped] = eval(c, expr) in [c, None]
+    | Scope(decls, stmt) ->
+      let s = s.enterScope in
+      let c = evalDecls([s, w], decls) in
+      let [[s, w], x] = eval(c, stmt) in
+      let s = s.leaveScope in
+      [[s, w], x]
+    | Call(nm, args) ->
+      let [c, [argdefs, code]] = evalFun(c, Var(nm)) in
+      let [[s, w], xs] = c.evalList(args) in
+      let s1 = s in
+      let s = s.enterFunction in
+      let s = s.addNamesValues(argdefs, xs) in
+      let [[s, w], rv] = eval([s, w], code) in
+      let s = s1.leaveFunction(s.getGlobal) in
+      [[s, w], rv]
     | _ -> failure("Unknown instruction: %s", expr.string)
   esac
+}
+
+fun evalDecls(c, exprs) {
+  fun oneDecl(c@[s, w], expr) {
+    case expr of
+        Var(xs) -> let s = s.addNames(xs) in [s, w]
+      | Fun(nm, args, code) -> let s = s.addFunction(nm, args, code) in [s, w]
+      | _ -> failure("Unknown declaration: %s", expr.string)
+    esac
+  }
+
+  foldl(oneDecl, c, exprs)
 }
 
 -- Evaluates a program with a given input and returns an output
