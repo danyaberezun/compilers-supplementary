@@ -21,6 +21,7 @@ public fun showSMInsn (i) {
       Arg (i) -> sprintf ("arg[%d]", i)
     | Loc (i) -> sprintf ("loc[%d]", i)
     | Glb (x) -> x
+    | x -> sprintf("%s?", x.string)
     esac
   }
 
@@ -73,23 +74,26 @@ fun fromLabel (env, lab) {
 }
 
 
-fun pushS (c, value) {
-   c[0] := value : c[0]
+fun pushS (st, value) {
+  case value of
+      #val -> value : st
+    | Glb(_) -> value : st
+    | Arg(_) -> value : st
+    | Loc(_) -> value : st
+    | _ -> failure("Pushing %s onto stack is invalid\n", value.string)
+  esac
 }
-fun popS (c) {
-   case c[0] of
+fun popS (st) {
+   case st of
      {}    -> failure("empty stack")
    | x: xs -> case x of
-                #val -> (
-                 c[0] := xs;
-                 x
-                )
+                #val -> [x, xs]
               | _ -> failure("Expected a value on stack, got %s", x.string)
               esac
    esac
 }
-fun topS (c) {
-   case c[0] of
+fun topS (st) {
+   case st of
      {}    -> failure("empty stack")
    | x: xs -> case x of
                 #val -> x
@@ -97,16 +101,15 @@ fun topS (c) {
               esac
    esac
 }
-fun popRefS (c) {
-   case c[0] of
+fun popRefS (st) {
+   case st of
      {}    -> failure("empty stack")
-   | x: xs -> case x of
-                #str -> (
-                 c[0] := xs;
-                 x
-                )
+   | x: xs -> let key = case x of
+                Glb(_) -> x
+              | Arg(_) -> x
+              | Loc(_) -> x
               | _ -> failure("Expected a reference on stack, got %s", x.string)
-              esac
+              esac in [key, xs]
    esac
 }
 
@@ -124,10 +127,14 @@ fun eval (env, w, insns) {
 
   -- Lookups a location in local/global states
   fun lookup ([args, locs], loc) {
-    case loc of
+    let out = case loc of
       Arg (i) -> args[i]
     | Loc (i) -> locs[i]
     | Glb (x) -> deref (globalState) (x)
+    esac in
+    case out of
+      #val -> out
+    | _ -> failure("While looking up at location %s in context %s, got %s, which is not a val\n", loc.string, [args, locs].string, out.string)
     esac
   }
 
@@ -139,6 +146,27 @@ fun eval (env, w, insns) {
     | Glb (x) -> var g = deref (globalState);
                  globalState ::= fun (y) {if compare (x, y) == 0 then v else g (y) fi}
     esac
+  }
+
+  fun listToArray(list, outArray) {
+    fun place(list, idx) {
+      case list of
+        {} -> skip
+      | x:xs -> (outArray[idx] := x; place(xs, idx + 1))
+      esac
+    }
+    place(list, 0);
+    outArray  -- mutated in place
+  }
+
+  fun createLocal(st, n_args, n_locals) {
+    var len = size(st);
+    if len < n_args then
+      failure("Tried to take %d args from stack but currently it is %s", n_args, st.string)
+    fi;
+    let [st, args] = st.take(n_args) in
+    let out_arr = listToArray(args, initArray(n_args, fun(_) { 0 })) in
+    [st, [out_arr, initArray(n_locals, fun(_) { 0 })]]
   }
 
   -- Takes n positions from the list, retursn a pair: the remaining list and the taken
@@ -158,41 +186,70 @@ fun eval (env, w, insns) {
   (* Assignment *)
   fun eval (c@[st, cst, s, w], insns) {
 
-   fun run(c, insn) {
-      var tgt = None;
-      case insn of
-         READ     -> (
-                        var value = readWorld(c[2]);
-
-                        c[2] := value[1];
-                        pushS(c, value[0])
-                     )
-      | WRITE    -> (c[2] := writeWorld(popS(c), c[2]))
-      | BINOP(s) -> pushS(c, evalOp(s, popS(c), popS(c)))
-      | LD(x)    -> pushS(c, c[1](x))
-      | LDA(x)   -> pushS(c, x)
-      | ST(x)    -> (c[1] := c[1] <- [x, topS(c)])
-      | STI      -> (
-        var value = popS(c);
-        var ref = popRefS(c);
-        c[1] := c[1] <- [ref, value];
-        pushS(c, value)
-      )
-      | CONST(n) -> pushS(c, n)
-      | LABEL(s) -> skip
-      | JMP(l)   -> (tgt := Some(l))
-      | CJMP(j, l) -> (
-         var value = popS(c);
-         case j of
-           "z"  -> if value == 0 then tgt := Some(l) else 0 fi
-         | "nz" -> if value == 0 then 0 else tgt := Some(l) fi
-         esac
-      )
-      | DUP     -> pushS(c, topS(c))
-      | DROP    -> popS(c)
+   fun run([st, cst, s, w], insn) {
+      var tgt = None, cont = 1;
+      var c = case insn of
+         READ     ->
+          let [value, w] = readWorld(w) in
+          let st = pushS(st, value) in
+          [st, cst, s, w]
+      | WRITE    ->
+          let [value, st] = popS(st) in
+          let w = writeWorld(value, w) in
+          [st, cst, s, w]
+      | BINOP(op) ->
+          let [fst, st] = popS(st) in
+          let [snd, st] = popS(st) in
+          let st = pushS(st, evalOp(op, fst, snd)) in
+          [st, cst, s, w]
+      | LD(x)    ->
+          let st = pushS(st, lookup(s, x)) in
+          [st, cst, s, w]
+      | LDA(x)   ->
+          let st = pushS(st, x) in
+          [st, cst, s, w]
+      | ST(x)    ->
+         (assign(s, x, topS(st));
+          [st, cst, s, w])
+      | STI      ->
+        let [value, st] = popS(st) in
+        let [ref, st] = popRefS(st) in
+        (assign(s, ref, value);
+          let st = pushS(st, value) in
+          [st, cst, s, w])
+      | CONST(n) ->
+          let st = pushS(st, n) in
+          [st, cst, s, w]
+      | LABEL(_) -> [st, cst, s, w]
+      | JMP(l)   -> (tgt := Lab(l); [st, cst, s, w])
+      | CJMP(j, l) ->
+         let [value, st] = popS(st) in
+         (case j of
+            "z"  -> if value == 0 then tgt := Lab(l) else skip fi
+          | "nz" -> if value == 0 then skip else tgt := Lab(l) fi
+          esac;
+          [st, cst, s, w])
+      | DUP     ->
+          let st = pushS(st, topS(st)) in
+          [st, cst, s, w]
+      | DROP    ->
+          let [value, st] = popS(st) in
+          [st, cst, s, w]
+      | BEGIN(_, a, l) ->
+          let [st, state] = createLocal(st, a, l) in
+          [st, cst, state, w]
+      | END ->
+        case cst of
+          {} -> (cont := 0; [st, cst, s, w])
+        | [locals, label]:xs -> (
+          tgt := Prog(label);
+          [st, xs, locals, w]
+        )
+        esac
+      | CALL(lab, _) -> (tgt := Call(lab); [st, cst, s, w])
       esac;
       -- printf("Exec %s, ended up with %s\n", insn.string, c.string);
-      [c, tgt]
+      [c, tgt, cont]
    }
 
   fun evalInsns(c, insns) {
@@ -200,10 +257,19 @@ fun eval (env, w, insns) {
         [] -> c
       | {} -> c
       | x:xs -> (
-        let [c, tgt] = run(c, x) in
-        case tgt of
-          None -> evalInsns(c, xs)
-        | Some(x) -> evalInsns(c, env.fromLabel(x))
+        let [c, tgt, cont] = run(c, x) in
+        case cont of
+          0 -> c
+        | _ ->
+          case tgt of
+            None -> evalInsns(c, xs)
+          | Lab(x) -> evalInsns(c, env.fromLabel(x))
+          | Prog(p) -> evalInsns(c, p)
+          | Call(l) -> (
+            c[1] := [c[2], xs]:c[1];
+            evalInsns(c, env.fromLabel(l))
+          )
+          esac
         esac
       )
    esac
@@ -414,6 +480,30 @@ fun addVars (env, names) {
   foldl (fun (env, name) {addVar (env, name)}, env, names)
 }
 
+fun addDeclsV(env, exprs) {
+  fun oneDecl(env, expr) {
+    case expr of
+        Var(xs) -> env.addVars(xs)
+      | Fun(nm, args, code) -> env
+      | _ -> failure("Unknown declaration: %s", expr.string)
+    esac
+  }
+
+  foldl(oneDecl, env, exprs)
+}
+
+fun addDeclsF(env, exprs) {
+  fun oneDecl(env, expr) {
+    case expr of
+        Var(xs) -> env
+      | Fun(nm, args, code) -> env.addFun(nm, sprintf("L%s", nm), nm).rememberFun(nm, args, code)
+      | _ -> failure("Unknown declaration: %s", expr.string)
+    esac
+  }
+
+  foldl(oneDecl, env, exprs)
+}
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
@@ -452,7 +542,8 @@ public fun compileSM (stmt) {
   
   fun compileMany (lab, env, exprs) {
     case exprs of
-      {e}    -> compile (lab, env, e)
+      {}     -> [false, env, emptyBuffer ()]
+    | {e}    -> compile (lab, env, e)
     | e : es ->
         case env.genLabel of
           [eLab, env] ->
@@ -469,12 +560,12 @@ public fun compileSM (stmt) {
   fun compile (lab, env, stmt) {
     case stmt of
       Skip              -> [false, env, emptyBuffer ()]
-    | Var   (x)         -> [false, env, singletonBuffer (LD (x))]
-    | Ref   (x)         -> [false, env, singletonBuffer (LDA (x))]
+    | Var   (x)         -> [false, env, singletonBuffer (LD (lookupVar(env, x)))]
+    | Ref   (x)         -> [false, env, singletonBuffer (LDA (lookupVar(env, x)))]
     | Const (n)         -> [false, env, singletonBuffer (CONST (n))]
-    | Read  (x)         -> [false, env, singletonBuffer (READ) <+ ST(x) <+ DROP]
+    | Read  (x)         -> [false, env, singletonBuffer (READ) <+ ST(lookupVar(env, x)) <+ DROP]
     | Write (e)         -> let [labUsed, env, buf] = compile(lab, env, e) in [false, env, buf <+> label(lab, labUsed) <+ WRITE]
-    | Assn  (Ref(x), f) -> let [labUsed, env, buf] = compile(lab, env, f) in [false, env, buf <+> label(lab, labUsed) <+ ST(x)]
+    | Assn  (Ref(x), f) -> let [labUsed, env, buf] = compile(lab, env, f) in [false, env, buf <+> label(lab, labUsed) <+ ST(lookupVar(env, x))]
     | Assn  (x, f)      -> let [lab2, env] = env.genLabel in
                            let [labUsed, env, buf] = compile(lab, env, f) in
                            let [lab2Used, env, buf2] = compile(lab2, env, x) in
@@ -510,6 +601,17 @@ public fun compileSM (stmt) {
       let [labUsed, env, codeCond] = compile(condLab, env, cond) in
       [true, env, codeCond <+> label(condLab, labUsed) <+ CJMP("nz", truLab) <+> codeFls <+ JMP(lab) <+
         LABEL(truLab) <+> codeTru]  -- LABEL(lab) auto inserted
+    | Scope(decls, stmt) ->
+      let env = env.enterScope in
+      let env = addDeclsV(env, decls) in
+      let env = addDeclsF(env, decls) in
+      let [labUsed, env, code] = compile(lab, env, stmt) in
+      let env = if env.isGlobal then env else env.leaveScope fi in
+      [labUsed, env, code]
+    | Call(name, args) ->
+      let [postArgLab, env] = env.genLabel in
+      let [labUsed, env, argsBytecode] = compileMany(postArgLab, env, args) in
+      [false, env, argsBytecode <+> label(postArgLab, labUsed) <+ CALL(name, size(args))]
     | _                 -> failure ("compileSM not implemented on %s\n", stmt.string)
     esac
   }
@@ -517,7 +619,8 @@ public fun compileSM (stmt) {
   fun compileFunctions (env, main) {
     fun iterate (env, funList) {
       case funList of
-        {}     -> case getFuns (env) of
+        {}     ->
+          case getFuns (env) of
                     [{}, env] -> emptyBuffer ()
                   | [fs, env] -> iterate (env, fs)
                   esac
