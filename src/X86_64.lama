@@ -182,7 +182,10 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
 
   -- Peeks the top of the symbolic stack
   fun peek () {
-    stack.fst
+    case stack of
+      x:xs -> x
+    | {} -> failure("Attempted to peek at empty stack\n")
+    esac
   }
   
   -- Adds a global variable; returns an updated environment
@@ -240,7 +243,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
       else enter (env.allocate [1], n - 1)
       fi
     }
-    
+
     enter (makeEnv ({}, 0, globals, false, emptyMap (compare), fLabel, nl), min (na, nRegArgs))
   }
 
@@ -268,7 +271,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
   }
 
   fun freeReg (R (i)) {
-    stack.size <= i  
+    stack.size <= i
   }
 
   fun stackDepth () {
@@ -378,6 +381,16 @@ fun stackDepth (env) {
   env [19] ()
 }
 
+fun popN(env, n) {
+  var x, pops = {};
+  for var i; i := 0, i < n, i := i + 1 do
+    x := pop(env);
+    pops := x[0] : pops;
+    env := x[1]
+  od;
+  [pops, env]
+}
+
 -- Creates an initial environment
 fun initEnv () {
   makeEnv ({}, 0, emptySet (compare), false, emptyMap (compare), "", 1)
@@ -463,6 +476,21 @@ fun savecode (env, nA) {
   )
 }
 
+fun moveArgs(pops) {
+  fun moveArgsN(pops, idx) {
+    if idx > nRegArgs then failure("Moving over 6 parameters is not yet implemented") fi;
+    case pops of
+      {} -> emptyBuffer()
+    | x:xs -> case x of
+        R(u) -> if u == idx then moveArgsN(xs, idx + 1) else singletonBuffer(Mov(x, R(idx))) <+> moveArgsN(xs, idx + 1) fi
+      | _ -> singletonBuffer(Mov(x, R(idx))) <+> moveArgsN(xs, idx + 1)
+      esac
+    esac
+  }
+
+  moveArgsN(pops, 0)
+}
+
 -- Generates a static call
 -- Some guidelines for generating function calls:
 --
@@ -479,7 +507,12 @@ fun savecode (env, nA) {
 -- 4. discard those parameters that were passed through stack from the stack;
 -- 5. restore saved live registers.         
 fun call (env, fLabel, nA) {
-  failure ("calls not implemented")
+  -- TODO: implement stack calling convention.
+  if nA > nRegArgs then failure("Stack calling convention is not yet implemented, tried to compile %s\n", fLabel) fi;
+  let [pushs, pops] = savecode(env, nA) in
+  let [movedStack, env] = popN(env, nA) in
+  let [pos, env] = env.allocate in
+  [env, pushs <+> moveArgs(movedStack) <+ Call (fLabel) <+> pops <+ Mov(rax, pos)]
 }
 
 -- Gets a suffix for Set instruction from
@@ -495,36 +528,46 @@ fun suffix (op) {
   esac
 }
 
-
-fun compileCmp(left, op, right) {
+fun compileCmp(env, left, op, right) {
   emptyBuffer()
-    <+ Mov (right, rax) <+ Binop("cmp", rax, left)
-    <+ Mov (L(1), r15) <+ Mov(L(0), rax) <+ CMov(suffix(op), r15, rax)
+    <+ Mov (right, rax) <+ Binop("cmp", rax, left) <+ Mov(L(0), rax) <+ Set(suffix(op), "%al")
 }
 
-fun compileBinop(left, op, right) {
+(* Fixes code that unfortunately is hardcoded in the CPU to clobber the rdx register, so it works when its operand is itself rdx.
+   After callee finishes, rdx will return to its previous state, so results must be gathered earlier. *)
+fun rdxSwap(field, code) {
+  fun doSwap() {
+    emptyBuffer() <+ Push (rbp) <+ Mov(rdx, rbp) <+> code(rbp) <+ Mov(rbp, rdx) <+ Pop(rbp)
+  }
+
+  case field of
+    R(n) -> if n == rdx[0] then doSwap() else code(field) fi
+  | _ -> code(field)
+  esac
+}
+
+fun compileBinop(env, left, op, right) {
   case op of
        "+" -> emptyBuffer() <+ Mov (left, rax) <+ Binop(op, right, rax)
-    |  "*" -> emptyBuffer() <+ Mov (left, rax) <+ Binop(op, right, rax)
+    |  "*" -> withRDX(env, emptyBuffer() <+ Mov (left, rax) <+ Binop(op, right, rax))
     |  "-" -> emptyBuffer() <+ Mov (left, rax) <+ Binop(op, right, rax)
-    |  "/" -> emptyBuffer() <+ Mov (left, rax) <+ Cltd <+ IDiv(right)
-    |  "%" -> emptyBuffer() <+ Mov (left, rax) <+ Cltd <+ IDiv(right) <+ Mov(rdx, rax)
-    |  "<" -> compileCmp(left, op, right)
-    |  ">" -> compileCmp(left, op, right)
-    | "==" -> compileCmp(left, op, right)
-    | "!=" -> compileCmp(left, op, right)
-    | "<=" -> compileCmp(left, op, right)
-    | ">=" -> compileCmp(left, op, right)
-    | "!!" ->
-      emptyBuffer()
-      <+ Mov (L(1), r15)  <+ Mov(L(0), rax)
-      <+ Mov (left, rdx)  <+ Binop("cmp", L(0), rdx) <+ CMov("nz", r15, rax)
-      <+ Mov (right, rdx) <+ Binop("cmp", L(0), rdx) <+ CMov("nz", r15, rax)
+    |  "/" -> withRDX(env, emptyBuffer() <+ Mov (left, rax) <+> rdxSwap(right, fun(t) { singletonBuffer(Cltd) <+ IDiv(t) }))
+    |  "%" -> withRDX(env, emptyBuffer() <+ Mov (left, rax) <+> rdxSwap(right, fun(t) { singletonBuffer(Cltd) <+ IDiv(t) <+ Mov(rdx, rax) }))
+    |  "<" -> compileCmp(env, left, op, right)
+    |  ">" -> compileCmp(env, left, op, right)
+    | "==" -> compileCmp(env, left, op, right)
+    | "!=" -> compileCmp(env, left, op, right)
+    | "<=" -> compileCmp(env, left, op, right)
+    | ">=" -> compileCmp(env, left, op, right)
+    | "!!" -> emptyBuffer() <+ Mov(L(0), rax)
+      <+ Binop("cmp", L(0), left)  <+ Set("nz", "%al") <+ Mov(rax, left)
+      <+ Binop("cmp", L(0), right) <+ Set("nz", "%al")
+      <+ Binop("!!", left, rax)
     | "&&" ->
-      emptyBuffer()
-      <+ Mov (L(0), r15)  <+ Mov(L(1), rax)
-      <+ Mov (left, rdx)  <+ Binop("cmp", L(0), rdx) <+ CMov("z", r15, rax)
-      <+ Mov (right, rdx) <+ Binop("cmp", L(0), rdx) <+ CMov("z", r15, rax)
+      emptyBuffer() <+ Mov(L(0), rax)
+      <+ Binop("cmp", L(0), left)  <+ Set("nz", "%al") <+ Mov(rax, left)
+      <+ Binop("cmp", L(0), right) <+ Set("nz", "%al")
+      <+ Binop("&&", left, rax)
     |    _ -> failure ("Binop %s not yet implemented\n", op)
   esac
 }
@@ -544,10 +587,17 @@ fun compile (env, code) {
 	        [env, code <+> callCode]
       | WRITE ->
           let [env, callCode] = call (env, "Lwrite", 1) in
-	       [env, code <+> callCode]
+          let [_, env] = env.pop in
+	        [env, code <+> callCode]
       | ST(x) ->
           let s = env.peek in
-          [env.addGlobal(x), code <+> move(s, env.loc(x))]
+          let env = case x of
+              Glb(y) -> env.addGlobal(y)
+            | Arg(_) -> env
+            | Loc(_) -> env
+            | _ -> failure("Unexpected ST instruction operand %s\n", x.string)
+          esac in
+          [env, code <+> move(s, env.loc(x))]
       | STI ->
           let [value, env] = env.pop in
           let [addr, env] = env.pop in
@@ -565,9 +615,9 @@ fun compile (env, code) {
       | BINOP(p) ->
           let [fst, env] = env.pop in
           let [snd, env] = env.pop in
-          let binopCode = compileBinop(fst, p, snd) in
+          let binopCode = compileBinop(env, fst, p, snd) in
           let [s, env] = env.allocate in
-          [env, (code <+> binopCode) <+ Mov(rax, s)]
+          [env, code <+> binopCode <+ Mov(rax, s)]
       | LABEL(x) ->
           let env = if env.isBarrier then env.retrieveStack(x) else env fi in
           [env, code <+ Label(x)]
@@ -581,7 +631,17 @@ fun compile (env, code) {
           [env, code <+ Binop("cmp", L(0), k) <+ CJmp(c, x)]
       | DROP ->
           let [s, env] = env.pop in
-          [env, scode]
+          [env, code]
+      -- TODO: stack calling conventions might require editing this.
+      | BEGIN(label, a, l) ->
+          let env = enterFunction(env, label, a, l) in
+          [env, code <+> prologue(label)]
+      | END ->
+          let [env, compiled] = epilogue(env) in
+          [env, code <+> compiled]
+      | CALL(lab, nArgs) ->
+          let [env, compiled] = call(env, lab, nArgs) in
+          [env, code <+> compiled]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
