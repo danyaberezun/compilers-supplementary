@@ -12,6 +12,7 @@ import Lexer;
 import Expr;
 import Builtins;
 import Buffer;
+import Values;
 
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
@@ -69,7 +70,10 @@ fun initEvalEnv (insns) {
         }) $ [emptyMap (compare), insns];
   
   [fun (l) {
-     case findMap (map, l) of Some (insns) -> insns esac
+     case findMap (map, l) of
+      Some (insns) -> insns
+    | None -> failure ("Subprogram %s not found", l)
+    esac
   }]
 }
 
@@ -81,34 +85,55 @@ fun fromLabel (env, lab) {
 
 fun pushS (st, value) {
   case value of
-      #val -> value : st
+      Val(_) -> value : st
+    | Composite(_) -> value : st
     | Glb(_) -> value : st
     | Arg(_) -> value : st
     | Loc(_) -> value : st
     | _ -> failure("Pushing %s onto stack is invalid\n", value.string)
   esac
 }
-fun popS (st) {
+fun popS (st, insn) {
    case st of
-     {}    -> failure("empty stack")
+     {}    -> failure("empty stack, while executing popS(%s)\n", insn.string)
    | x: xs -> case x of
-                #val -> [x, xs]
+                Val(_) -> [x, xs]
+              | Composite(_) -> [x, xs]
+              | _ -> failure("Expected a value or composite on stack, got %s", x.string)
+              esac
+   esac
+}
+fun popSNum (st, insn) {
+   case st of
+     {}    -> failure("empty stack, while executing popSNum(%s)\n", insn.string)
+   | x: xs -> case x of
+                Val(x) -> [x, xs]
               | _ -> failure("Expected a value on stack, got %s", x.string)
               esac
    esac
 }
-fun topS (st) {
+fun popSComposite (st, insn) {
    case st of
-     {}    -> failure("empty stack")
+     {}    -> failure("empty stack, while executinng popSComposite(%s)\n", insn.string)
    | x: xs -> case x of
-                #val -> x
-              | _ -> failure("Expected a value on stack, got %s", x.string)
+                Composite(x) -> [x, xs]
+              | _ -> failure("Expected a composite on stack, got %s", x.string)
               esac
    esac
 }
-fun popRefS (st) {
+fun topS (st, insn) {
    case st of
-     {}    -> failure("empty stack")
+     {}    -> failure("empty stack, while executing topS(%s)\n", insn.string)
+   | x: xs -> case x of
+                Val(_) -> x
+              | Composite(_) -> x
+              | _ -> failure("Expected an object on stack, got %s", x.string)
+              esac
+   esac
+}
+fun popRefS (st, insn) {
+   case st of
+     {}    -> failure("empty stack, while executing popRefS(%s)\n", insn.string)
    | x: xs -> let key = case x of
                 Glb(_) -> x
               | Arg(_) -> x
@@ -138,7 +163,8 @@ fun eval (env, w, insns) {
     | Glb (x) -> deref (globalState) (x)
     esac in
     case out of
-      #val -> out
+      Val(_) -> out
+    | Composite(_) -> out
     | _ -> failure("While looking up at location %s in context %s, got %s, which is not a val\n", loc.string, [args, locs].string, out.string)
     esac
   }
@@ -193,18 +219,10 @@ fun eval (env, w, insns) {
    fun run([st, cst, s, w], insn) {
       var tgt = None, cont = 1;
       var c = case insn of
-         READ     ->
-          let [value, w] = readWorld(w) in
-          let st = pushS(st, value) in
-          [st, cst, s, w]
-      | WRITE    ->
-          let [value, st] = popS(st) in
-          let w = writeWorld(value, w) in
-          [st, cst, s, w]
-      | BINOP(op) ->
-          let [fst, st] = popS(st) in
-          let [snd, st] = popS(st) in
-          let st = pushS(st, evalOp(op, fst, snd)) in
+        BINOP(op) ->
+          let [fst, st] = popSNum(st, [insn, "fst"]) in
+          let [snd, st] = popSNum(st, [insn, "snd"]) in
+          let st = pushS(st, mkBox(evalOp(op, fst, snd))) in
           [st, cst, s, w]
       | LD(x)    ->
           let st = pushS(st, lookup(s, x)) in
@@ -213,31 +231,31 @@ fun eval (env, w, insns) {
           let st = pushS(st, x) in
           [st, cst, s, w]
       | ST(x)    ->
-         (assign(s, x, topS(st));
+         (assign(s, x, topS(st, insn));
           [st, cst, s, w])
       | STI      ->
-        let [value, st] = popS(st) in
-        let [ref, st] = popRefS(st) in
+        let [value, st] = popS(st, insn) in
+        let [ref, st] = popRefS(st, insn) in
         (assign(s, ref, value);
           let st = pushS(st, value) in
           [st, cst, s, w])
       | CONST(n) ->
-          let st = pushS(st, n) in
+          let st = pushS(st, mkBox(n)) in
           [st, cst, s, w]
       | LABEL(_) -> [st, cst, s, w]
       | JMP(l)   -> (tgt := Lab(l); [st, cst, s, w])
       | CJMP(j, l) ->
-         let [value, st] = popS(st) in
+         let [value, st] = popSNum(st, insn) in
          (case j of
             "z"  -> if value == 0 then tgt := Lab(l) else skip fi
           | "nz" -> if value == 0 then skip else tgt := Lab(l) fi
           esac;
           [st, cst, s, w])
       | DUP     ->
-          let st = pushS(st, topS(st)) in
+          let st = pushS(st, topS(st, insn)) in
           [st, cst, s, w]
       | DROP    ->
-          let [value, st] = popS(st) in
+          let [value, st] = popS(st, insn) in
           [st, cst, s, w]
       | BEGIN(_, a, l) ->
           let [st, state] = createLocal(st, a, l) in
@@ -251,6 +269,27 @@ fun eval (env, w, insns) {
         )
         esac
       | CALL(lab, _) -> (tgt := Call(lab); [st, cst, s, w])
+      | BUILTIN(lab, argc) ->
+        let [st, args] = st.take(argc) in
+        let [rv, w] = evalBuiltin(lab, map(unval, args), w) in
+        [pushS(st, mkBox(rv)), cst, s, w]
+      | ELEM ->
+        let [idx, st] = popSNum(st, insn) in
+        let [arr, st] = popSComposite(st, insn) in
+        [pushS(st, mkBox(tryRead(arr, idx))), cst, s, w]
+      | STA ->
+        let [rv, st] = popS(st, insn) in
+        let [idx, st] = popSNum(st, insn) in
+        let [arr, st] = popSComposite(st, insn) in
+        (tryAssign(arr, idx, rv); [pushS(st, rv), cst, s, w])
+      | ARRAY(n) ->
+        let [st, args] = st.take(n) in
+        [pushS(st, mkBox(listArray(map(unval, args)))), cst, s, w]
+      | SEXP(t, n) ->
+        let [st, args] = st.take(n) in
+        [pushS(st, mkBox(Sexp(t, listArray(map(unval, args))))), cst, s, w]
+      | STRING(string) ->
+        [pushS(st, mkBox(string)), cst, s, w]
       esac;
       -- printf("Exec %s, ended up with %s\n", insn.string, c.string);
       [c, tgt, cont]
@@ -511,28 +550,6 @@ fun addDeclsF(env, exprs) {
 -- Takes an expression, returns a list of stack machine
 -- instructions.
 
-(* Assignment
-
--- Some guidelines for compiling functions and scopes.
---
--- 1. use env.beginScope/env.endScope properly;
--- 2. in each scope traverse the definitions twice:
---    a. first, add all bindings into symbolic state,
---       using end.addVar/env.addFun;
---    b. do not forget to generate GLOBAL instructions for
---       top-level variable declarations;
---    c. on the secord traversal add functions themselves for
---       future code generation (use env.rememberFun).
--- 3. the overall flow for codegeneration:
---    a. generate the code for thetopmost expression (the progrman itself);
---    b. take list of nested functions definitions via env.getFuns and
---       generate the code for each function;
---    c. repeat b. until no function definitions appear.
--- 4. when compiling functions, do not forget to create proper
---    environment (use env.beginFun) and register arguments
---    (use env.addArg).
-*)
-
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
@@ -570,6 +587,13 @@ public fun compileSM (stmt) {
     | Read  (x)         -> [false, env, singletonBuffer (READ) <+ ST(lookupVar(env, x)) <+ DROP]
     | Write (e)         -> let [labUsed, env, buf] = compile(lab, env, e) in [false, env, buf <+> label(lab, labUsed) <+ WRITE]
     | Assn  (Ref(x), f) -> let [labUsed, env, buf] = compile(lab, env, f) in [false, env, buf <+> label(lab, labUsed) <+ ST(lookupVar(env, x))]
+    | Assn  (ElemRef(a, x), f) ->
+      let [lab2, env] = env.genLabel in
+      let [lab3, env] = env.genLabel in
+      let [labUsed, env, buf] = compile(lab, env, f) in
+      let [lab3Used, env, buf3] = compile(lab3, env, a) in
+      let [lab2Used, env, buf2] = compile(lab2, env, x) in
+      [false, env, buf3 <+> label(lab3, lab3Used) <+> buf2 <+> label(lab2, lab2Used) <+> buf <+> label(lab, labUsed) <+ STA]
     | Assn  (x, f)      -> let [lab2, env] = env.genLabel in
                            let [labUsed, env, buf] = compile(lab, env, f) in
                            let [lab2Used, env, buf2] = compile(lab2, env, x) in
@@ -615,7 +639,22 @@ public fun compileSM (stmt) {
     | Call(name, args) ->
       let [postArgLab, env] = env.genLabel in
       let [labUsed, env, argsBytecode] = compileMany(postArgLab, env, args) in
-      [false, env, argsBytecode <+> label(postArgLab, labUsed) <+ CALL(name, size(args))]
+      let callBytecode = if isBuiltin(name) then BUILTIN(name, size(args)) else CALL(name, size(args)) fi in
+      [false, env, argsBytecode <+> label(postArgLab, labUsed) <+ callBytecode]
+    | Elem(arr, idx) ->
+      let [lab2, env] = env.genLabel in
+      let [lab2Used, env, buf2] = compile(lab2, env, arr) in
+      let [labUsed, env, buf] = compile(lab, env, idx) in
+      [false, env, buf2 <+> label(lab2, lab2Used) <+> buf <+> label(lab, labUsed) <+ ELEM]
+    | Array(xs) ->
+      let [postArgLab, env] = env.genLabel in
+      let [labUsed, env, argsBytecode] = compileMany(postArgLab, env, xs) in
+      [false, env, argsBytecode <+> label(postArgLab, labUsed) <+ ARRAY (xs.size)]
+    | Sexp(tag, xs) ->
+      let [postArgLab, env] = env.genLabel in
+      let [labUsed, env, argsBytecode] = compileMany(postArgLab, env, xs) in
+      [false, env, argsBytecode <+> label(postArgLab, labUsed) <+ SEXP (tag, xs.size)]
+    | String(s) -> [false, env, singletonBuffer(STRING(s))]
     | _                 -> failure ("compileSM not implemented on %s\n", stmt.string)
     esac
   }
@@ -647,7 +686,7 @@ public fun compileSM (stmt) {
     main <+> iterate (env, {})
   }
     
-  case initCompEnv ().genLabel of
+  case initCompEnv ().beginScope.genLabel of
     [endLab, env] ->
        case compile (endLab, env, stmt) of
          [endLabUsed, env, code] ->
