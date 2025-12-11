@@ -58,24 +58,6 @@ public fun evalOp (op, l, r) {
 --        Sexp    (string, expr list)  |
 --        Builtin (string, expr list)
 
--- Helper function: checks that given name designates a regular variable in
--- a given state
-fun lookupVal (state, name) {
-  case state.lookup (name) of
-    x@Val (_) -> x
-  | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
-  esac
-}
-
--- Helper function: checks that given name designates a function in
--- a given state
-fun lookupFun (state, name) {
-  case state.lookup (name) of
-    x@Fun (_, _) -> x
-  | _            -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
-  esac
-}
-
 -- Helper function: adds a bunch of regular variables current scope
 fun addNames (state, names) {
   foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
@@ -107,7 +89,8 @@ fun evalList (c, exprs) {
 fun evalRef(c, expr) {
   let [c, out] = eval(c, expr) in
   case out of
-    Ref(x) -> [c, x]
+    Ref(_) -> [c, out]
+  | ArrRef(_, _) -> [c, out]
   | _ -> failure("Expected ref, got %s", out.string)
   esac
 }
@@ -120,6 +103,14 @@ fun evalVal(c, expr) {
   esac
 }
 
+fun evalComposite(c, expr) {
+  let [c, out] = eval(c, expr) in
+  case out of
+    Composite(x) -> [c, x]
+  | _ -> failure("Expected composite, got %s", out.string)
+  esac
+}
+
 fun evalFun(c, expr) {
   let [c, out] = eval(c, expr) in
   case out of
@@ -128,11 +119,19 @@ fun evalFun(c, expr) {
   esac
 }
 
+fun unval(v) {
+  case v of
+    Val(x) -> x
+  | Composite(x) -> x
+  | _ -> failure("While calling a builtin, expected val, got %s", v.string)
+  esac
+}
+
 fun evalObject(c, expr) {
   let [c, out] = eval(c, expr) in
   case out of
     Val(x) -> [c, out]
-  | Fun(f) -> [c, out]
+  | Composite(x) -> [c, out]
   | _ -> failure("Expected obj, got %s", out.string)
   esac
 }
@@ -145,12 +144,49 @@ fun evalVoid(c, expr) {
   esac
 }
 
+fun mkBox(x) {
+  case x of
+    #val -> Val(x)
+  | #fun -> failure("Expression evaluated to a function: %s", x)
+  | _ -> Composite(x)
+  esac
+}
+
+fun tryRead(arr, idx) {
+  case idx of
+    #val -> 
+    case arr of
+      Sexp(_, sex) -> sex[idx]
+    | #str -> arr[idx]
+    | #array -> arr[idx]
+    | _ -> failure("Could not read %s[%s]", arr.string, idx)
+    esac
+  | _ -> failure("Could not read %s[%s] since index is not int", arr.string, idx.string)
+  esac
+}
+
+fun tryAssign(arr, idx, output) {
+  case arr of
+    #str -> 
+      case output of
+        Val(output) -> if 0 <= output && output < 256 then arr[idx] := output else failure("Unable to put %d into string %s", output, arr) fi
+      | _ -> failure("Unable to put unknown object %s into string %s", output.string, arr)
+    esac
+  | #array -> arr[idx] := unval(output)
+  | Sexp(_, sex) -> sex[idx] := unval(output)
+  | _ -> failure("Could not assign %s[%s] = %s", arr.string, idx.string, output.string)
+  esac
+}
+
 fun eval (c@[s, w], expr) {
   case expr of
       Assn(to, from) ->
         let [c, ref] = evalRef(c, to) in
         let [[s, w], output] = evalObject(c, from) in
-        [[s <- [ref, output], w], output]
+        case ref of
+          Ref(ref) -> [[s <- [ref, output], w], output]
+        | ArrRef(arr, idx) -> (tryAssign(arr, idx, output); [[s, w], output])
+        esac
     | Seq(fst, snd) ->
         let [c, out] = evalVoid(c, fst) in eval(c, snd)
     | Skip -> [c, None]
@@ -196,12 +232,30 @@ fun eval (c@[s, w], expr) {
       let [c, [argdefs, code]] = evalFun(c, Var(nm)) in
       let [[s, w], xs] = c.evalList(args) in
       let s1 = s in
-      let s = s.enterFunction in
-      let s = s.addNamesValues(argdefs, xs) in
-      let [[s, w], rv] = eval([s, w], code) in
-      let s = s1.leaveFunction(s.getGlobal) in
-      [[s, w], rv]
-    | _ -> failure("Unknown instruction: %s", expr.string)
+      case code of
+        External -> let [rv, w] = evalBuiltin(nm, map(unval, xs), w) in [[s, w], Val(rv)]
+      | _ ->
+        let s = s.enterFunction.addNamesValues(argdefs, xs) in
+        let [[s, w], rv] = eval([s, w], code) in
+        let s = s1.leaveFunction(s.getGlobal) in
+        [[s, w], rv]
+      esac
+    | String(string) -> [[s, w], Composite(string)]
+    | Elem(arr, idx) ->
+      let [c, arr] = evalComposite(c, arr) in
+      let [c, idx] = evalVal(c, idx) in
+      [[s, w], mkBox(tryRead(arr, idx))]
+    | ElemRef(arr, idx) ->
+      let [c, arr] = evalComposite(c, arr) in
+      let [c, idx] = evalVal(c, idx) in
+      [c, ArrRef(arr, idx)]
+    | Array(xs) ->
+      let [[s, w], xs] = c.evalList(xs) in
+      [[s, w], Composite(listArray(map(unval, xs)))]
+    | Sexp(tag, args) ->
+      let [[s, w], args] = c.evalList(args) in
+      [[s, w], Composite(Sexp(tag, listArray(map(unval, args))))]
+    | _ -> failure("Unknown instruction: %s\n", expr.string)
   esac
 }
 
