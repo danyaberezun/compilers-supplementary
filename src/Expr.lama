@@ -52,26 +52,25 @@ public fun evalOp (op, l, r) {
 --        ElemRef (expr, expr)         |
 --        Sexp    (string, expr list)  |
 --        Builtin (string, expr list)
-
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
 fun lookupVal (state, name) {
-  case state.lookup (name) of
-    x@Val (_) -> x
-  | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
-  esac
+   case state.lookup(name) of
+     x@Val(_) -> x
+   | _        -> error(sprintf("the name ""%s"" does not designate a variable", name), getLoc(name))
+   esac
 }
 -- Helper function: checks that given name designates a function in
 -- a given state
 fun lookupFun (state, name) {
-  case state.lookup (name) of
-    x@Fun (_, _) -> x
-  | _            -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
-  esac
+   case state.lookup(name) of
+     x@Fun(_, _) -> x
+   | _           -> error(sprintf("the name ""%s"" does not designate a function", name), getLoc(name))
+   esac
 }
 -- Helper function: adds a bunch of regular variables current scope
 fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
+   foldl(fun (s, name) {s.addName(name, Val(0))}, state, names)
 }
 -- Helper function: adds a function in current scope
 fun addFunction (state, name, args, body) {
@@ -86,32 +85,50 @@ fun addDecs (state, decs) {
      }, state, decs)
 }
 fun addArgs (state, args, vals) {
-   foldl(fun (s, [arg, value]) {s.addName(arg, value)}, state, zip(args, vals))
+   foldl(fun (s, [arg, value]) {s.addName(arg, Val(value))}, state, zip(args, vals))
 }
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
-  case foldl (fun ([c, vals], e) {
-                case eval (c, e) of
-                  [c, vl] -> [c, vl : vals]
-                esac
-              },
-              [c, {}],
-              exprs) of
-    [c, vals] -> [c, reverse (vals)]
-  esac
+   case foldl(fun ([c, vals], e) {
+             case eval(c, e) of
+               [c, vl] -> [c, vl : vals]
+             esac
+          }, [c, {}], exprs) of
+     [c, vals] -> [c, reverse(vals)]
+   esac
 }
 fun eval (c@[s, w], expr) {
    case expr of
-     Var(v)                  -> [c, s.lookup(v)]
-   | Ref(r)                  -> [c, r]
+     Var(v)                  -> lookupVal(s, v);
+                                let Val(x) = lookup(s, v) in [c, x]
+   | Ref(r)                  -> lookupVal(s, r);
+                                [c, Ref(r)]
+   | String(s)               -> [c, s]
+   | Elem(arr, i)            -> let [c, arr] = eval(c, arr) in
+                                   let [c, i] = eval(c, i) in
+                                      let arr = case arr of
+                                                  Sexp(_, arr) -> arr
+                                                | arr          -> arr
+                                                esac in [c, arr[i]]
    | Const(i)                -> [c, i]
    | Skip                    -> [c, None]
    | Binop(op, expr1, expr2) -> let [c, {l, r}] = evalList(c, {expr1, expr2}) in [c, evalOp(op, l, r)]
-   | Assn(expr1, expr2)      -> let [c@[s, w], {l, r}] = evalList(c, {expr1, expr2}) in [[s <- [l, r], w], r]
+   | Assn(expr1, expr2)      -> let [[s, w], {ref, v}] = evalList(c, {expr1, expr2}) in
+                                   case ref of
+                                     Ref(r)            -> lookupVal(s, r);
+                                                          [[s <- [r, Val(v)], w], v]
+                                   | ElemRef(arr, idx) -> arr[idx] := v;
+                                                          [[s, w], v]
+                                   esac
+   | ElemRef(arr, i)         -> let [c, arr] = eval(c, arr) in
+                                   let [c, i] = eval(c, i) in
+                                      let arr = case arr of
+                                                  Sexp(_, arr) -> arr
+                                                | arr          -> arr
+                                                esac in [c, ElemRef(arr, i)]
+   | Sexp(tag, exprs)        -> let [c, args] = evalList(c, exprs) in [c, Sexp(tag, listArray(args))]
    | Seq(expr1, expr2)       -> let [c, v] = eval(c, expr1) in eval(c, expr2)
-   | Read(varname)           -> let [r, w] = readWorld(w) in [[s <- [varname, r], w], None]
-   | Write(expr1)            -> let [c@[s, w], ref] = eval(c, expr1) in [[s, writeWorld(ref, w)], None]
    | If(cond, expr1, expr2)  -> let [c, v] = eval(c, cond) in if v then eval(c, expr1) else eval(c, expr2) fi
    | While(cond, expr)       -> case eval(c, cond) of
                                   [c, 0] -> [c, None]
@@ -120,19 +137,23 @@ fun eval (c@[s, w], expr) {
    | DoWhile(cond, expr)     -> eval(c, Seq(expr, While(cond, expr)))
    | Ignore(expr)            -> [eval(c, expr)[0], None]
    | Scope(d, e)             -> let [[s, w], v] = eval([s.enterScope.addDecs(d), w], e) in [[s.leaveScope, w], v]
-   | Call(f, expr)           -> let [[s, w], vals] = evalList(c, expr) in
+   | Call(f, expr)           -> lookupFun(s, f);
+                                let [[s, w], vals] = evalList(c, expr) in
                                    let Fun(args, body) = s.lookup(f) in
                                       let [[ss, w], v] = eval([s.enterFunction.addArgs(args, vals), w], body) in
                                          [[leaveFunction(s, getGlobal(ss)), w], v]
-   | Builtin(f, expr)        -> let [[s, w], vals] = evalList(c, expr) in
-                                   let [v, w] = evalBuiltin(f, vals, w) in
-                                    [[s, w], v]
+   | Builtin(f, expr)        -> let [[s, w], vals] = evalList(c, expr) in let [v, w] = evalBuiltin(f, vals, w) in [[s, w], v]
+   | Array(exprs)            -> let [c, vals] = evalList(c, exprs) in [c, listArray(vals)]
    | _                       -> failure("yo dumbass in expr.lama %s \n", expr.string)
    esac
 }
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
-   case eval([emptyState(), createWorld(input)], expr) of
+   case eval([emptyState()
+                     .enterScope
+                     .addName("read", Fun({}, External))
+                     .addName("write", Fun({"a"}, External))
+                     .addName("length", Fun({"a"}, External)), createWorld(input)], expr) of
      [c, _] -> c.snd.getOutput
    esac
 }
