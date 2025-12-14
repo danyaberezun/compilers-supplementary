@@ -525,40 +525,35 @@ fun savecode (env, nA) {
 -- Don't forget to handle buitins (Barray/Bsexp), and
 -- to clear rax before calling to variable arg funcations
 fun call (env, fLabel, nA) {
-  fun processArgs (env, n) {
-    if n == 0 then [env, emptyBuffer()]
+  fun moveArgs(env, nA) {
+    if nA == 0 then
+      [env, singletonBuffer(Binop("^", rax, rax))]
+    elif stackDepth(env) == nA && nA < nRegArgs then
+      let [x, env] = pop(env) in
+      moveArgs(env, nA - 1)
     else
-      let [arg, newEnv] = pop(env) in
-      let [env, codeRest] = processArgs(newEnv, n - 1) in
-        if n <= nRegArgs then
-          [env, move(arg, R(n - 1)) <+> codeRest]
-        else
-          [env, move(arg, rax) <+ Push(rax) <+> codeRest]
-        fi
+      let [x, env] = pop(env) in
+      let [env, moveCode] = moveArgs(env, nA - 1) in
+      if nA <= nRegArgs then
+        [env, moveCode <+ Mov(x, R(nA - 1))]
+      else
+        [env, moveCode <+ Push(x)]
+      fi
     fi
   }
 
-  fun createStackAdjustment(nArgs) {
-    if nArgs > nRegArgs then
-      Binop("-", L(wordSize * (nArgs - nRegArgs)), rsp)
-    else
-      emptyBuffer()
-    fi
-  }
+  let [pushs, pops] = savecode (env, nA) in
+  let numRegArgs = min(nRegArgs, nA) in
+  let numStackArgs = nA - numRegArgs in
+  let [env, moveCode] = moveArgs(env, nA) in
+  let [x, env] = allocate(env) in
 
-
-  let [pushes, pops] = savecode(env, nA) in
-  let [env, argsCode] = processArgs(env, nA) in
-  let [retLoc, env] = allocate(env) in
-    
-  let code = pushes 
-            <+> argsCode 
-            <+ Call(fLabel) 
-            <+> createStackAdjustment(nA)
-            <+ Mov(rax, retLoc)
-            <+> pops
-  in
-  [env, code]
+  [env, pushs
+    <+> moveCode
+    <+ Call(fLabel)
+    <+ Binop("+", L(numStackArgs * wordSize), rsp)
+    <+> pops
+    <+ Mov(rax, x)]
 }
 
 -- Gets a suffix for Set instruction from
@@ -616,6 +611,26 @@ fun compileBinop (op, env, code) {
   esac
 }
 
+fun pushMany (env, xs) {
+  case xs of
+    {} -> env
+  | x : xs ->
+      let env = pushMany (env, xs) in
+      let env = push (env, x) in
+      env
+  esac
+}
+
+fun popMany (env, n) {
+  if n == 0 then
+    [{}, env]
+  else
+    let [x, env] = pop (env) in
+    let [xs, env] = popMany (env, n - 1) in
+    [x : xs, env]
+  fi
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -626,13 +641,6 @@ fun compile (env, code) {
       -- printf ("compiling %s\n", showSMInsn (i));
       
       case i of      
-        READ ->
-          let [env, callCode] = call (env, "Lread", 0) in
-	  [env, code <+> callCode]
-      | WRITE ->
-          let [env, callCode] = call (env, "Lwrite", 1) in
-          let [_, env] = env.pop in
-	  [env, code <+> callCode]
 	  
       (* Assignment        
          -- Some guidelines for generating function calls:
@@ -652,7 +660,7 @@ fun compile (env, code) {
          -- 2. generate epilogue for END instruction.
       *)
         
-      | CONST(n) ->
+        CONST(n) ->
           case env.allocate of
             [s, env] -> [env, code <+ Mov (L(n), s)]
           esac
@@ -696,6 +704,34 @@ fun compile (env, code) {
       | GLOBAL (x)      -> [addGlobal (env, x), code]
       | BEGIN (f, a, l) -> [enterFunction (env, f, a, l), code <+> prologue (f)]
       | END -> let [env, epilogueCode] = epilogue (env) in [env, code <+> epilogueCode]
+      | BUILTIN (name, nA) ->
+          let [env, callCode] = call (env, "L" ++ name, nA) in
+          [env, code <+> callCode]
+      | STRING (s) ->
+          let [env, name] = addString (env, s) in
+          let [y, env] = allocate (env) in     
+          let [env, callCode] = call (env, "Bstring", 1) in
+          [env, code <+> lea (M (name), y) <+> callCode]
+      | STA ->
+          let [env, callCode] = call (env, "Bsta", 3) in
+          [env, code <+> callCode]
+      | ELEM ->
+          let [env, callCode] = call (env, "Belem", 2) in
+          [env, code <+> callCode]
+      | SEXP (tag, n) -> 
+          let [sym, env] = addTag(env, tag) in
+          let [args, env] = popMany (env, n) in
+          let env = push (env, L (n)) in
+          let env = pushMany (env, args) in
+          let env = push (env, M (sym)) in
+          let [env, callCode] = call (env, "Bsexp", n + 2) in
+          [env, code <+> callCode]
+      | ARRAY  (n) ->
+          let [args, env] = popMany (env, n) in
+          let env = push (env, L (n)) in
+          let env = pushMany (env, args) in
+          let [env, callCode] = call (env, "Barray", n + 1) in
+          [env, code <+> callCode]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
