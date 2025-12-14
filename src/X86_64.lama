@@ -525,7 +525,40 @@ fun savecode (env, nA) {
 -- Don't forget to handle buitins (Barray/Bsexp), and
 -- to clear rax before calling to variable arg funcations
 fun call (env, fLabel, nA) {
-  emptyBuffer ()
+  fun processArgs (env, n) {
+    if n == 0 then [env, emptyBuffer()]
+    else
+      let [arg, newEnv] = pop(env) in
+      let [env, codeRest] = processArgs(newEnv, n - 1) in
+        if n <= nRegArgs then
+          [env, move(arg, R(n - 1)) <+> codeRest]
+        else
+          [env, move(arg, rax) <+ Push(rax) <+> codeRest]
+        fi
+    fi
+  }
+
+  fun createStackAdjustment(nArgs) {
+    if nArgs > nRegArgs then
+      Binop("-", L(wordSize * (nArgs - nRegArgs)), rsp)
+    else
+      emptyBuffer()
+    fi
+  }
+
+
+  let [pushes, pops] = savecode(env, nA) in
+  let [env, argsCode] = processArgs(env, nA) in
+  let [retLoc, env] = allocate(env) in
+    
+  let code = pushes 
+            <+> argsCode 
+            <+ Call(fLabel) 
+            <+> createStackAdjustment(nA)
+            <+ Mov(rax, retLoc)
+            <+> pops
+  in
+  [env, code]
 }
 
 -- Gets a suffix for Set instruction from
@@ -538,6 +571,48 @@ fun suffix (op) {
   | "!=" -> "ne"
   | ">=" -> "ge"
   | ">"  -> "g"
+  esac
+}
+
+fun rdxDiv (env, s1, s2, s, res) {
+  case [s1, s2] of
+    [R (2), _] -> 
+      singletonBuffer (Mov (s2, rax)) <+ Mov (rdx, rbx) <+ Cltd <+ IDiv (rbx) <+ Mov (res, s) <+ Mov (rbx, rdx)
+    | [_, R (2)] ->
+      singletonBuffer (Mov (rdx, rax)) <+ Cltd <+ IDiv (s1) <+ Mov (res, s)
+    | _ -> 
+      withRDX (env, singletonBuffer (Mov (s2, rax)) <+ Cltd <+ IDiv (s1) <+ Mov (res, s))
+  esac
+}
+
+-- Helper function to compile binary operations
+fun compileBinop (op, env, code) {
+  case env.pop2 of 
+    [s1, s2, env] -> case env.allocate of 
+      [s, env] -> [env, 
+        case op of
+          "+" -> code <+ Mov (s2, rax) <+ Binop (op, s1, rax) <+ Mov (rax, s)
+        | "-" -> code <+ Mov (s2, rax) <+ Binop (op, s1, rax) <+ Mov (rax, s)
+        | "*" -> code <+ Mov (s2, rax) <+ Binop (op, s1, rax) <+ Mov (rax, s)
+        | "/"  -> code <+> rdxDiv(env, s1, s2, s, rax)
+        | "%"  -> code <+> rdxDiv(env, s1, s2, s, rdx)
+        | "<" -> code <+ Binop ("cmp", s1, s2) <+ Set (suffix(op), "%al") <+ Binop ("&&", L (1), rax) <+ Mov (rax, s)
+        | ">" -> code <+ Binop ("cmp", s1, s2) <+ Set (suffix(op), "%al") <+ Binop ("&&", L (1), rax) <+ Mov (rax, s)
+        | "<=" -> code <+ Binop ("cmp", s1, s2) <+ Set (suffix(op), "%al") <+ Binop ("&&", L (1), rax) <+ Mov (rax, s)
+        | ">=" -> code <+ Binop ("cmp", s1, s2) <+ Set (suffix(op), "%al") <+ Binop ("&&", L (1), rax) <+ Mov (rax, s)
+        | "==" -> code <+ Binop ("cmp", s1, s2) <+ Set (suffix(op), "%al") <+ Binop ("&&", L (1), rax) <+ Mov (rax, s)
+        | "!=" -> code <+ Binop ("cmp", s1, s2) <+ Set (suffix(op), "%al") <+ Binop ("&&", L (1), rax) <+ Mov (rax, s)
+        | "&&" -> code 
+            <+ Mov (L (0), rax) <+ Binop ("cmp", rax, s1) <+ Set ("ne", "%al") <+ Mov (rax, s1)
+            <+ Mov (L (0), rax) <+ Binop ("cmp", rax, s2) <+ Set ("ne", "%al") <+ Mov (rax, s2)
+            <+ Binop ("&&", s1, s2) <+ Mov (s2, s)
+        | "!!" -> code 
+            <+ Mov (L (0), rax) <+ Binop ("cmp", rax, s1) <+ Set ("ne", "%al") <+ Mov (rax, s1)
+            <+ Mov (L (0), rax) <+ Binop ("cmp", rax, s2) <+ Set ("ne", "%al") <+ Mov (rax, s2)
+            <+ Binop ("!!", s1, s2) <+ Mov (s2, s)
+        esac
+      ]
+    esac
   esac
 }
 
@@ -556,6 +631,7 @@ fun compile (env, code) {
 	  [env, code <+> callCode]
       | WRITE ->
           let [env, callCode] = call (env, "Lwrite", 1) in
+          let [_, env] = env.pop in
 	  [env, code <+> callCode]
 	  
       (* Assignment        
@@ -574,7 +650,52 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-      *)         
+      *)
+        
+      | CONST(n) ->
+          case env.allocate of
+            [s, env] -> [env, code <+ Mov (L(n), s)]
+          esac
+      | LD(x) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move(env.loc(x), s)]
+          esac
+      | LDA(x) -> 
+          case env.allocate of
+            [s, env] -> [env, code <+ Lea(env.loc(x), s)]
+          esac
+      | ST(x) ->
+          let s = env.peek in
+          let env = case x of
+              Glb(y) -> env.addGlobal(y)
+            | Arg(_) -> env
+            | Loc(_) -> env
+            | _ -> failure("Unexpected ST instruction operand %s\n", x.string)
+          esac in
+          [env, code <+> move(s, env.loc(x))]
+      | STI -> case env.pop2 of
+            [s, ref, env] -> [env.push(s), code <+> move(s, I(0, ref))]
+          esac
+      | BINOP(op) -> 
+          compileBinop(op, env, code)
+      | LABEL(l) ->
+          if isBarrier(env) 
+            then [retrieveStack(env, l), code <+ Label(l)]
+            else[env, code <+ Label(l)]
+          fi
+      | JMP(l) ->
+          [setBarrier(setStack(env, l)), code <+ Jmp(l)]
+      | CJMP(c, l) ->
+          case env.pop of
+            [s, env] -> [setBarrier(setStack(env, l)), code <+ Binop("cmp", L(0), s) <+ CJmp(c, l)]
+          esac
+      | DROP -> case env.pop of
+            [_, env] -> [env, code]
+          esac
+      | CALL (f, exprs) -> let [env, callCode] = call (env, f, exprs) in [env, code <+> callCode]
+      | GLOBAL (x)      -> [addGlobal (env, x), code]
+      | BEGIN (f, a, l) -> [enterFunction (env, f, a, l), code <+> prologue (f)]
+      | END -> let [env, epilogueCode] = epilogue (env) in [env, code <+> epilogueCode]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
