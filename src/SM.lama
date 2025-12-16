@@ -36,7 +36,6 @@ public fun showSMInsn (i) {
   | LD     (x)       -> sprintf ("LD %s", showLoc (x))
   | LDA    (x)       -> sprintf ("LDA %s", showLoc (x))
   | ST     (x)       -> sprintf ("ST %s", showLoc (x))
-  | STI              -> "STI"
   | SEXP   (s, n)    -> sprintf ("SEXP ""%s"", %d", s, n)
   | CONST  (n)       -> sprintf ("CONST %d", n)
   | LABEL  (s)       -> sprintf ("LABEL %s", s)
@@ -103,7 +102,7 @@ fun popS (st, insn) {
    | x: xs -> case x of
                 Val(_) -> [x, xs]
               | Composite(_) -> [x, xs]
-              | _ -> failure("Expected a value or composite on stack, got %s", x.string)
+              | _ -> failure("Expected a value or composite on stack, got %s, while executing popS(%s)\n", x.string, insn.string)
               esac
    esac
 }
@@ -112,8 +111,14 @@ fun popSNum (st, insn) {
      {}    -> failure("empty stack, while executing popSNum(%s)\n", insn.string)
    | x: xs -> case x of
                 Val(x) -> [x, xs]
-              | _ -> failure("Expected a value on stack, got %s", x.string)
+              | _ -> failure("Expected a value on stack, got %s, while executing popSNum(%s)\n", x.string, insn.string)
               esac
+   esac
+}
+fun popSAny (st, insn) {
+   case st of
+     {}    -> failure("empty stack, while executing popSAny(%s)\n", insn.string)
+   | x: xs -> [x, xs]
    esac
 }
 fun popSComposite (st, insn) {
@@ -121,7 +126,7 @@ fun popSComposite (st, insn) {
      {}    -> failure("empty stack, while executinng popSComposite(%s)\n", insn.string)
    | x: xs -> case x of
                 Composite(x) -> [x, xs]
-              | _ -> failure("Expected a composite on stack, got %s", x.string)
+              | _ -> failure("Expected a composite on stack, got %s, while executing popSComposite(%s)\n", x.string, insn.string)
               esac
    esac
 }
@@ -131,19 +136,14 @@ fun topS (st, insn) {
    | x: xs -> case x of
                 Val(_) -> x
               | Composite(_) -> x
-              | _ -> failure("Expected an object on stack, got %s", x.string)
+              | _ -> failure("Expected an object on stack, got %s, while executing topS(%s)\n", x.string, insn.string)
               esac
    esac
 }
-fun popRefS (st, insn) {
+fun topSAny (st, insn) {
    case st of
-     {}    -> failure("empty stack, while executing popRefS(%s)\n", insn.string)
-   | x: xs -> let key = case x of
-                Glb(_) -> x
-              | Arg(_) -> x
-              | Loc(_) -> x
-              | _ -> failure("Expected a reference on stack, got %s", x.string)
-              esac in [key, xs]
+     {}    -> failure("empty stack, while executing topSAny(%s)\n", insn.string)
+   | x: xs -> x
    esac
 }
 
@@ -238,12 +238,6 @@ fun eval (env, w, insns) {
       | ST(x)    ->
          (assign(s, x, topS(st, insn));
           [st, cst, s, w])
-      | STI      ->
-        let [value, st] = popS(st, insn) in
-        let [ref, st] = popRefS(st, insn) in
-        (assign(s, ref, value);
-          let st = pushS(st, value) in
-          [st, cst, s, w])
       | CONST(n) ->
           let st = pushS(st, mkBox(n)) in
           [st, cst, s, w]
@@ -257,7 +251,7 @@ fun eval (env, w, insns) {
           esac;
           [st, cst, s, w])
       | DUP     ->
-          let st = pushS(st, topS(st, insn)) in
+          let st = pushS(st, topSAny(st, insn)) in
           [st, cst, s, w]
       | DROP    ->
           let [value, st] = popS(st, insn) in
@@ -284,9 +278,9 @@ fun eval (env, w, insns) {
         [pushS(st, mkBox(tryRead(arr, idx))), cst, s, w]
       | STA ->
         let [rv, st] = popS(st, insn) in
-        let [idx, st] = popSNum(st, insn) in
-        let [arr, st] = popSComposite(st, insn) in
-        (tryAssign(arr, idx, rv); [pushS(st, rv), cst, s, w])
+        let [idx, st] = popSAny(st, insn) in
+        let [arr, st] = popSAny(st, insn) in
+        (tryAssign(fun(addr, obj) { assign(s, addr, obj) }, arr, idx, rv); [pushS(st, rv), cst, s, w])
       | ARRAY(n) ->
         let [st, args] = st.take(n) in
         [pushS(st, mkBox(listArray(map(unval, args)))), cst, s, w]
@@ -396,7 +390,7 @@ fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
 
   -- Get functions and empty functions list
   fun getFuns () {
-    [functions, makeCompEnv (nLabels, scopeDepth, state, nArgs, nLocals, {})]
+    [functions, makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, {})]
   }
 
   -- Lookups variable
@@ -404,7 +398,7 @@ fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
     case lookup (state, name) of
       Loc (i, true) -> Loc (i)
     | Glb (x, true) -> Glb (x)
-    | _             -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
+    | x             -> error (sprintf ("the name ""%s"" does not designate a variable (got %s)", name, x.string), getLoc (name))
     esac
   }
 
@@ -621,23 +615,21 @@ public fun compileSM (stmt) {
   fun compile (lab, env, stmt) {
     case stmt of
       Skip              -> [false, env, emptyBuffer ()]
-    | Var   (x)         -> [false, env, singletonBuffer (LD (lookupVar(env, x)))]
-    | Ref   (x)         -> [false, env, singletonBuffer (LDA (lookupVar(env, x)))]
+    | Var   (x)         -> [false, env, singletonBuffer (LD (lookupVal(env, x)))]
+    | Ref   (x)         -> [false, env, singletonBuffer (LDA (lookupVar(env, x))) <+ DUP]
+    | ElemRef(a, x)     ->
+      let [lab2, env] = env.genLabel in
+      let [lab2Used, env, buf2] = compile(lab2, env, a) in
+      let [labUsed, env, buf] = compile(lab, env, x) in
+      [labUsed, env, buf2 <+> label(lab2, lab2Used) <+> buf]
     | Const (n)         -> [false, env, singletonBuffer (CONST (n))]
     | Read  (x)         -> [false, env, singletonBuffer (READ) <+ ST(lookupVar(env, x)) <+ DROP]
     | Write (e)         -> let [labUsed, env, buf] = compile(lab, env, e) in [false, env, buf <+> label(lab, labUsed) <+ WRITE]
     | Assn  (Ref(x), f) -> let [labUsed, env, buf] = compile(lab, env, f) in [false, env, buf <+> label(lab, labUsed) <+ ST(lookupVar(env, x))]
-    | Assn  (ElemRef(a, x), f) ->
-      let [lab2, env] = env.genLabel in
-      let [lab3, env] = env.genLabel in
-      let [labUsed, env, buf] = compile(lab, env, f) in
-      let [lab3Used, env, buf3] = compile(lab3, env, a) in
-      let [lab2Used, env, buf2] = compile(lab2, env, x) in
-      [false, env, buf3 <+> label(lab3, lab3Used) <+> buf2 <+> label(lab2, lab2Used) <+> buf <+> label(lab, labUsed) <+ STA]
     | Assn  (x, f)      -> let [lab2, env] = env.genLabel in
                            let [labUsed, env, buf] = compile(lab, env, f) in
                            let [lab2Used, env, buf2] = compile(lab2, env, x) in
-                           [false, env, buf2 <+> label(lab2, lab2Used) <+> buf <+> label(lab, labUsed) <+ STI]
+                           [false, env, buf2 <+> label(lab2, lab2Used) <+> buf <+> label(lab, labUsed) <+ STA]
     | Binop (op, l, r)  -> let [lab2, env] = env.genLabel in
                            let [labUsed, env, buf] = compile(lab, env, l) in
                            let [lab2Used, env, buf2] = compile(lab2, env, r) in

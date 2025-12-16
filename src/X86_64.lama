@@ -579,6 +579,13 @@ fun call (env, fLabel, nA) {
   in [env, pushs <+> code]
 }
 
+fun fixCallAlignment(nA) {
+  if nA < 6 !! nA % 2 == 0
+  then [emptyBuffer(), emptyBuffer()]
+  else [singletonBuffer(Push (L(0))), singletonBuffer(Binop ("+", L(8), rsp))]
+  fi
+}
+
 (* Same as call, but also keeps nShifts registers on the bottom of symbolic stack to be filled before the call *)
 fun callShifted(env, fLabel, nA, nS) {
   let [pushs, pops] = savecode(env, nA + nS) in
@@ -593,7 +600,8 @@ fun callShifted(env, fLabel, nA, nS) {
   | _ -> Positive
   esac in
   let [pos, env] = env.allocate in
-  [env, pushs <+> moveArgs(movedStack, nS, moveDirection), singletonBuffer(Call (fLabel)) <+> pops <+ Mov(rax, pos)]
+  let [pushZeros, popGarbage] = fixCallAlignment(nA + nS) in
+  [env, pushs <+> pushZeros <+> moveArgs(movedStack, nS, moveDirection), singletonBuffer(Call (fLabel)) <+> popGarbage <+> pops <+ Mov(rax, pos)]
 }
 
 -- Gets a suffix for Set instruction from
@@ -620,9 +628,23 @@ fun toFixedNum (r) {
   singletonBuffer (Sal1 (r)) <+ Or1 (r)
 }
 
+fun unbox_ (register) {
+  case register of
+    R(_) -> singletonBuffer(Sar1(register))
+  | _ -> singletonBuffer(Mov(register, rbx)) <+> unbox_(rbx) <+ Mov(rbx, register)
+  esac
+}
+
+fun box_(register) {
+  case register of
+    R(_) -> toFixedNum(register)
+  | _ -> singletonBuffer(Mov(register, rbx)) <+> box_(rbx) <+ Mov(rbx, register)
+  esac
+}
+
 fun compileCmp(env, left, op, right) {
-  emptyBuffer()
-    <+ Mov (right, rax) <+ Binop("cmp", rax, left) <+ Mov(L(0), rax) <+ Set(suffix(op), "%al")
+  unbox_(right)
+    <+ Mov (right, rax) <+> unbox_(left) <+ Binop("cmp", rax, left) <+ Mov(L(0), rax) <+ Set(suffix(op), "%al") <+> box_(rax)
 }
 
 (* Fixes code that unfortunately is hardcoded in the CPU to clobber the rdx register, so it works when its operand is itself rdx.
@@ -640,11 +662,11 @@ fun rdxSwap(field, code) {
 
 fun compileBinop(env, left, op, right) {
   case op of
-       "+" -> emptyBuffer() <+ Mov (left, rax) <+ Binop(op, right, rax)
-    |  "*" -> withSave(env, rdx, rdx, emptyBuffer() <+ Mov (left, rax) <+ Binop(op, right, rax))
-    |  "-" -> emptyBuffer() <+ Mov (left, rax) <+ Binop(op, right, rax)
-    |  "/" -> withSave(env, rdx, rdx, emptyBuffer() <+ Mov (left, rax) <+> rdxSwap(right, fun(t) { singletonBuffer(Cltd) <+ IDiv(t) }))
-    |  "%" -> withSave(env, rdx, rdx, emptyBuffer() <+ Mov (left, rax) <+> rdxSwap(right, fun(t) { singletonBuffer(Cltd) <+ IDiv(t) <+ Mov(rdx, rax) }))
+       "+" -> unbox_(left) <+ Mov (left, rax) <+> unbox_(right) <+ Binop(op, right, rax) <+> box_(rax)
+    |  "*" -> withSave(env, rdx, rdx, unbox_(left) <+ Mov (left, rax) <+> unbox_(right) <+ Binop(op, right, rax) <+> box_(rax))
+    |  "-" -> unbox_(left) <+ Mov (left, rax) <+> unbox_(right) <+ Binop(op, right, rax) <+> box_(rax)
+    |  "/" -> withSave(env, rdx, rdx, unbox_(left) <+ Mov (left, rax) <+> rdxSwap(right, fun(t) { singletonBuffer(Cltd) <+> unbox_(t) <+ IDiv(t) }) <+> box_(rax))
+    |  "%" -> withSave(env, rdx, rdx, unbox_(left) <+ Mov (left, rax) <+> rdxSwap(right, fun(t) { singletonBuffer(Cltd) <+> unbox_(t) <+ IDiv(t) <+ Mov(rdx, rax) }) <+> box_(rax))
     |  "<" -> compileCmp(env, left, op, right)
     |  ">" -> compileCmp(env, left, op, right)
     | "==" -> compileCmp(env, left, op, right)
@@ -652,14 +674,14 @@ fun compileBinop(env, left, op, right) {
     | "<=" -> compileCmp(env, left, op, right)
     | ">=" -> compileCmp(env, left, op, right)
     | "!!" -> emptyBuffer() <+ Mov(L(0), rax)
-      <+ Binop("cmp", L(0), left)  <+ Set("nz", "%al") <+ Mov(rax, left)
-      <+ Binop("cmp", L(0), right) <+ Set("nz", "%al")
-      <+ Binop("!!", left, rax)
+      <+> unbox_(left)  <+ Binop("cmp", L(0), left)  <+ Set("nz", "%al") <+ Mov(rax, left)
+      <+> unbox_(right) <+ Binop("cmp", L(0), right) <+ Set("nz", "%al")
+      <+ Binop("!!", left, rax) <+> box_(rax)
     | "&&" ->
       emptyBuffer() <+ Mov(L(0), rax)
-      <+ Binop("cmp", L(0), left)  <+ Set("nz", "%al") <+ Mov(rax, left)
-      <+ Binop("cmp", L(0), right) <+ Set("nz", "%al")
-      <+ Binop("&&", left, rax)
+      <+> unbox_(left)  <+ Binop("cmp", L(0), left)  <+ Set("nz", "%al") <+ Mov(rax, left)
+      <+> unbox_(right) <+ Binop("cmp", L(0), right) <+ Set("nz", "%al")
+      <+ Binop("&&", left, rax) <+> box_(rax)
     |    _ -> failure ("Binop %s not yet implemented\n", op)
   esac
 }
@@ -683,11 +705,6 @@ fun compile (env, code) {
             | _ -> failure("Unexpected ST instruction operand %s\n", x.string)
           esac in
           [env, code <+> move(s, env.loc(x))]
-      | STI ->
-          let [value, env] = env.pop in
-          let [addr, env] = env.pop in
-          let env = env.push(value) in
-          [env, code <+> move(value, I(0, addr))]
       | LD(x) ->
           let [s, env] = env.allocate in
           [env, code <+> move(env.loc(x), s)]
@@ -696,7 +713,7 @@ fun compile (env, code) {
           [env, code <+ Lea(env.loc(x), s)]
       | CONST(n) ->
           let [s, env] = env.allocate in
-          [env, code <+> move(L(n), s)]
+          [env, code <+> move(L(makeBox(n)), s)]
       | BINOP(p) ->
           let [fst, env] = env.pop in
           let [snd, env] = env.pop in
@@ -713,7 +730,7 @@ fun compile (env, code) {
       | CJMP(c, x) ->
           let [k, env] = env.pop in
           let env = env.setStack(x) in
-          [env, code <+ Binop("cmp", L(0), k) <+ CJmp(c, x)]
+          [env, code <+ Binop("cmp", L(makeBox(0)), k) <+ CJmp(c, x)]
       | DROP ->
           let [s, env] = env.pop in
           [env, code]
@@ -741,14 +758,19 @@ fun compile (env, code) {
       | STA ->
           let [env, compiled] = call(env, "Bsta", 3) in
           [env, code <+> compiled]
+      | DUP ->
+          let [k, env] = env.pop in
+          let [_, env] = env.allocate in  -- avoid unnecessary MOV
+          let [s, env] = env.allocate in
+          [env, code <+> move(k, s)]
       | ARRAY(n) ->
           let [env, saves, compiled] = callShifted(env, "Barray", n, 1) in
-          [env, code <+> saves <+> withSave(env, R(0), R(1), move(L(n), R(0)) <+> compiled)]
+          [env, code <+> saves <+> withSave(env, R(0), R(1), move(L(makeBox(n)), R(0)) <+> compiled)]
       | SEXP(tag, nargs) ->
           let [env, stidx] = env.addString(tag) in
           let [s, env] = env.allocate in
           let [env, saves, compiled] = callShifted(env, "Bsexp", nargs + 1, 1) in
-          [env, code <+ Lea(M(stidx), s) <+> saves <+> withSave(env, R(0), R(1), move(L(nargs), R(0)) <+> compiled)]
+          [env, code <+ Lea(M(stidx), s) <+> saves <+> withSave(env, R(0), R(1), move(L(makeBox(nargs)), R(0)) <+> compiled)]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
