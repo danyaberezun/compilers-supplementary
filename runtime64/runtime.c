@@ -117,7 +117,7 @@ void* Bsta (void *x, void *j, void *v) {
   return v;
 }
 
-void Lwrite (long x) {
+void Lwrite (long x) {  
   ALIGN_STACK;
   printf ("%ld\n", UNBOX(x));
 }
@@ -126,7 +126,7 @@ long Lread () {
   long result;
   
   ALIGN_STACK;
-  scanf  ("%ld", &result);
+  scanf ("%ld", &result);
   
   return BOX(result);
 }
