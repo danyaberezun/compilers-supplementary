@@ -138,7 +138,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
         {}        -> [rbx, 0]
       | S (n) : _ -> [S (n+1), n+2]
       | R (n) : _ -> if n < nRegs then [R (n+1), stackSlots] else [S (0), 1] fi
-      | _         -> [S (0), 1]
+      | _         -> failure ("Unexpected symbolic stack: %s\n", stack.string)
       esac
     of [x, n] -> [x, makeEnv (x : stack, if n > stackSlots then n else stackSlots fi, globals, barrier, stackMap)]esac
   }
@@ -361,6 +361,64 @@ fun suffix (op) {
   esac
 }
 
+fun compileArithOp (op, lhs, rhs, res) {
+  if memOpnd (lhs) && memOpnd(rhs) then
+    singletonBuffer (Mov (lhs, rax)) <+ Binop (op, rhs, rax) <+ Mov (rax, res)
+  else 
+    singletonBuffer (Binop (op, rhs, lhs)) <+> move (lhs, res)
+  fi
+}
+
+fun compileDivOp (op, lhs, rhs, res) {
+  let out = case op of
+              "/" -> rax
+            | "%" -> rdx
+  esac in singletonBuffer (Mov (lhs, rax)) <+ Cltd <+ IDiv (rhs) <+ Mov (out, res)
+}
+
+fun compileLogicOp (op, lhs, rhs, res) {
+  fun isTrue (arg, to) {
+    singletonBuffer (Binop ("cmp", L (0), arg)) <+ Set (suffix ("!="), to)
+  }
+
+  fun setZero (arg) {
+    singletonBuffer (Binop ("^", arg, arg))
+  }
+
+  setZero(rax) <+> setZero(rdx) <+> 
+    isTrue (lhs, "%al") <+> isTrue (rhs, "%dl") <+ 
+    Binop (op, rax, rdx) <+ Mov (rdx, res)
+}
+
+fun compileCmpOp (op, lhs, rhs, res) {
+  let getRes = singletonBuffer (Set (suffix (op), "%al")) 
+    <+ Binop ("&&", L (1), rax) <+ Mov (rax, res) in
+  if memOpnd (lhs) && memOpnd(rhs) then
+    singletonBuffer (Mov (lhs, rax)) <+> getRes
+  else 
+    singletonBuffer (Binop ("cmp", rhs, lhs)) <+> getRes
+  fi
+}
+
+fun compileBinOp (op, lhs, rhs, res) {
+  case op of
+    "+" -> compileArithOp (op, lhs, rhs, res)
+  | "-" -> compileArithOp (op, lhs, rhs, res)
+  | "*" -> compileArithOp (op, lhs, rhs, res)
+  | "/" -> compileDivOp (op, lhs, rhs, res)
+  | "%" -> compileDivOp (op, lhs, rhs, res)
+  | "&&" -> compileLogicOp (op, lhs, rhs, res)
+  | "!!" -> compileLogicOp (op, lhs, rhs, res)
+  | "<" -> compileCmpOp (op, lhs, rhs, res)
+  | "<=" -> compileCmpOp (op, lhs, rhs, res)
+  | "==" -> compileCmpOp (op, lhs, rhs, res)
+  | "!=" -> compileCmpOp (op, lhs, rhs, res)
+  | ">=" -> compileCmpOp (op, lhs, rhs, res)
+  | ">" -> compileCmpOp (op, lhs, rhs, res)
+  | _   -> failure ("codegeneration for binary operator %s is not yet implemented\n", op.string)
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -377,6 +435,39 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
           esac
+      | ST (x) -> let env = env.addGlobal(x) in [env, code <+> move (env.peek, env.loc(x))]
+      | LD (x) -> let [l, env] = env.addGlobal(x).allocate in [env, code <+> move (env.loc(x), l)]
+      | LDA (x) -> 
+        let [l, env] = env.addGlobal(x).allocate in
+        let code = code <+> if memOpnd (l) 
+          then singletonBuffer (Lea (env.loc(x), rax)) <+ Mov (rax, l)
+          else singletonBuffer (Lea (env.loc(x), l))
+        fi in [env, code]
+      | STI -> 
+        let [v, addr, env] = env.pop2 in
+        let [res, env] = env.allocate in
+        let code = code <+> if memOpnd(addr)
+        then singletonBuffer (Mov (addr, rax)) <+ Mov (v, rdx) <+ Mov (rdx, I (0, rax)) <+ Mov (rdx, res)
+        else singletonBuffer (Mov (v, rax)) <+ Mov (rax, I (0, addr)) <+ Mov (rax, res)
+        fi in [env, code]
+      | DROP -> let [_, env] = env.pop in [env, code]
+      | BINOP (op) -> 
+        let [rhs, lhs, env] = env.pop2 in 
+        let [res, env]      = env.allocate in
+        [env, code <+> compileBinOp (op, lhs, rhs, res)]
+      | CONST (n) -> let [l, env] = env.allocate in [env, code <+ Mov (L (n), l)]
+      | LABEL (l) -> 
+        let env = if env.isBarrier
+        then env.retrieveStack(l)
+        else env
+        fi in [env, code <+ Label (l)]
+      | JMP (l)   -> 
+        let env = env.setStack(l).setBarrier in
+        [env, code <+ Jmp (l)]
+      | CJMP (c, l) -> 
+          let [cond, env] = env.pop in
+          let env = env.setStack(l).setBarrier in
+          [env, code <+ Binop ("cmp", L (0), cond) <+ CJmp (c, l)]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
     }, [env, emptyBuffer ()], code)
@@ -403,7 +494,8 @@ public fun compileX86 (args, code) {
                         prologue (getStackSize (env)) <+>
                         code <+>
                         epilogue ()
-                      )
+                      ) <+>
+                      singletonBuffer (Meta ("\t.section .note.GNU-stack,"""",@progbits\n"))
                     ).stringcat);
                     
        system ({"gcc -g -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
