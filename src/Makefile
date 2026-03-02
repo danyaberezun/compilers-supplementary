@@ -13,6 +13,10 @@ Parser.o: Lexer.o
 
 Builtins.o: World.o
 
+State.o: Parser.o
+
+Expr.o: Parser.o State.o Binop.o
+
 State.o: Lexer.o Parser.o
 
 Expr.o: State.o Builtins.o
