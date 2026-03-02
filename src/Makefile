@@ -6,12 +6,14 @@ LAMAC=lamac
 
 .PHONY: all clean
 
-all: Parser.o Lexer.o X86_64.o X86.o Stmt.o SM.o Manifest.o
+all: X86_64.o X86.o Stmt.o
 	$(LAMAC) -I . -o lama-impl Driver.lama
 
 Parser.o: Lexer.o
 
-Expr.o: State.o
+State.o: Parser.o
+
+Expr.o: Parser.o State.o Binop.o
 
 Stmt.o: State.o Expr.o World.o
 
