@@ -1,32 +1,17 @@
-# Home task 1: Straight Line Interpreter and Stack Machine
+# compilers-supplementary
 
-**Repo structure**:
+A supplementary repository for the course on compilers.
 
-* [`regression`](regression/) --- tests
-* [`src`](src/) contains sources of your compiler
-* ['Embedding.meta'](regression/Embedding.meta) contains embedding of the language (since we have no parser yet)
+**How to submit tasks**:
 
-Corresponding lecture notes: [Expressions Semantics](https://github.com/danyaberezun/compilers-supplementary/tree/lecture-notes/lectures/01.pdf),
-[Statements and AST2SM Semantics](https://github.com/danyaberezun/compilers-supplementary/tree/lecture-notes/lectures/02.pdf)
-
-**How to submit the task**:
-
-* open pull-request to this repo to the branch with the corresponding task
-* NB: your pr has to contain changes to files [`Expr.lama`](src/Expr.lama), [`Stmt.lama`](src/Stmt.lama), and [`SM.lama`](src/SM.lama) only
+* fork the repo
+* implement the corresponding task (branches `T01`, `T02`, ...)
+* open pull-request with title `[<your_university>] <T#> <Your_Name> <Your_Surname>` to this repo to the branch with the corresponding task where
+  * `<your_university> ::= SPBGU | NUP | CUB | HSE | |ITMO`
+  * `<T#>` --- assignment number (the first three symbols of the corresponding branch name)
+* NB: your pr has to contain changes to files `*.lama` files from folder `src`
 * NB: be sure that all checks have passed
 
-**Standard deadline**: next lecture
+All lecture notes are located in branch [lecture-notes](https://github.com/danyaberezun/compilers-supplementary/tree/lecture-notes/).
 
-**Task**:
-
-* Implement function `evalExpr` from [`src/Expr.lama`](src/Expr.lama)
-* Implement function `eval` from [`src/Stmt.lama`](src/Stmt.lama)
-* Implement function `eval` from [`src/SM.lama`](src/SM.lama)
-* Implement function `compileExpr` from [`src/SM.lama`](src/SM.lama)
-* Implement function `compileStmt` from [`src/SM.lama`](src/SM.lama)
-
-**Compile and run tests (from the root folder)**:
-
-```bash
-make
-```
+[This table](https://docs.google.com/spreadsheets/d/1Cs9XFVvEuXq3CaIk3YT9YF5EXpbkU0MjO4g-ajPKps8/edit?usp=sharing) contains results and deadlines in the corresponding sheets.
