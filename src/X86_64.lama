@@ -131,6 +131,17 @@ fun makeEnv (stack, stackSlots, globals) {
     of [x, n] -> [x, makeEnv (x : stack, if n > stackSlots then n else stackSlots fi, globals)]esac
   }
 
+  fun deallocate (x) {
+    case x of
+      S (n) : _ -> if n == stackSlots then
+          [singletonBuffer (Pop (rax)), makeEnv (stack, stackSlots - 1, globals)]
+        else
+          [emptyBuffer (), makeEnv (stack, stackSlots, globals)]
+        fi
+    | _ -> [emptyBuffer (), makeEnv (stack, stackSlots, globals)]
+    esac
+  }
+
   -- Pushes an item on the symbolic state; returns an updated envirtonment
   fun push (y) {
     makeEnv (y : stack, stackSlots, globals)
@@ -172,7 +183,7 @@ fun makeEnv (stack, stackSlots, globals) {
     stackSlots
   }
 
-  [envString, allocate, push, pop, pop2, addGlobal, loc, getGlobals, getStackSize]
+  [envString, allocate, push, pop, pop2, addGlobal, loc, getGlobals, getStackSize, deallocate]
 }
 
 -- Exported accessors
@@ -210,6 +221,10 @@ fun getGlobals (env) {
 
 fun getStackSize (env) {
   env [8] ()
+}
+
+fun deallocate (env, x) {
+  env [9] (x)
 }
 
 -- Creates an initial environment
@@ -295,7 +310,11 @@ fun contains (l, el) {
 
 fun compileBinop (op, x, y, res) {
   fun compileSimple (op, x, y, res) {
-    singletonBuffer (Binop (op, x, y)) <+> move (y, res)
+    if memOpnd(x) && memOpnd(y) then
+      singletonBuffer(Mov(y, rax)) <+ Binop(op, x, rax) <+ Mov(rax, res)
+    else
+      singletonBuffer(Binop(op, x, y)) <+ Mov(y, res)
+    fi
   }
 
   fun compileDiv (op, x, y, res) {
@@ -307,19 +326,20 @@ fun compileBinop (op, x, y, res) {
 
   fun compileLog (op, x, y, res) {
     fun toBool (s) {
-      singletonBuffer (Binop ("cmp", L (0), s)) <+ Set ("nz", "%bl") <+ Movzb ("%bl", s)
+      singletonBuffer (Binop ("cmp", L (0), s)) <+ Set ("nz", "%al") <+ Binop("&&", L(1), rax) <+ Mov(rax, s)
     }
 
-    toBool (x) <+> toBool (y) <+ Binop (op, x, y) <+> move (y, res)
+    toBool (x) <+> toBool (y) <+> compileSimple (op, x, y, res)
   }
 
   fun compileCmp (op, x, y, res) {
-    singletonBuffer (Binop ("cmp", x, y)) <+ Set (suffix (op), "%bl") <+ Movzb ("%bl", res)
+    let compare = if memOpnd(x) && memOpnd(y) then
+        singletonBuffer (Mov (y, rax)) <+ Binop ("cmp", x, rax)
+      else
+        singletonBuffer (Binop ("cmp", x, y))
+      fi
+    in compare <+ Set (suffix (op), "%al") <+ Binop("&&", L(1), rax) <+ Mov(rax, res)
   }
-
-  fun eq (other) { other == "/" }
-
-  sprintf ("%s", find (eq, {"+", "-", "*"}));
 
   if   {"+", "-", "*"}.contains (op) then compileSimple (op, x, y, res)
   elif {"/", "%"}.contains (op) then compileDiv (op, x, y, res)
@@ -349,13 +369,15 @@ fun compile (env, code) {
             [s, env] -> [env, code <+> move (env.loc (x), s)]
           esac
       | ST (x) ->
-          case env.addGlobal (x).pop of
-            [s, env] -> [env, code <+> move (s, env.loc (x))]
-          esac
+          let [s, env] = env.addGlobal (x).pop in
+          let [dcode, env] = env.deallocate (s) in
+          [env, code <+> move (s, env.loc (x)) <+> dcode]
       | BINOP (op) ->
           let [y, x, env] = env.pop2 in
           let [res, env] = env.allocate in
-          [env, code <+> compileBinop (op, x, y, res)]
+          let [xdcode, env] = env.deallocate (x) in
+          let [ydcode, env] = env.deallocate (y) in
+          [env, code <+> compileBinop (op, x, y, res) <+> xdcode <+> ydcode]
       | CONST (n) ->
         case env.allocate of
           [s, env] -> [env, code <+ Mov (L (n), s)]
