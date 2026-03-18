@@ -62,7 +62,7 @@ public fun evalOp (op, l, r) {
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
 fun checkVar (state, name) {
-  case state.lookup (name) of
+  case lookup (state, name) of
     Var (_) -> skip
   | _       -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
   esac
@@ -71,7 +71,7 @@ fun checkVar (state, name) {
 -- Helper function: checks that given name designates a function in
 -- a given state
 fun checkFun (state, name) {
-  case state.lookup (name) of
+  case lookup (state, name) of
     Fun (_, _) -> skip
   | _          -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
   esac
@@ -79,12 +79,12 @@ fun checkFun (state, name) {
 
 -- Helper function: adds a bunch of regular variables current scope
 fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Var (0))}, state, names)
+  foldl (fun (s, name) {addName (s, name, Var (0))}, state, names)
 }
 
 -- Helper function: adds a function in current scope
 fun addFunction (state, name, args, body) {
-  state.addName (name, Fun (args, body))
+  addName (state, name, Fun (args, body))
 }
                                         
 -- Evaluates a list of expressions, properly threading a configurations.
@@ -101,15 +101,110 @@ fun evalList (c, exprs) {
   esac
 }
 
-(* Assignment *)
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun varValue (s, name) {
+  checkVar (s, name);
+  let Var (v) = lookup (s, name) in v
 }
-(* End *)
+
+fun unref (s, v) {
+  case v of
+    Ref (x) -> varValue (s, x)
+  | Val (n) -> n
+  | _ -> failure ("Unexpected value: %s\n", v.string)
+  esac
+}
+
+fun ref (v) {
+  case v of
+    Ref (x) -> x
+  | _ -> failure ("Expected reference, got: %s\n", v.string)
+  esac
+}
+
+fun eval (c@[s, w], expr) {
+  case expr of  
+    Skip -> [c, None]
+  | Read (Ref (x)) -> 
+    let [v, w] = readWorld (w) in
+    let nc = [s <- [x, Var (v)], w] in
+    [nc, None]
+  | Write (e) ->
+    let [[s, w], v] = eval (c, e) in
+    let nc = [s, writeWorld (unref (s, v), w)] in
+    [nc, None]
+  | Binop (op, e1, e2) ->
+    let [nc, v1] = eval (c, e1) in
+    let [nc, v2] = eval (nc, e2) in
+    let res = evalOp (op, unref (s, v1), unref (s, v2)) in
+    [nc, Val (res)]
+  | Seq (e1, e2) ->
+    let [nc, _] = eval (c, e1) in eval (nc, e2)
+  | Ignore (e) -> 
+    let [nc, _] = eval (c, e) in [nc, None]
+  | Assn (l, r) ->
+    let [nc, lv] = eval (c, l) in
+    let [[s, w], rv] = eval (nc, r) in
+    let rv = unref (s, rv) in
+    let nc = [s <- [ref (lv), Var(rv)], w] in
+    [nc, Val (rv)]
+  | Ref (x) -> checkVar (s, x); [c, Ref (x)]
+  | Var (x) -> checkVar (s, x); [c, Val (varValue (s, x))]
+  | Const (n) -> [c, Val (n)]
+  | If (cnd, t, e) ->
+    let [nc, v] = eval (c, cnd) in
+    if unref (s, v) == 0 
+    then eval (nc, e) 
+    else eval (nc, t) 
+    fi
+  | While (cnd, b) ->
+    while let [[s, w], v] = eval (c, cnd) in
+          c := [s, w]; unref (s, v) != 0 do
+      let [nc, _] = eval (c, b) in c := nc
+    od; 
+    [c, None]
+  | DoWhile (b, cnd) ->
+    do let [nc, _] = eval (c, b) in c := nc
+    while let [[s, w], v] = eval (c, cnd) in 
+          c := [s, w]; unref (s, v) != 0 
+    od; [c, None]
+  | Scope (defs, body) -> 
+    let scoped = foldl (
+      fun (s, def) {
+        case def of
+          Var(names) -> addNames (s, names)
+        | Fun(name, args, body) -> addFunction (s, name, args, body)
+        esac
+      },
+      enterScope (s),
+      defs
+    ) in
+    let [[ns, nw], v] = eval ([scoped, w], body) in
+    [[leaveScope (ns), nw], v]
+  | Call (f, args) ->
+    checkFun (s, f);
+    let [[ns, nw], argVals] = evalList (c, args) in
+    let Fun (params, body) = lookup (s, f) in
+    if size (params) != size (argVals) then
+      error (sprintf (
+        "function ""%s"" expects %d arguments, but got %d", 
+        f, size (params), size (argVals)
+      ), getLoc (expr))
+    else
+      let cs = foldl (
+        fun (s, [p, v]) {addName (s, p, Var (unref (ns, v)))},
+        enterFunction (ns),
+        zip (params, argVals)
+      ) in
+      let [[s, w], v] = eval ([cs, nw], body) in
+      [[leaveFunction (ns, getGlobal (s)), w], v]
+    fi
+  | _ -> failure ("Unknown expression %s\n", string (expr))
+  esac
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
   case eval ([emptyState (), createWorld (input)], expr) of
-    [c, _] -> c.snd.getOutput
+    [c, _] -> getOutput (snd (c))
   esac
 }
