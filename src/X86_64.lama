@@ -52,7 +52,7 @@ var wordSize = 8;
 --   Binop (string, opnd, opnd) -- makes a binary operation; note, the first operand   
 --                                 designates x86 operator, not the source language one
 --   IDiv  (opnd)               -- x86 integer division, see instruction set reference 
---   Cltd                       -- see instruction set reference           
+--   Cqo                        -- see instruction set reference           
 --   Set   (string, string)     -- sets a value from flags; the first operand is the   
 --                                 suffix, which determines the value being set, the
 --                                 the second --- (sub)register name
@@ -92,7 +92,7 @@ fun insnString (insn) {
   }
   
   case insn of
-    Cltd               -> "\tcqo\n"
+    Cqo                -> "\tcqo\n"
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
   | Sal   (s)          -> sprintf ("\tsalq\t%s\n", s)
   | IDiv  (s1)         -> sprintf ("\tidivq\t%s\n", opndString (s1))
@@ -141,6 +141,17 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
       | _         -> [S (0), 1]
       esac
     of [x, n] -> [x, makeEnv (x : stack, if n > stackSlots then n else stackSlots fi, globals, barrier, stackMap)]esac
+  }
+
+  fun deallocate (x) {
+    case x of
+      S (n) : _ -> if n == stackSlots then
+          [singletonBuffer (Pop (rax)), makeEnv (stack, stackSlots - 1, globals)]
+        else
+          [emptyBuffer (), makeEnv (stack, stackSlots, globals)]
+        fi
+    | _ -> [emptyBuffer (), makeEnv (stack, stackSlots, globals)]
+    esac
   }
 
   -- Pushes an item on the symbolic state; returns an updated envirtonment
@@ -225,7 +236,9 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
    isBarrier,
    setBarrier,
    setStack,
-   retrieveStack]
+   retrieveStack,
+   deallocate
+  ]
 }
 
 -- Exported accessors
@@ -283,6 +296,10 @@ fun setStack (env, l) {
 
 fun retrieveStack (env, l) {
   env [13] (l)
+}
+
+fun deallocate (env, x) {
+  env [9] (x)
 }
 
 -- Creates an initial environment
@@ -361,6 +378,53 @@ fun suffix (op) {
   esac
 }
 
+fun contains (l, el) {
+  fun eq (other) { compare (other, el) == 0 }
+
+  compare (find (eq, l), None)
+}
+
+fun compileBinop (op, x, y, res) {
+  fun compileSimple (op, x, y, res) {
+    if memOpnd(x) && memOpnd(y) then
+      singletonBuffer(Mov(y, rax)) <+ Binop(op, x, rax) <+ Mov(rax, res)
+    else
+      singletonBuffer(Binop(op, x, y)) <+ Mov(y, res)
+    fi
+  }
+
+  fun compileDiv (op, x, y, res) {
+    let out = case op of
+      "/" -> rax
+    | "%" -> rdx
+    esac in singletonBuffer (Mov (y, rax)) <+ Cqo <+ IDiv (x) <+ Mov (out, res)
+  }
+
+  fun compileLog (op, x, y, res) {
+    fun toBool (s) {
+      singletonBuffer (Binop ("cmp", L (0), s)) <+ Set ("nz", "%al") <+ Binop("&&", L(1), rax) <+ Mov(rax, s)
+    }
+
+    toBool (x) <+> toBool (y) <+> compileSimple (op, x, y, res)
+  }
+
+  fun compileCmp (op, x, y, res) {
+    let compare = if memOpnd(x) && memOpnd(y) then
+        singletonBuffer (Mov (y, rax)) <+ Binop ("cmp", x, rax)
+      else
+        singletonBuffer (Binop ("cmp", x, y))
+      fi
+    in compare <+ Set (suffix (op), "%al") <+ Binop("&&", L(1), rax) <+ Mov(rax, res)
+  }
+
+  if   {"+", "-", "*"}.contains (op) then compileSimple (op, x, y, res)
+  elif {"/", "%"}.contains (op) then compileDiv (op, x, y, res)
+  elif {"!!", "&&"}.contains (op) then compileLog (op, x, y, res)
+  elif {"==", "!=", "<=", "<", ">=", ">"}.contains (op) then compileCmp (op, x, y, res)
+  else failure("coegeneration for binary operation %s is not yet implemented", op)
+  fi
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -376,6 +440,30 @@ fun compile (env, code) {
       | WRITE ->
           case env.pop of
             [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
+          esac
+      | LD (x) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac
+      | ST (x) ->
+          let [s, env] = env.addGlobal (x).pop in
+          let [dcode, env] = env.deallocate (s) in
+          [env, code <+> move (s, env.loc (x)) <+> dcode]
+      | BINOP (op) ->
+          let [y, x, env] = env.pop2 in
+          let [res, env] = env.allocate in
+          let [xdcode, env] = env.deallocate (x) in
+          let [ydcode, env] = env.deallocate (y) in
+          [env, code <+> compileBinop (op, x, y, res) <+> xdcode <+> ydcode]
+      | CONST (n) ->
+          case env.allocate of
+            [s, env] -> [env, code <+ Mov (L (n), s)]
+          esac
+      | LABEL (l)  -> [env, code <+ Label (l)]
+      | JMP (l)    -> [env, code <+ Jmp (l)]
+      | CJMP (c, l)->
+          case env.pop of
+            [s, env] -> [env, code <+ Binop ("cmp", L (0), s) <+ CJmp (c, l)]
           esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
