@@ -6,6 +6,7 @@ import List;
 import Buffer;
 import Fun;
 import Manifest;
+import Array;
 
 -- Assembler language interface
 -- The registers:
@@ -52,7 +53,7 @@ var wordSize = 8;
 --   Binop (string, opnd, opnd) -- makes a binary operation; note, the first operand   
 --                                 designates x86 operator, not the source language one
 --   IDiv  (opnd)               -- x86 integer division, see instruction set reference 
---   Cqo                        -- see instruction set reference           
+--   Cltd                       -- see instruction set reference           
 --   Set   (string, string)     -- sets a value from flags; the first operand is the   
 --                                 suffix, which determines the value being set, the
 --                                 the second --- (sub)register name
@@ -92,7 +93,7 @@ fun insnString (insn) {
   }
   
   case insn of
-    Cqo                -> "\tcqo\n"
+    Cltd               -> "\tcqo\n"
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
   | Sal   (s)          -> sprintf ("\tsalq\t%s\n", s)
   | IDiv  (s1)         -> sprintf ("\tidivq\t%s\n", opndString (s1))
@@ -138,20 +139,9 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
         {}        -> [rbx, 0]
       | S (n) : _ -> [S (n+1), n+2]
       | R (n) : _ -> if n < nRegs then [R (n+1), stackSlots] else [S (0), 1] fi
-      | _         -> [S (0), 1]
+      | _         -> failure ("Unexpected symbolic stack: %s\n", stack.string)
       esac
     of [x, n] -> [x, makeEnv (x : stack, if n > stackSlots then n else stackSlots fi, globals, barrier, stackMap)]esac
-  }
-
-  fun deallocate (x) {
-    case x of
-      S (n) : _ -> if n == stackSlots then
-          [singletonBuffer (Pop (rax)), makeEnv (stack, stackSlots - 1, globals)]
-        else
-          [emptyBuffer (), makeEnv (stack, stackSlots, globals)]
-        fi
-    | _ -> [emptyBuffer (), makeEnv (stack, stackSlots, globals)]
-    esac
   }
 
   -- Pushes an item on the symbolic state; returns an updated envirtonment
@@ -236,9 +226,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap) {
    isBarrier,
    setBarrier,
    setStack,
-   retrieveStack,
-   deallocate
-  ]
+   retrieveStack]
 }
 
 -- Exported accessors
@@ -296,10 +284,6 @@ fun setStack (env, l) {
 
 fun retrieveStack (env, l) {
   env [13] (l)
-}
-
-fun deallocate (env, x) {
-  env [9] (x)
 }
 
 -- Creates an initial environment
@@ -378,51 +362,73 @@ fun suffix (op) {
   esac
 }
 
-fun contains (l, el) {
-  fun eq (other) { compare (other, el) == 0 }
-
-  compare (find (eq, l), None)
+fun compileArithOp (op, lhs, rhs, res) {
+  if memOpnd (lhs) && memOpnd(rhs) then
+    singletonBuffer (Mov (lhs, rax)) <+ Binop (op, rhs, rax) <+ Mov (rax, res)
+  else 
+    singletonBuffer (Binop (op, rhs, lhs)) <+> move (lhs, res)
+  fi
 }
 
-fun compileBinop (op, x, y, res) {
-  fun compileSimple (op, x, y, res) {
-    if memOpnd(x) && memOpnd(y) then
-      singletonBuffer(Mov(y, rax)) <+ Binop(op, x, rax) <+ Mov(rax, res)
-    else
-      singletonBuffer(Binop(op, x, y)) <+ Mov(y, res)
-    fi
+fun compileDivOp (op, lhs, rhs, res) {
+  let out = case op of
+              "/" -> rax
+            | "%" -> rdx
+  esac in singletonBuffer (Mov (lhs, rax)) <+ Cltd <+ IDiv (rhs) <+ Mov (out, res)
+}
+
+fun compileLogicOp (op, lhs, rhs, res) {
+  fun isTrue (arg, to) {
+    singletonBuffer (Binop ("cmp", L (0), arg)) <+ Set (suffix ("!="), to)
   }
 
-  fun compileDiv (op, x, y, res) {
-    let out = case op of
-      "/" -> rax
-    | "%" -> rdx
-    esac in singletonBuffer (Mov (y, rax)) <+ Cqo <+ IDiv (x) <+ Mov (out, res)
+  fun setZero (arg) {
+    singletonBuffer (Binop ("^", arg, arg))
   }
 
-  fun compileLog (op, x, y, res) {
-    fun toBool (s) {
-      singletonBuffer (Binop ("cmp", L (0), s)) <+ Set ("nz", "%al") <+ Binop("&&", L(1), rax) <+ Mov(rax, s)
-    }
+  setZero(rax) <+> setZero(rdx) <+> 
+    isTrue (lhs, "%al") <+> isTrue (rhs, "%dl") <+ 
+    Binop (op, rax, rdx) <+ Mov (rdx, res)
+}
 
-    toBool (x) <+> toBool (y) <+> compileSimple (op, x, y, res)
-  }
-
-  fun compileCmp (op, x, y, res) {
-    let compare = if memOpnd(x) && memOpnd(y) then
-        singletonBuffer (Mov (y, rax)) <+ Binop ("cmp", x, rax)
-      else
-        singletonBuffer (Binop ("cmp", x, y))
-      fi
-    in compare <+ Set (suffix (op), "%al") <+ Binop("&&", L(1), rax) <+ Mov(rax, res)
-  }
-
-  if   {"+", "-", "*"}.contains (op) then compileSimple (op, x, y, res)
-  elif {"/", "%"}.contains (op) then compileDiv (op, x, y, res)
-  elif {"!!", "&&"}.contains (op) then compileLog (op, x, y, res)
-  elif {"==", "!=", "<=", "<", ">=", ">"}.contains (op) then compileCmp (op, x, y, res)
-  else failure("coegeneration for binary operation %s is not yet implemented", op)
+fun compileCmpOp (op, lhs, rhs, res) {
+  let getRes = singletonBuffer (Set (suffix (op), "%al")) 
+    <+ Binop ("&&", L (1), rax) <+ Mov (rax, res) in
+  if memOpnd (lhs) && memOpnd(rhs) then
+    singletonBuffer (Mov (lhs, rax)) <+> getRes
+  else 
+    singletonBuffer (Binop ("cmp", rhs, lhs)) <+> getRes
   fi
+}
+
+fun compileBinOp (op, lhs, rhs, res) {
+  case op of
+    "+" -> compileArithOp (op, lhs, rhs, res)
+  | "-" -> compileArithOp (op, lhs, rhs, res)
+  | "*" -> compileArithOp (op, lhs, rhs, res)
+  | "/" -> compileDivOp (op, lhs, rhs, res)
+  | "%" -> compileDivOp (op, lhs, rhs, res)
+  | "&&" -> compileLogicOp (op, lhs, rhs, res)
+  | "!!" -> compileLogicOp (op, lhs, rhs, res)
+  | "<" -> compileCmpOp (op, lhs, rhs, res)
+  | "<=" -> compileCmpOp (op, lhs, rhs, res)
+  | "==" -> compileCmpOp (op, lhs, rhs, res)
+  | "!=" -> compileCmpOp (op, lhs, rhs, res)
+  | ">=" -> compileCmpOp (op, lhs, rhs, res)
+  | ">" -> compileCmpOp (op, lhs, rhs, res)
+  | _   -> failure ("codegeneration for binary operator %s is not yet implemented\n", op.string)
+  esac
+}
+
+fun regsSaved (call) {
+  let saved = [rcx, rdx, rsi, rdi, r8, r9, r10, r11] in
+  foldlArray(
+    fun (c, r) { 
+      singletonBuffer(Push(r)) <+> c <+ Pop(r) 
+    },
+    singletonBuffer(call),
+    saved
+  )
 }
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
@@ -435,36 +441,49 @@ fun compile (env, code) {
       case i of
         READ ->
           case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (rax, s)]
+            [s, env] -> [env, code <+>
+                regsSaved(Call ("Lread")) <+
+                Mov (rax, s)]
           esac             
       | WRITE ->
           case env.pop of
-            [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
+            [s, env] -> [env, code <+ 
+              Mov (s, rdi) <+> 
+              regsSaved(Call ("Lwrite"))]
           esac
-      | LD (x) ->
-          case env.allocate of
-            [s, env] -> [env, code <+> move (env.loc (x), s)]
-          esac
-      | ST (x) ->
-          let [s, env] = env.addGlobal (x).pop in
-          let [dcode, env] = env.deallocate (s) in
-          [env, code <+> move (s, env.loc (x)) <+> dcode]
-      | BINOP (op) ->
-          let [y, x, env] = env.pop2 in
-          let [res, env] = env.allocate in
-          let [xdcode, env] = env.deallocate (x) in
-          let [ydcode, env] = env.deallocate (y) in
-          [env, code <+> compileBinop (op, x, y, res) <+> xdcode <+> ydcode]
-      | CONST (n) ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Mov (L (n), s)]
-          esac
-      | LABEL (l)  -> [env, code <+ Label (l)]
-      | JMP (l)    -> [env, code <+ Jmp (l)]
-      | CJMP (c, l)->
-          case env.pop of
-            [s, env] -> [env, code <+ Binop ("cmp", L (0), s) <+ CJmp (c, l)]
-          esac
+      | ST (x) -> let env = env.addGlobal(x) in [env, code <+> move (env.peek, env.loc(x))]
+      | LD (x) -> let [l, env] = env.addGlobal(x).allocate in [env, code <+> move (env.loc(x), l)]
+      | LDA (x) -> 
+        let [l, env] = env.addGlobal(x).allocate in
+        let code = code <+> if memOpnd (l) 
+          then singletonBuffer (Lea (env.loc(x), rax)) <+ Mov (rax, l)
+          else singletonBuffer (Lea (env.loc(x), l))
+        fi in [env, code]
+      | STI -> 
+        let [v, addr, env] = env.pop2 in
+        let [res, env] = env.allocate in
+        let code = code <+> if memOpnd(addr)
+        then singletonBuffer (Mov (addr, rax)) <+ Mov (v, rdx) <+ Mov (rdx, I (0, rax)) <+ Mov (rdx, res)
+        else singletonBuffer (Mov (v, rax)) <+ Mov (rax, I (0, addr)) <+ Mov (rax, res)
+        fi in [env, code]
+      | DROP -> let [_, env] = env.pop in [env, code]
+      | BINOP (op) -> 
+        let [rhs, lhs, env] = env.pop2 in 
+        let [res, env]      = env.allocate in
+        [env, code <+> compileBinOp (op, lhs, rhs, res)]
+      | CONST (n) -> let [l, env] = env.allocate in [env, code <+ Mov (L (n), l)]
+      | LABEL (l) -> 
+        let env = if env.isBarrier
+        then env.retrieveStack(l)
+        else env
+        fi in [env, code <+ Label (l)]
+      | JMP (l)   -> 
+        let env = env.setStack(l).setBarrier in
+        [env, code <+ Jmp (l)]
+      | CJMP (c, l) -> 
+          let [cond, env] = env.pop in
+          let env = env.setStack(l).setBarrier in
+          [env, code <+ Binop ("cmp", L (0), cond) <+ CJmp (c, l)]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
     }, [env, emptyBuffer ()], code)
@@ -491,7 +510,8 @@ public fun compileX86 (args, code) {
                         prologue (getStackSize (env)) <+>
                         code <+>
                         epilogue ()
-                      )
+                      ) <+>
+                      singletonBuffer (Meta ("\t.section .note.GNU-stack,"""",@progbits\n"))
                     ).stringcat);
                     
        system ({"gcc -g -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
