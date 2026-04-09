@@ -78,7 +78,9 @@ fun eval (env, c, insns) {
       | WRITE: rest        -> let n: stack1 = stack in eval(env, [stack1, st, writeWorld (n, w)], rest)
       | BINOP(op): rest    -> let r: l: stack1 = stack in eval(env, [evalOp (op, l, r) : stack1, st, w], rest)
       | LD(x): rest        -> eval(env, [st(x) : stack, st, w], rest)
-      | ST(x): rest        -> let n: stack1 = stack in eval(env, [stack1, st <- [x, n], w], rest)
+      | LDA(x): rest       -> eval(env, [Addr (x) : stack, st, w], rest)
+      | ST(x): rest        -> let n: stack1 = stack in eval(env, [n : stack1, st <- [x, n], w], rest)
+      | STI: rest          -> let n: Addr (x): stack1 = stack in eval(env, [n : stack1, st <- [x, n], w], rest)
       | CONST(n): rest     -> eval(env, [n : stack, st, w], rest)
       | DUP: rest          -> let n: stack1 = stack in eval(env, [n : n : stack1, st, w], rest)
       | DROP: rest         -> let _: stack1 = stack in eval(env, [stack1, st, w], rest)
@@ -123,7 +125,36 @@ fun genLabels (env, n) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
-public fun compileSM (stmt) {
+public fun compileSM (expr) {
+  fun compileRef (env, expr) {
+    case expr of
+      Ref(x) -> [env, {LDA(x)}]
+    | Seq(e1, e2) ->
+        case compileVoid (env, e1) of
+          [env1, code1] ->
+            case compileRef (env1, e2) of
+              [env2, code2] -> [env2, code1 +++ code2]
+            esac
+        esac
+    | If(e, yes, no) ->
+        case genLabel (env) of
+          [elseLab, env1] ->
+            case genLabel (env1) of
+              [exitLab, env2] ->
+                case compileExpr (env2, e) of
+                  [env3, condCode] ->
+                    case compileRef (env3, yes) of
+                      [env4, thenCode] ->
+                        case compileRef (env4, no) of
+                          [env5, elseCode] -> [env5, condCode +++ {CJMP ("z", elseLab)} +++ thenCode +++ {JMP (exitLab), LABEL (elseLab)} +++ elseCode +++ {LABEL (exitLab)}]
+                        esac
+                    esac
+                esac
+            esac
+        esac
+    esac
+  }
+
   fun compileExpr (env, expr) {
     case expr of
       Var(x) ->
@@ -137,52 +168,38 @@ public fun compileSM (stmt) {
               [env2, code2] -> [env2, code1 +++ code2 +++ {BINOP(op)}]
             esac
         esac
-    | Assn(Ref(x), e) ->
-        case compileExpr (env, e) of
-          [env1, code] -> [env1, code +++ {DUP, ST(x)}]
-        esac
-    | Read(x) ->
-        [env, {READ, DUP, ST(x)}]
-    | Write(e) ->
-        case compileExpr (env, e) of
-          [env1, code] -> [env1, code +++ {DUP, WRITE}]
-        esac
-    | _ ->
-        failure ("compileSM in value context is not yet implemented\n")
-    esac
-  }
-
-  fun compileVoid (env, stmt) {
-    case stmt of
-      Assn(Ref(x), e) ->
-        case compileExpr (env, e) of
-          [env1, code] -> [env1, code +++ {ST(x)}]
-        esac
-    | Seq(s1, s2) ->
-        case compileVoid (env, s1) of
-          [env1, code1] ->
-            case compileVoid (env1, s2) of
-              [env2, code2] -> [env2, code1 +++ code2]
+    | Assn(l, e) ->
+        case compileRef (env, l) of
+          [env1, lhsCode] ->
+            case compileExpr (env1, e) of
+              [env2, rhsCode] -> [env2, lhsCode +++ rhsCode +++ {STI}]
             esac
         esac
-    | Skip ->
-        [env, {}]
     | Read(x) ->
         [env, {READ, ST(x)}]
     | Write(e) ->
         case compileExpr (env, e) of
-          [env1, code] -> [env1, code +++ {WRITE}]
+          [env1, code] -> [env1, code +++ {DUP, WRITE}]
         esac
-    | If(e, s1, s2) ->
+    | Seq(e1, e2) ->
+        case compileVoid (env, e1) of
+          [env1, code1] ->
+            case compileExpr (env1, e2) of
+              [env2, code2] -> [env2, code1 +++ code2]
+            esac
+        esac
+    | Skip ->
+        [env, {CONST(0)}]
+    | If(e, yes, no) ->
         case genLabel (env) of
           [elseLab, env1] ->
             case genLabel (env1) of
               [exitLab, env2] ->
                 case compileExpr (env2, e) of
                   [env3, condCode] ->
-                    case compileVoid (env3, s1) of
+                    case compileExpr (env3, yes) of
                       [env4, thenCode] ->
-                        case compileVoid (env4, s2) of
+                        case compileExpr (env4, no) of
                           [env5, elseCode] ->
                             [env5, condCode +++ {CJMP ("z", elseLab)} +++ thenCode +++ {JMP (exitLab), LABEL (elseLab)} +++ elseCode +++ {LABEL (exitLab)}]
                         esac
@@ -199,7 +216,7 @@ public fun compileSM (stmt) {
                   [env3, condCode] ->
                     case compileVoid (env3, body) of
                       [env4, bodyCode] ->
-                        [env4, {LABEL (loopLab)} +++ condCode +++ {CJMP ("z", exitLab)} +++ bodyCode +++ {JMP (loopLab), LABEL (exitLab)}]
+                        [env4, {LABEL (loopLab)} +++ condCode +++ {CJMP ("z", exitLab)} +++ bodyCode +++ {JMP (loopLab), LABEL (exitLab), CONST(0)}]
                     esac
                 esac
             esac
@@ -211,22 +228,24 @@ public fun compileSM (stmt) {
               [env2, bodyCode] ->
                 case compileExpr (env2, e) of
                   [env3, condCode] ->
-                    [env3, {LABEL (loopLab)} +++ bodyCode +++ condCode +++ {CJMP ("nz", loopLab)}]
+                    [env3, {LABEL (loopLab)} +++ bodyCode +++ condCode +++ {CJMP ("nz", loopLab), CONST(0)}]
                 esac
             esac
         esac
     | Ignore(e) ->
         case compileExpr (env, e) of
-          [env1, code] -> [env1, code +++ {DROP}]
-        esac
-    | _ ->
-        case compileExpr (env, stmt) of
-          [env1, code] -> [env1, code +++ {DROP}]
+          [env1, code] -> [env1, code +++ {DROP, CONST(0)}]
         esac
     esac
   }
 
-  case compileVoid (initCompEnv (), stmt) of
+  fun compileVoid (env, expr) {
+    case compileExpr (env, expr) of
+      [env1, code] -> [env1, code +++ {DROP}]
+    esac
+  }
+
+  case compileVoid (initCompEnv (), expr) of
     [_, code] -> code
   esac
 }
