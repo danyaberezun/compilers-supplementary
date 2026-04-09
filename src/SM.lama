@@ -17,6 +17,9 @@ public fun showSMInsn (i) {
   | LD    (x) -> sprintf ("LD %s", x)
   | ST    (x) -> sprintf ("ST %s", x)
   | CONST (n) -> sprintf ("CONST %d", n)
+  | LABEL (n) -> sprintf ("LABEL %d", n)
+  | JUMP  (n) -> sprintf ("JUMP %d", n)
+  | JZ    (n) -> sprintf ("JZ %d", n)
   esac
 }
 
@@ -26,22 +29,40 @@ public fun showSM (prg) {
 
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
-fun eval (c, insns) {
+fun findLabel (label, code) {
+  case code of
+    LABEL (n) : rest ->
+      if n == label
+      then rest
+      else findLabel (label, rest)
+      fi
+  | _ : rest -> findLabel (label, rest)
+  esac
+}
+
+fun eval (code, c, insns) {
    let [stack, st, w] = c in
       case insns of
         {}              -> c
-      | READ: rest      -> let [n, w1] = readWorld(w) in eval([n : stack, st, w1], rest)
-      | WRITE: rest     -> let n: stack1 = stack in eval([stack1, st, writeWorld(n, w)], rest)
-      | BINOP(op): rest -> let r: l: stack1 = stack in eval([evalBinop(op, l, r) : stack1, st, w], rest)
-      | LD(x): rest     -> eval([st(x) : stack, st, w], rest)
-      | ST(x): rest     -> let n: stack1 = stack in eval([stack1, st <- [x, n], w], rest)
-      | CONST(n): rest  -> eval([n : stack, st, w], rest)
+      | LABEL (_): rest -> eval(code, c, rest)
+      | JUMP (n): _     -> eval(code, c, findLabel (n, code))
+      | JZ (n): rest    -> let v: stack1 = stack in
+                              if v == 0
+                              then eval(code, [stack1, st, w], findLabel (n, code))
+                              else eval(code, [stack1, st, w], rest)
+                              fi
+      | READ: rest      -> let [n, w1] = readWorld(w) in eval(code, [n : stack, st, w1], rest)
+      | WRITE: rest     -> let n: stack1 = stack in eval(code, [stack1, st, writeWorld(n, w)], rest)
+      | BINOP(op): rest -> let r: l: stack1 = stack in eval(code, [evalBinop(op, l, r) : stack1, st, w], rest)
+      | LD(x): rest     -> eval(code, [st(x) : stack, st, w], rest)
+      | ST(x): rest     -> let n: stack1 = stack in eval(code, [stack1, st <- [x, n], w], rest)
+      | CONST(n): rest  -> eval(code, [n : stack, st, w], rest)
       esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM (input, insns) {
-  eval ([{}, emptyState, createWorld (input)], insns)[2].getOutput
+  eval (insns, [{}, emptyState, createWorld (input)], insns)[2].getOutput
 }
 
 -- Compiles an expression into a stack machine code.
@@ -55,15 +76,41 @@ fun compileExpr (expr) {
    esac
 }
 
+fun compileStmt (stmt, nextLabel) {
+   case stmt of
+     Assn(x, e)  -> [compileExpr(e) +++ {ST(x)}, nextLabel]
+   | Seq(s1, s2) -> case compileStmt (s1, nextLabel) of
+                      [code1, nextLabel1] ->
+                        case compileStmt (s2, nextLabel1) of
+                          [code2, nextLabel2] -> [code1 +++ code2, nextLabel2]
+                        esac
+                    esac
+   | Skip        -> [{}, nextLabel]
+   | Read(x)     -> [{READ, ST(x)}, nextLabel]
+   | Write(e)    -> [compileExpr(e) +++ {WRITE}, nextLabel]
+   | If(e, s1, s2) ->
+       var elseLabel = nextLabel,
+           exitLabel = nextLabel + 1;
+       case compileStmt (s1, nextLabel + 2) of
+         [thenCode, nextLabel1] ->
+           case compileStmt (s2, nextLabel1) of
+             [elseCode, nextLabel2] -> [compileExpr(e) +++ {JZ (elseLabel)} +++ thenCode +++ {JUMP (exitLabel), LABEL (elseLabel)} +++ elseCode +++ {LABEL (exitLabel)}, nextLabel2]
+           esac
+       esac
+   | While(e, body) ->
+       var loopLabel = nextLabel,
+           exitLabel = nextLabel + 1;
+       case compileStmt (body, nextLabel + 2) of
+         [bodyCode, nextLabel1] -> [{LABEL (loopLabel)} +++ compileExpr(e) +++ {JZ (exitLabel)} +++ bodyCode +++ {JUMP (loopLabel), LABEL (exitLabel)}, nextLabel1]
+       esac
+   esac
+}
+
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-   case stmt of
-     Assn(x, e)  -> compileExpr(e) +++ {ST(x)}
-   | Seq(s1, s2) -> compileSM(s1) +++ compileSM(s2)
-   | Skip        -> {}
-   | Read(x)     -> {READ, ST(x)}
-   | Write(e)    -> compileExpr(e) +++ {WRITE}
+   case compileStmt (stmt, 0) of
+     [code, _] -> code
    esac
 }
