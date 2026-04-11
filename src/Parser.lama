@@ -5,6 +5,7 @@ import Lexer;
 import List;
 import Fun;
 import Matcher;
+import Ref;
 
 -- A parser of "something" in brackets; l, r are left and right
 -- brackets as parsers, p --- a parser of "something"
@@ -12,14 +13,153 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
--- Primary expression
-var primary = memo $ eta (decimal @ fun (x) {Const (stringInt (x))} |
-                          lident  @ fun (x) {Var (x)} |
-                          inbr (s ("("), exp, s (")"))),
-    exp = memo $ eta (failure ("expression parsing not implemented\n"));
+fun rep0ItemFirst (a) {
+  a |> fun (x) {rep0ItemFirst (a) @ fun (xs) {x : xs}} | empty @ lift ({})
+}
 
-var stmt = memo $ eta (failure ("statement parsing not implemented\n"));
-   
+fun foldSeq (ss) {
+  case ss of
+    {}     -> Skip
+  | {x}    -> x
+  | x : xt -> Seq (x, foldSeq (xt))
+  esac
+}
+
+fun buildIf (cond, thenSt, elifs, elseOpt) {
+  var els =
+    case elseOpt of
+      Some (s) -> s
+    | None     -> Skip
+    esac;
+  var nested =
+    foldr (
+      fun (acc, p) {
+        case p of
+          [ec, es] -> If (ec, es, acc)
+        esac
+      },
+      els,
+      elifs
+    );
+  If (cond, thenSt, nested)
+}
+
+var kLeP  = [s ("<="), fun (l, _, r) {Binop ("<=", l, r)}],
+    kGeP  = [s (">="), fun (l, _, r) {Binop (">=", l, r)}],
+    kEqP  = [s ("=="), fun (l, _, r) {Binop ("==", l, r)}],
+    kNeP  = [s ("!="), fun (l, _, r) {Binop ("!=", l, r)}],
+    kLtP  = [s ("<"),  fun (l, _, r) {Binop ("<", l, r)}],
+    kGtP  = [s (">"),  fun (l, _, r) {Binop (">", l, r)}],
+    kPlusP  = [s ("+"),  fun (l, _, r) {Binop ("+", l, r)}],
+    kMinusP = [s ("-"), fun (l, _, r) {Binop ("-", l, r)}],
+    kMulP = [s ("*"), fun (l, _, r) {Binop ("*", l, r)}],
+    kDivP = [s ("/"), fun (l, _, r) {Binop ("/", l, r)}],
+    kModP = [s ("%"), fun (l, _, r) {Binop ("%", l, r)}],
+    kLandP = [s ("&&"), fun (l, _, r) {Binop ("&&", l, r)}],
+    kLorP  = [s ("!!"), fun (l, _, r) {Binop ("!!", l, r)}];
+
+var exp = ref (memo $ eta (failure ("expression parsing not implemented\n")));
+var stmt = ref (memo $ eta (failure ("statement parser not initialized\n")));
+var stmtList = ref (memo $ eta (failure ("stmt list not initialized\n")));
+
+var primary =
+  eta (
+    decimal @ fun (x) {Const (stringInt (x))} |
+    lident  @ fun (x) {Var (x)} |
+    inbr (s ("("), eta (deref (exp)), s (")"))
+  );
+
+var forHeadStmt =
+  memo $ eta (
+    kSkip @ lift (Skip) |
+    lident |> fun (x) {s (":=") |> fun (_) {deref (exp) @ fun (e) {Assn (x, e)}}}
+  );
+
+var elifChain =
+  rep0 (
+    kElif |> fun (_) {
+      deref (exp) |> fun (e) {
+        kThen |> fun (_) {deref (stmtList) @ fun (st) {[e, st]}}
+      }
+    }
+  );
+
+var elseOpt =
+  opt (kElse |> fun (_) {deref (stmtList) @ fun (st) {st}});
+
+fun initParsers () {
+  exp ::=
+    eta (
+      expr ({
+        [Left, {kLorP}],
+        [Left, {kLandP}],
+        [Nona, {kLeP, kGeP, kEqP, kNeP, kLtP, kGtP}],
+        [Left, {kPlusP, kMinusP}],
+        [Left, {kMulP, kDivP, kModP}]
+      }, primary)
+    );
+  stmt ::=
+    memo $ eta (
+      kSkip @ lift (Skip)
+    | kRead |> fun (_) {
+        s ("(") |> fun (_) {
+          lident |> fun (x) {s (")") @ fun (_) {Read (x)}}
+        }
+      }
+    | kWrite |> fun (_) {
+        s ("(") |> fun (_) {
+          deref (exp) |> fun (e) {s (")") @ fun (_) {Write (e)}}
+        }
+      }
+    | lident |> fun (x) {s (":=") |> fun (_) {deref (exp) @ fun (e) {Assn (x, e)}}}
+    | kIf |> fun (_) {
+        deref (exp) |> fun (c) {
+          kThen |> fun (_) {
+            deref (stmtList) |> fun (th) {
+              elifChain |> fun (elifs) {
+                elseOpt |> fun (els) {kFi @ fun (_) {buildIf (c, th, elifs, els)}}
+              }
+            }
+          }
+        }
+      }
+    | kWhile |> fun (_) {
+        deref (exp) |> fun (e) {
+          kDo |> fun (_) {
+            deref (stmtList) |> fun (body) {kOd @ fun (_) {While (e, body)}}
+          }
+        }
+      }
+    | kDo |> fun (_) {
+        deref (stmtList) |> fun (body) {
+          kWhile |> fun (_) {deref (exp) |> fun (e) {kOd @ fun (_) {DoWhile (body, e)}}}
+        }
+      }
+    | kFor |> fun (_) {
+        forHeadStmt |> fun (init) {
+          s (",") |> fun (_) {
+            deref (exp) |> fun (cond) {
+              s (",") |> fun (_) {
+                forHeadStmt |> fun (step) {
+                  kDo |> fun (_) {
+                    deref (stmtList) |> fun (bl) {kOd @ fun (_) {For (init, cond, step, bl)}}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    );
+  stmtList ::=
+    memo $ eta (
+      deref (stmt) |>
+      fun (h) {
+        rep0ItemFirst (s (";") |> fun (_) {deref (stmt)}) @ fun (t) {foldSeq (h : t)}
+      }
+    );
+  skip
+}
 
 -- Public top-level parser
-public parse = stmt;
+public parse = (initParsers (); deref (stmtList));
