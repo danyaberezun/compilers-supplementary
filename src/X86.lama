@@ -42,9 +42,6 @@ var wordSize = 4;
 --   Set   (string, string)     -- sets a value from flags; the first operand is the   
 --                                 suffix, which determines the value being set, the
 --                                 the second --- (sub)register name
---   Jmp   (string)             -- unconditional jump to a label
---   CJmp  (string, string)     -- conditional jump to a label
---   Label (string)             -- a label
 --   Push  (opnd)               -- pushes the operand on the hardware stack
 --   Pop   (opnd)               -- pops from the hardware stack to the operand
 --   Call  (string)             -- calls a function by its name 
@@ -164,23 +161,7 @@ fun makeEnv (stack, stackSlots, globals) {
     stackSlots
   }
 
-  (* generates code that 
-     1. saves two caller-saved registers (ecx, edx),
-     2. adds @push_args_code,
-     3. calls function @func_name,
-     4. adds @addl_code
-     5. restores registers
-  *)
-  fun genCallF (func_name, push_args_code, addl_code) {
-    emptyBuffer() 
-      <+  Push (ecx) <+ Push (edx)
-      <+> push_args_code
-      <+  Call (func_name)
-      <+> addl_code
-      <+  Pop  (ecx) <+ Pop  (edx)
-  }
-
-  [envString, allocate, push, pop, pop2, addGlobal, loc, getGlobals, getStackSize, genCallF]
+  [envString, allocate, push, pop, pop2, addGlobal, loc, getGlobals, getStackSize]
 }
 
 -- Exported accessors
@@ -218,10 +199,6 @@ fun getGlobals (env) {
 
 fun getStackSize (env) {
   env [8] ()
-}
-
-fun genCallF (env, func_name, push_args_code, addl_code) {
-  env [9] (func_name, push_args_code, addl_code)
 }
 
 -- Creates an initial environment
@@ -308,15 +285,62 @@ fun compile (env, code) {
       case i of
         READ ->
           case env.allocate of
-            [s, env] -> [env, code <+> genCallF(env, "Lread", emptyBuffer(), emptyBuffer()) <+ Mov (eax, s)]
+            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
           esac             
       | WRITE ->
           case env.pop of
-            [s, env] -> [env, code <+> genCallF(env, "Lwrite", singletonBuffer(Push(s)), singletonBuffer(Pop (eax)))]
+            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+          esac
+      | LABEL (l) -> [env, code <+ Label (l)]
+      | JMP (l) -> [env, code <+ Jmp (l)]
+      | CJMP (c, l) ->
+          case env.pop of
+            [s, env] -> [env, code <+ Binop ("cmp", L (0), s) <+ CJmp (c, l)]
+          esac
+      | LD (x) ->
+          case env.addGlobal (x).allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac
+      | ST (x) ->
+          case env.addGlobal (x).pop of
+            [s, env] -> [env, code <+> move (s, env.loc (x))]
+          esac
+      | CONST (n) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (L (n), s)]
+          esac
+      | BINOP (op) ->
+          case env.pop2 of
+            [x, y, env] ->
+              case env.allocate of
+                [s, env] ->
+                  [env, case op of
+                          "+"  -> code <+> move (y, eax) <+ Binop ("+", x, eax) <+> move (eax, s)
+                        | "-"  -> code <+> move (y, eax) <+ Binop ("-", x, eax) <+> move (eax, s)
+                        | "*"  -> code <+> move (y, eax) <+ Binop ("*", x, eax) <+> move (eax, s)
+                        | "/"  -> code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (eax, s)
+                        | "%"  -> code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (edx, s)
+                        | "<"  -> code <+ Binop ("cmp", x, y) <+ Set (suffix ("<"), "%al") <+ Binop ("&&", L (1), eax) <+ Mov (eax, s)
+                        | "<=" -> code <+ Binop ("cmp", x, y) <+ Set (suffix ("<="), "%al") <+ Binop ("&&", L (1), eax) <+ Mov (eax, s)
+                        | "==" -> code <+ Binop ("cmp", x, y) <+ Set (suffix ("=="), "%al") <+ Binop ("&&", L (1), eax) <+ Mov (eax, s)
+                        | "!=" -> code <+ Binop ("cmp", x, y) <+ Set (suffix ("!="), "%al") <+ Binop ("&&", L (1), eax) <+ Mov (eax, s)
+                        | ">=" -> code <+ Binop ("cmp", x, y) <+ Set (suffix (">="), "%al") <+ Binop ("&&", L (1), eax) <+ Mov (eax, s)
+                        | ">"  -> code <+ Binop ("cmp", x, y) <+ Set (suffix (">"), "%al") <+ Binop ("&&", L (1), eax) <+ Mov (eax, s)
+                        | "&&" -> code <+>
+                                    move (y, eax) <+ Binop ("cmp", L (0), eax) <+ Mov (L (0), edx) <+ Set ("ne", "%dl") <+>
+                                    move (x, eax) <+ Binop ("cmp", L (0), eax) <+ Mov (L (0), eax) <+ Set ("ne", "%al") <+
+                                    Binop ("&&", edx, eax) <+> move (eax, s)
+                        | "!!" -> code <+>
+                                    move (y, eax) <+ Binop ("cmp", L (0), eax) <+ Mov (L (0), edx) <+ Set ("ne", "%dl") <+>
+                                    move (x, eax) <+ Binop ("cmp", L (0), eax) <+ Mov (L (0), eax) <+ Set ("ne", "%al") <+
+                                    Binop ("!!", edx, eax) <+> move (eax, s)
+                        esac]
+              esac
           esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-    }, [env, emptyBuffer ()], code)}
+      esac
+    }, [env, emptyBuffer ()], code)
+}
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
@@ -325,8 +349,8 @@ public fun compileX86 (args, code) {
     [env, code] ->
        var asmFile = args.getBaseName ++ ".s",
            runtime = case getEnv ("LAMA_RUNTIME") of
-                       #val -> "../runtime/"
-                     | path     -> path
+                       #val  -> "../runtime/"
+                     | path  -> path
                      esac ++ "/runtime.o";
        
        fwrite (asmFile,
@@ -339,8 +363,8 @@ public fun compileX86 (args, code) {
                         prologue (getStackSize (env)) <+>
                         code <+>
                         epilogue ()
-                    )
-                   ).stringcat);
+                      )
+                    ).stringcat);
                     
        system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
