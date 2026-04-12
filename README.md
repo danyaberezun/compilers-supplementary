@@ -9,7 +9,7 @@
 Now our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
 * [old] (`-i` option) direct interpretation of `.lama` files
 * [old] (`-s` option) compilation to SM and SM program interpretation
-* [new] (`-o` option) compilation to X86 (via SM)
+* [new] (`-o` option) compilation to X86/64 (via SM)
 
 Corresponding lecture notes: [Structural Control Flow Operators Semantics and Syntax Extensions](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/03.pdf),
 [Extended Stack Machine (for structural control flow)](https://github.com/danyaberezun/compilers-supplementary/blob/lecture-notes/lectures/04.pdf).

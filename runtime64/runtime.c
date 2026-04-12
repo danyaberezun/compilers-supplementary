@@ -9,7 +9,7 @@ void Lwrite (long x) {
 
 long Lread () {
   long result;
-
+  
   ALIGN_STACK;
   scanf ("%ld", &result);
   
