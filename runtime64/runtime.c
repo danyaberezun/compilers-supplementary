@@ -11,4 +11,3 @@ long Lread () {
   
   return result;
 }
-
