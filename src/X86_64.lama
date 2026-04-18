@@ -112,7 +112,7 @@ fun insnString (insn) {
   }
   
   case insn of
-    Cltd               -> "\tcqo\n"
+    Cqo                -> "\tcqo\n"
   -- | Set   (suf, s)     -> sprintf ("\tset%s\t%%cl\n\tmovzbl\t%%cl,\t%s\n", suf, opndString(s))
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
   | Sal   (s)          -> sprintf ("\tsalq\t%s\n", opndString(s))
@@ -532,6 +532,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_) -> true
   | _     -> false
   esac
 }
@@ -549,7 +550,7 @@ fun withRDX (env, code) {
 -- intermediate register if needed
 fun move (from, to) {
   if memOpnd (from) && memOpnd (to)
-  then singletonBuffer (Mov (from, rax)) <+ Mov (rax, to)
+  then singletonBuffer (Mov (from, rdx)) <+ Mov (rdx, to)
   else singletonBuffer (Mov (from, to))
   fi
 }
@@ -604,22 +605,50 @@ fun toFixedNum (r) {
   singletonBuffer (Sal1 (r)) <+ Or1 (r)
 }
 
+fun compileSimple(op, s1, s2) {
+  if memOpnd (s1) && memOpnd (s2)
+  then singletonBuffer (Mov (s1, rax)) <+ Binop (op, rax, s2)
+  else singletonBuffer (Binop (op, s1, s2))
+  fi
+}
+
+fun compileCmp(op, s1, s2) {
+  singletonBuffer (Binop ("^", rax, rax)) <+>
+    (if memOpnd (s1) && memOpnd (s2)
+      then singletonBuffer (Mov (s1, rdx)) <+ Cmp (rdx, s2)
+      else singletonBuffer (Cmp (s1, s2))
+    fi) <+
+    Set (suffix (op), "%al") <+ Mov (rax, s2)
+}
+
 fun compileBinop (op, s1, s2) {
-   case op of
-     "+"  -> singletonBuffer(Binop(op, s1, s2))
-   | "-"  -> singletonBuffer(Binop(op, s1, s2))
-   | "*"  -> singletonBuffer(Binop(op, s1, s2))
-   | "/"  -> singletonBuffer(Mov(s2, rax)) <+ Cqo <+ IDiv(s1) <+ Mov(rax, s2)
-   | "%"  -> singletonBuffer(Mov(s2, rax)) <+ Cqo <+ IDiv(s1) <+ Mov(rdx, s2)
-   | "==" -> singletonBuffer(Binop("^", rax, rax)) <+ Cmp(s1, s2) <+ Set(suffix("=="), "%al") <+ Mov(rax, s2)
-   | "!=" -> singletonBuffer(Binop("^", rax, rax)) <+ Cmp(s1, s2) <+ Set(suffix("!="), "%al") <+ Mov(rax, s2)
-   | "<"  -> singletonBuffer(Binop("^", rax, rax)) <+ Cmp(s1, s2) <+ Set(suffix("<"), "%al") <+ Mov(rax, s2)
-   | ">"  -> singletonBuffer(Binop("^", rax, rax)) <+ Cmp(s1, s2) <+ Set(suffix(">"), "%al") <+ Mov(rax, s2)
-   | "<=" -> singletonBuffer(Binop("^", rax, rax)) <+ Cmp(s1, s2) <+ Set(suffix("<="), "%al") <+ Mov(rax, s2)
-   | ">=" -> singletonBuffer(Binop("^", rax, rax)) <+ Cmp(s1, s2) <+ Set(suffix(">="), "%al") <+ Mov(rax, s2)
-   | "!!" -> singletonBuffer(Binop("|", s1, s2)) <+> compileBinop("!=", L(0), s2)
-   | "&&" -> compileBinop("!=", L(0), s1) <+> compileBinop("!=", L(0), s2) <+ Binop("&", s1, s2)
-   esac
+
+  case op of
+      "+" -> compileSimple(op, s1, s2)
+    | "-" -> compileSimple(op, s1, s2)
+    | "*" -> compileSimple(op, s1, s2)
+    | "&" -> compileSimple(op, s1, s2)
+    | "|" -> compileSimple(op, s1, s2)
+    | "^" -> compileSimple(op, s1, s2)
+    | "/"  -> singletonBuffer (Mov (s2, rax)) <+ Cqo <+ IDiv (s1) <+ Mov (rax, s2)
+    | "%"  -> singletonBuffer (Mov (s2, rax)) <+ Cqo <+ IDiv (s1) <+ Mov (rdx, s2)
+    | "==" -> compileCmp(op, s1, s2)
+    | "!=" -> compileCmp(op, s1, s2)
+    | "<"  -> compileCmp(op, s1, s2)
+    | "<=" -> compileCmp(op, s1, s2)
+    | ">"  -> compileCmp(op, s1, s2)
+    | ">=" -> compileCmp(op, s1, s2)
+    | "!!" -> compileBinop ("!=", L (0), s1) <+> compileBinop ("!=", L (0), s2) <+>
+              (if memOpnd (s1) && memOpnd (s2)
+               then singletonBuffer (Mov (s1, rax)) <+ Binop ("|", rax, s2)
+               else singletonBuffer (Binop ("|", s1, s2))
+               fi)
+    | "&&" -> (compileBinop ("!=", L (0), s1) <+> compileBinop ("!=", L (0), s2)) <+>
+        (if memOpnd (s1) && memOpnd (s2)
+         then singletonBuffer (Mov (s1, rax)) <+ Binop ("&", rax, s2)
+         else singletonBuffer (Binop ("&", s1, s2))
+         fi)
+  esac
 }
 
 (*
@@ -647,11 +676,11 @@ fun compile (args, env, code) {
            esac
       else
       case i of
-        READ ->
-          let [env, callCode] = call (env, "Lread", 0) in
+          READ ->
+            let [env, callCode] = call (env, "Lread", 0) in
 	  [env, code <+> callCode]
-      | WRITE ->
-          let [env, callCode] = call (env, "Lwrite", 1) in
+        | WRITE ->
+            let [env, callCode] = call (env, "Lwrite", 1) in
 	  [env, code <+> callCode]
 
       | META (m) ->
@@ -683,27 +712,33 @@ fun compile (args, env, code) {
        *)    | LD(x)     -> case env.addGlobal(x).allocate of
                          [s, env] -> [env, code <+> move(env.loc(x), s)]
                        esac
-        | ST(x)     -> case env.addGlobal(x).pop of
-                         [s, env] -> [env, code <+> move(s, env.loc(x))]
-                       esac
-        | BINOP(op) -> case env.pop2 of
-                         [s1, s2, env] -> case env.push(s2) of
-                                            env -> [env, code <+> compileBinop(op, s1, s2)]
-                                          esac
-                       esac
+        | LDA(x)    -> case env.addGlobal(x).allocate of
+                          [s, env] -> [env, code <+ Lea(env.loc(x), rax) <+ Mov(rax, s)]
+                        esac
+        | ST(x)     -> let s = env.peek in
+                       [env.addGlobal(x), code <+> move(s, env.loc(x))]
+        | STI       -> case env.pop2 of
+                          [v, r, env] ->
+                            let env = env.push(v) in
+                            [env, code <+> move(r, rax) <+> move(v, I(0, rax))]
+                        esac
         | CONST(v)  -> case env.allocate of
-                         [s, env] -> [env, code <+> move(L(v), s)]
-                       esac
-        | LABEL(s)      -> [env, code <+ Label(s)]
-        | JMP(l)        -> [env, code <+ Jmp(l)]
-        | CJMP("z", l)  -> let [s, env2] = env.pop in
-                             [env2, code <+ Binop("^", rax, rax) <+ Cmp(s, rax) <+ CJmp("e", l)]
-        | CJMP("nz", l) -> let [s, env2] = env.pop in
-                             [env2, code <+ Binop("^", rax, rax) <+ Cmp(s, rax) <+ CJmp("ne", l)]
-        | CONST(v)      -> case env.allocate of
-                             [s, env] -> [env, code <+> move(L(v), s)]
-                           esac
-        |_         -> failure("codegeneration for instruction %s is not yet implemented\n\n%s\n\n", i.string)
+                          [s, env] -> [env, code <+> move(L(v), s)]
+                        esac
+        | BINOP(op) -> case env.pop2 of
+                          [s1, s2, env] -> [env.push(s2), code <+> compileBinop(op, s1, s2)]
+                        esac
+        | DROP      -> let [_, env] = env.pop in [env, code]
+        | DUP       -> let s = env.peek in
+                       case env.allocate of [s2, env] -> [env, code <+> move(s, s2)] esac
+        | LABEL(l)  -> let env = if env.isBarrier then env.retrieveStack(l) else env fi in
+                       [env, code <+ Label(l)]
+        | JMP(l)    -> [env.setStack(l).setBarrier, code <+ Jmp(l)]
+        | CJMP("z", l)-> let [s, env] = env.pop in
+                       [env.setStack(l), code <+ Mov(s, rax) <+ Cmp(L(0), rax) <+ CJmp("e", l)]
+        | CJMP("nz", l)-> let [s, env] = env.pop in
+                       [env.setStack(l), code <+ Mov(s, rax) <+ Cmp(L(0), rax) <+ CJmp("ne", l)]
+        |_          -> failure("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
       fi
     }, [env, emptyBuffer ()], code)
