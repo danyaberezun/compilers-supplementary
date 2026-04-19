@@ -330,7 +330,7 @@ fun staticSize (env) {
 
 -- Creates an initial environment
 fun initEnv () {
-  makeEnv (0, 0, emptySet (compare), false, emptyMap (compare), "", 0)
+  makeEnv ({}, 0, emptySet (compare), false, emptyMap (compare), "", 0)
 }
 
 -- Codegeneration helper functions
@@ -381,6 +381,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -394,6 +395,13 @@ fun move (from, to) {
   fi
 }
 
+fun compileLea (from, to) {
+  if memOpnd (to)
+  then singletonBuffer (Lea (from, eax)) <+> move (eax, to)
+  else singletonBuffer (Lea (from, to))
+  fi
+}
+
 -- Gets a suffix for Set instruction from
 -- source language comparison operator
 fun suffix (op) {
@@ -404,6 +412,79 @@ fun suffix (op) {
   | "!=" -> "ne"
   | ">=" -> "ge"
   | ">"  -> "g"
+  esac
+}
+
+fun compileSimpleBinop (op, l, r, dst) {
+  move (l, dst) <+>
+  if memOpnd (r) && memOpnd (dst)
+  then singletonBuffer (Mov (r, eax)) <+ Binop (op, eax, dst)
+  else singletonBuffer (Binop (op, r, dst))
+  fi
+}
+
+fun compileDiv (l, r, dst) {
+  if r == eax
+  then singletonBuffer (Push (eax)) <+> move (l, eax) <+ Cltd <+ Pop (ecx) <+ IDiv (ecx) <+> move (eax, dst)
+  else move (l, eax) <+> singletonBuffer (Cltd) <+ IDiv (r) <+> move (eax, dst)
+  fi
+}
+
+fun compileMod (l, r, dst) {
+  if r == eax
+  then singletonBuffer (Push (eax)) <+> move (l, eax) <+ Cltd <+ Pop (ecx) <+ IDiv (ecx) <+> move (edx, dst)
+  else move (l, eax) <+> singletonBuffer (Cltd) <+ IDiv (r) <+> move (edx, dst)
+  fi
+}
+
+fun compileCmp (op, l, r, dst) {
+  move (l, eax) <+>
+  if memOpnd (r)
+  then singletonBuffer (Mov (r, edx)) <+ Binop ("cmp", edx, eax)
+  else singletonBuffer (Binop ("cmp", r, eax))
+  fi <+ Mov (L (0), edx) <+ Set (suffix (op), "%dl") <+> move (edx, dst)
+}
+
+fun compileLogic (op, l, r, dst) {
+  move (l, eax) <+ Binop ("cmp", L (0), eax) <+ Mov (L (0), edx) <+ Set ("ne", "%dl") <+>
+  move (r, eax) <+ Binop ("cmp", L (0), eax) <+ Mov (L (0), eax) <+ Set ("ne", "%al") <+ Binop (op, eax, edx) <+>
+  move (edx, dst)
+}
+
+fun compileBinop (op, l, r, dst) {
+  case op of
+    "+"  -> compileSimpleBinop ("+", l, r, dst)
+  | "-"  -> compileSimpleBinop ("-", l, r, dst)
+  | "*"  -> compileSimpleBinop ("*", l, r, dst)
+  | "&&" -> compileLogic ("&&", l, r, dst)
+  | "!!" -> compileLogic ("!!", l, r, dst)
+  | "/"  -> compileDiv (l, r, dst)
+  | "%"  -> compileMod (l, r, dst)
+  | "<"  -> compileCmp ("<", l, r, dst)
+  | "<=" -> compileCmp ("<=", l, r, dst)
+  | "==" -> compileCmp ("==", l, r, dst)
+  | "!=" -> compileCmp ("!=", l, r, dst)
+  | ">=" -> compileCmp (">=", l, r, dst)
+  | ">"  -> compileCmp (">", l, r, dst)
+  | _    -> failure ("unknown binary operator %s\n", op)
+  esac
+}
+
+fun materializeAddr (addr) {
+  if memOpnd (addr)
+  then [singletonBuffer (Mov (addr, edx)), edx]
+  else [emptyBuffer (), addr]
+  fi
+}
+
+fun storeIndirect (value, addr) {
+  case materializeAddr (addr) of
+    [prep, addr] ->
+      var tmp = if addr == eax then edx else eax fi;
+      if memOpnd (value)
+      then prep <+ Mov (value, tmp) <+ Mov (tmp, I (0, addr))
+      else prep <+ Mov (value, I (0, addr))
+      fi
   esac
 }
 
@@ -441,6 +522,64 @@ fun compile (env, code) {
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
                
+        | LD (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (env.loc (x), s)]
+            esac
+        | LDA (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> compileLea (env.loc (x), s)]
+            esac
+        | ST (x) ->
+            case env.pop of
+              [s, env] -> [env, code <+> move (s, env.loc (x))]
+            esac
+        | STI ->
+            case env.pop2 of
+              [v, l, env] -> [env, code <+> storeIndirect (v, l)]
+            esac
+        | CONST (n) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (L (n), s)]
+            esac
+        | BINOP (op) ->
+            case env.pop2 of
+              [r, l, env] ->
+                case env.allocate of
+                  [s, env] -> [env, code <+> compileBinop (op, l, r, s)]
+                esac
+            esac
+        | LABEL (l) ->
+            var env1 = if env.isBarrier then env.retrieveStack (l) else env fi;
+            [env1, code <+ Label (l)]
+        | JMP (l) ->
+            var env1 = env.setStack (l);
+            [env1.setBarrier, code <+ Jmp (l)]
+        | CJMP (cond, l) ->
+            case env.pop of
+              [s, env] ->
+                var env1 = env.setStack (l);
+                [env1, code <+ Binop ("cmp", L (0), s) <+ CJmp (cond, l)]
+            esac
+        | DUP ->
+            case env.peek of
+              top ->
+                case env.allocate of
+                  [s, env] -> [env, code <+> move (top, s)]
+                esac
+            esac
+        | DROP ->
+            case env.pop of
+              [_, env] -> [env, code]
+            esac
+        | GLOBAL (x) ->
+            [env.addGlobal (x), code]
+        | BEGIN (f, _, nLocals) ->
+            [env.enterFunction (f, nLocals), code <+> prologue (f)]
+        | END ->
+            case epilogue (env) of
+              [env, c] -> [env, code <+> c]
+            esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         (* End *)
         esac
