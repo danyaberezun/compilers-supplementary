@@ -25,10 +25,10 @@ var regs = ["%rdi", "%rsi", "%rdx", "%rcx",
 -- We can not freely operate with all register; only with 13 by now;
 -- we also notify that the 6 first register are used to
 -- pass arguments to a function
-var nRegs    = regs.length - 4,
+var nRegs    = regs.length - 5,
     nRegArgs = 6;
 
--- For convenience we define the following synonyms for the registers: 
+-- For convenience we define the following synonyms for the registers:
 var rdi = R (0),
     rsi = R (1),
     rdx = R (2),
@@ -49,11 +49,11 @@ var rdi = R (0),
 -- We need to know the word size to calculate offsets correctly
 var wordSize = 8;
 
--- We need to distinguish the following operand types: 
---    R (int)        -- hard register                    
---    S (int)        -- a position on the hardware stack 
---    M (string)     -- a named memory location          
---    L (int/string) -- an immediate operand             
+-- We need to distinguish the following operand types:
+--    R (int)        -- hard register
+--    S (int)        -- a position on the hardware stack
+--    M (string)     -- a named memory location
+--    L (int/string) -- an immediate operand
 --    I (int, opnd)  -- an indirect operand with offset
 
 -- Some x86 instruction (we do not need all of them):
@@ -148,7 +148,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
   -- returns a pair: a location for allocated item and
   -- an updated environment
   fun alloc () {
-    case 
+    case
       case stack of
         {}        -> [rdi, 0]
       | S (n) : _ -> [S (n+1), n+2]
@@ -239,7 +239,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
       else enter (env.allocate [1], n - 1)
       fi
     }
-    
+
     enter (makeEnv ({}, 0, globals, false, emptyMap (compare), fLabel, nl), min (na, nRegArgs))
   }
 
@@ -267,13 +267,13 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
   }
 
   fun freeReg (R (i)) {
-    stack.size <= i  
+    stack.size <= i
   }
 
   fun stackDepth () {
     stack.size
   }
-  
+
   [envString,
    alloc,
    push,
@@ -402,7 +402,7 @@ fun dataDef (name) {
 fun prologue (fLabel) {
   singletonBuffer (Push  (rbp)) <+
   Mov   (rsp, rbp) <+
-  Binop ("-", L (sprintf ("$%s_SIZE", fLabel)), rsp)  
+  Binop ("-", L (sprintf ("$%s_SIZE", fLabel)), rsp)
 }
 
 fun epilogue (env) {
@@ -437,7 +437,7 @@ fun memOpnd (opnd) {
 -- if RDX is occupied
 fun withRDX (env, code) {
   if env.freeReg (rdx)
-  then code  
+  then code
   else singletonBuffer (Push (rdx)) <+> code <+ Pop (rdx)
   fi
 }
@@ -473,16 +473,39 @@ fun savecode (env, nA) {
 --    b. the rest of arguments go to the regular X86 stack.
 --    c. sometemes no work is needed (all arguments are already in their
 --       places);
---    d. pay attention to the order of arguments placements 
+--    d. pay attention to the order of arguments placements
 -- 3. generate the call itself;
 -- 4. discard those parameters that were passed through stack from the stack;
--- 5. restore saved live registers.         
+-- 5. restore saved live registers.
 fun call (env, fLabel, nA) {
---   emptyBuffer ()
---      <+ Push (rcx) <+ Push (rsi)
---      <+ Call (func)
---      <+ Pop (rsi) <+ Pop (rcx);
-  failure ("calls not implemented")
+   fun popN (env, n) {
+      if n == 0
+      then [env, {}]
+      else
+         let [head, env] = env.pop in
+         let [env, args] = popN (env, n-1) in
+         [env, head : args]
+      fi
+   }
+
+   fun moveArgs (env) {
+      let [env, args] = env.popN(nA) in
+      [env, foldr (fun ([code, moved], arg) {
+                [code <+> (if moved < nRegArgs then arg.move(R (moved)) else singletonBuffer (Push (arg)) fi), moved + 1]
+             }, [emptyBuffer (), 0], args)[0]]
+   }
+
+   fun discardArgs (moved, code) {
+      if moved == nA
+      then code
+      else discardArgs (moved + 1, code <+> (if moved < nRegArgs then emptyBuffer () else singletonBuffer (Pop (rax)) fi))
+      fi
+   }
+
+   let [pushes, pops] = env.savecode(nA) in
+   let [env, move] = env.moveArgs in
+   let [returned, env] = env.allocate in
+   [env, pushes <+> move <+ Call (fLabel) <+ Mov (rax, returned) <+> discardArgs (0, emptyBuffer ()) <+> pops]
 }
 
 fun loadEffective (from, to) {
@@ -533,13 +556,19 @@ fun comparisonBinop (op, [y, x, env], code) {
 
 fun divisionBinop (op, [y, x, env], code) {
    code
+   <+ Push (rcx)
+   <+ Push (rdx)
    <+ Mov (x, rax)
+   <+ Mov (y, rcx)
    <+ Cqo
-   <+ IDiv (y)
-   <+ (case op of
-       "/" -> Mov (rax, x)
-       | "%" -> Mov (rdx, x)
+   <+ IDiv (rcx)
+   <+> (case op of
+       "/" -> emptyBuffer ()
+       | "%" -> singletonBuffer (Mov (rdx, rax))
        esac)
+   <+ Pop (rdx)
+   <+ Pop (rcx)
+   <+ Mov (rax, x)
 }
 
 fun compileBinop (op, stack@[y, x, env], code) {
@@ -567,12 +596,14 @@ fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-      case i of      
+      case i of
         READ ->
           let [env, callCode] = call (env, "Lread", 0) in [env, code <+> callCode]
       | WRITE ->
-          let [env, callCode] = call (env, "Lwrite", 1) in [env, code <+> callCode]
-      (* Assignment        
+          let [env, callCode] = call (env, "Lwrite", 1) in
+          let [_, env] = env.pop in
+          [env, code <+> callCode]
+      (* Assignment
          -- Some guidelines for generating functions:
          --
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
@@ -585,15 +616,13 @@ fun compile (env, code) {
             [s, env] -> [env, code <+> env.loc(name).move(s)]
           esac
       | LDA(name) ->
-          let env = env.addGlobal(name) in case env.allocate of
+          case env.allocate of
             [s, env] -> [env, code <+> env.loc(name).loadEffective(s)]
           esac
-      | ST(name) ->
-         let env = env.addGlobal(name) in
-            [env, code <+> env.peek.move(env.loc(name))]
+      | ST(name) -> [env, code <+> env.peek.move(env.loc(name))]
       | STI ->
-         let [v, env] = env.pop in let ref = env.peek in
-            [env, code <+> v.move(I (0, ref)) <+> v.move(ref)]
+         let [v, env] = env.pop in let r = env.peek in
+            [env, code <+> v.move(I (0, r)) <+> v.move(r)]
       | CONST(x) ->
           case env.allocate of
             [s, env] -> [env, code <+ Mov (L (x), s)]
@@ -602,9 +631,14 @@ fun compile (env, code) {
       | JMP(l) -> [env.setStack(l).setBarrier, code <+ Jmp (l)]
       | CJMP(c, l) ->
          case env.pop of
-            [s, env] -> [env.setStack(l).setBarrier, code <+ Mov (s, rax) <+> comparisonZero(s) <+ CJmp (c, l)]
+            [s, env] -> [env.setStack(l).setBarrier, code <+ Mov (s, rax) <+> comparisonZero (s) <+ CJmp (c, l)]
          esac
       | DROP -> let [_, env] = env.pop in [env, code]
+      | CALL   (f, n)    -> let [env, callCode] = call (env, f, n) in [env, code <+> callCode]
+      | BEGIN  (f, a, l) -> let env = env.enterFunction(f, a, l) in
+                              [env, code <+> prologue (f)]
+      | GLOBAL (x)       -> [env.addGlobal(x), code]
+      | END              -> let [env, epilog] = env.epilogue in [env, code <+> epilog]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
