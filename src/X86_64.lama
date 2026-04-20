@@ -6,6 +6,7 @@ import List;
 import Buffer;
 import Fun;
 import Manifest;
+import Array;
 
 fun min (x, y) {
   if x > y then y else x fi
@@ -155,7 +156,8 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
       | R (n) : _ -> if n < nRegs then [R (n+1), stackSlots] else [S (nLocals), nLocals + 1] fi
       | _         -> [S (nLocals), nLocals + 1]
       esac
-    of [x, n] -> [x, makeEnv (x : stack, if n > stackSlots then n else stackSlots fi, globals, barrier, stackMap, fLabel, nLocals)]esac
+    of [x, n] ->
+      [x, makeEnv (x : stack, if n > stackSlots then n else stackSlots fi, globals, barrier, stackMap, fLabel, nLocals)]esac
   }
 
   -- Pushes an item on the symbolic state; returns an updated envirtonment
@@ -166,6 +168,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
   -- Pops one item from the symbolic stack; returns a pair: a popped
   -- item and an updated environment
   fun pop () {
+    printf ("Popping from %s...\n", string (stack));
     case stack of
       x : stack -> [x, makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals)]
     esac
@@ -249,6 +252,7 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
   }
 
   -- Gets the list of live registers past given symbolic stack depth
+  -- { R (i1), R(i2), ... }
   fun liveRegisters (depth) {
     fun inner (d, acc, st) {
       case st of
@@ -273,6 +277,11 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
   fun stackDepth () {
     stack.size
   }
+
+  fun popN (n) {
+    let [stack, res] = stack.take (n) in
+    [res, makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals)]
+  }
   
   [envString,
    alloc,
@@ -293,7 +302,8 @@ fun makeEnv (stack, stackSlots, globals, barrier, stackMap, fLabel, nLocals) {
    liveRegisters,
    staticSize,
    freeReg,
-   stackDepth]
+   stackDepth,
+   popN]
 }
 
 -- Exported accessors
@@ -377,6 +387,10 @@ fun stackDepth (env) {
   env [19] ()
 }
 
+fun popN (env, n) {
+  env [20] (n)
+}
+
 -- Creates an initial environment
 fun initEnv () {
   makeEnv ({}, 0, emptySet (compare), false, emptyMap (compare), "", 1)
@@ -408,11 +422,12 @@ fun prologue (fLabel) {
 fun epilogue (env) {
   var metaDef = Meta (sprintf ("\t.set\t%s_SIZE,\t%d\n", env.currentFunction, env.staticSize * wordSize));
 
-  if compare (env.currentFunction, "main") == 0
-  then [env, singletonBuffer (Mov (rbp, rsp)) <+ Pop (rbp) <+ Binop ("^", rax, rax) <+ Ret <+ metaDef]
-  else case env.pop of
-         [y, env] -> [env, singletonBuffer (Mov (rbp, rsp)) <+ Pop (rbp) <+ Mov (y, rax) <+ Ret <+ metaDef]
-       esac
+  if compare (env.currentFunction, "main") == 0 then
+    [env, singletonBuffer (Mov (rbp, rsp)) <+ Pop (rbp) <+ Binop ("^", rax, rax) <+ Ret <+ metaDef]
+  else
+    case env.pop of
+      [y, env] -> [env, singletonBuffer (Mov (rbp, rsp)) <+ Pop (rbp) <+ Mov (y, rax) <+ Ret <+ metaDef]
+    esac
   fi
 }
 
@@ -451,6 +466,14 @@ fun move (from, to) {
   fi
 }
 
+fun moveAddr (from, to) {
+  if memOpnd (to) then
+    singletonBuffer (Lea (from, rax)) <+ Mov (rax, to)
+  else
+    singletonBuffer (Lea (from, to))
+  fi
+}
+
 -- Gets push/pops for live registers (as buffers in
 -- a proper order)
 fun savecode (env, nA) {
@@ -460,6 +483,14 @@ fun savecode (env, nA) {
 	 [emptyBuffer (), emptyBuffer ()],
 	 env.liveRegisters (nA)
   )
+}
+
+fun moveIfDiff (from, to) {
+  if compare (from, to) == 0 then
+    emptyBuffer ()
+  else
+    move (from, to)
+  fi
 }
 
 -- Generates a static call
@@ -477,8 +508,35 @@ fun savecode (env, nA) {
 -- 3. generate the call itself;
 -- 4. discard those parameters that were passed through stack from the stack;
 -- 5. restore saved live registers.         
-fun call (env, fLabel, nA) {
-  failure ("calls not implemented")
+fun call (env, flab, n_args) {
+  fun place_args (env, n_args) {
+    if n_args == 0 then [env, emptyBuffer ()]
+    else
+      let [arg, env] = env.pop in
+      let [env, code] = place_args (env, n_args - 1) in
+      let placeCode = 
+        if n_args <= nRegArgs then
+          let target = R (n_args - 1) in
+          moveIfDiff (arg, target)
+        else singletonBuffer (Push (arg))
+        fi in
+      [env, code <+> placeCode]
+    fi
+  }
+
+  let [pushs, pops] = savecode (env, n_args) in
+  -- printf ("Args: %s, count: %d\n", string (args), n_args);
+  let [env, place_code] = place_args (env, n_args) in
+  -- printf ("Placement code: %s\n", string (getBuffer (place_code)));
+  let shift_code = if n_args > nRegArgs then
+      singletonBuffer (Binop ("+", L (wordSize * (n_args - nRegArgs)), rsp))
+    else
+      emptyBuffer ()
+    fi in
+  -- printf ("Shift code: %s\n", string (getBuffer (shift_code)));
+  let [ret, env] = env.allocate in
+  let code = pushs <+> place_code <+ Call (flab) <+> shift_code <+> moveIfDiff (rax, ret) <+> pops in
+  [env, code]
 }
 
 -- Gets a suffix for Set instruction from
@@ -494,32 +552,139 @@ fun suffix (op) {
   esac
 }
 
+fun contains (l, el) {
+  fun eq (other) { compare (other, el) == 0 }
+
+  compare (find (eq, l), None)
+}
+
+fun compileBinop (env, op, x, y, res) {
+  fun compileSimple (op, y, x, res) {
+    if memOpnd(x) && memOpnd(y) then
+      singletonBuffer(Mov(y, rax)) <+ Binop(op, x, rax) <+ Mov(rax, res)
+    else
+      singletonBuffer(Binop(op, x, y)) <+ Mov(y, res)
+    fi
+  }
+
+  fun compileDiv (env, op, x, y, res) {
+    fun divCode (out, divisor) {
+      singletonBuffer (Mov (x, rax)) <+ Cltd <+ IDiv (divisor) <+ Mov (out, res)
+    }
+    let out = case op of
+                "/" -> rax
+              | "%" -> rdx
+    esac in
+    if compare (x, rdx) == 0 then divCode (out, y)
+    elif compare (y, rdx) == 0 then singletonBuffer (Mov(rdx, rbx)) <+> divCode (out, rbx)
+    else withRDX (env, divCode (out, y))
+    fi
+  }
+
+  fun compileLog (op, y, x, res) {
+    fun toBool (s) {
+      singletonBuffer (Binop ("cmp", L (0), s)) <+ Set ("nz", "%al") <+ Binop("&&", L (1), rax) <+ Mov(rax, s)
+    }
+
+    toBool (x) <+> toBool (y) <+> compileSimple (op, x, y, res)
+  }
+
+  fun compileCmp (op, y, x, res) {
+    let compare = if memOpnd(x) && memOpnd(y) then
+        singletonBuffer (Mov (y, rax)) <+ Binop ("cmp", x, rax)
+      else
+        singletonBuffer (Binop ("cmp", x, y))
+      fi
+    in compare <+ Set (suffix (op), "%al") <+ Binop("&&", L (1), rax) <+ Mov(rax, res)
+  }
+
+  if   {"+", "-", "*"}.contains (op) then compileSimple (op, x, y, res)
+  elif {"/", "%"}.contains (op) then compileDiv (env, op, x, y, res)
+  elif {"!!", "&&"}.contains (op) then compileLog (op, x, y, res)
+  elif {"==", "!=", "<=", "<", ">=", ">"}.contains (op) then compileCmp (op, x, y, res)
+  else failure("codegeneration for binary operation %s is not yet implemented", op)
+  fi
+}
+
+fun regsSaved (call) {
+  let saved = [rcx, rdx, rsi, rdi, r8, r9, r10, r11] in
+  foldlArray(
+    fun (c, r) { 
+      singletonBuffer(Push(r)) <+> c <+ Pop(r) 
+    },
+    singletonBuffer(call),
+    saved
+  )
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
   foldl (
-    fun ([env, scode], i) {
-      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+    fun ([env, scode], insn) {
+      var code = scode <+ Meta ("# " ++ showSMInsn (insn) ++ "\n");
 
-      -- printf ("compiling %s\n", showSMInsn (i));
-      
-      case i of      
+      case insn of      
         READ ->
           let [env, callCode] = call (env, "Lread", 0) in
-	  [env, code <+> callCode]
+	        [env, code <+> callCode]
       | WRITE ->
           let [env, callCode] = call (env, "Lwrite", 1) in
-	  [env, code <+> callCode]
-	  
-      (* Assignment        
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-      *)
-        
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+	        [env, code <+> callCode]
+      | BINOP (op) ->
+          let [rhs, lhs, env] = env.pop2 in
+          let [res, env] = env.allocate in
+          [env, code <+> compileBinop (env, op, lhs, rhs, res)]
+      | LD (x) ->
+          let [res, env] = env.allocate in
+          [env, code <+> move (env.loc (x), res)]
+      | LDA (x) ->
+          let [res, env] = env.allocate in
+          [env, code <+> moveAddr (env.loc (x), res)]
+      | ST (x) ->
+          let [src, env] = env.pop in
+          [env, code <+> move (src, env.loc (x))]
+      | STI ->
+          let [v, addr, env] = env.pop2 in
+          let [res, env] = env.allocate in
+          let code = code <+> if memOpnd (addr) then
+              singletonBuffer (Mov (addr, rax)) <+ Mov (v, rbx) <+ Mov (rbx, I (0, rax)) <+ Mov (rbx, res)
+            else
+              singletonBuffer (Mov (v, rax)) <+ Mov (rax, I (0, addr)) <+ Mov (rax, res)
+            fi in
+          [env, code]
+      | CONST (n) ->
+          let [res, env] = env.allocate in
+          [env, code <+ Mov (L (n), res)]
+      | LABEL (l) ->
+          let env = if env.isBarrier then
+              env.retrieveStack (l)
+            else
+              env
+            fi in
+          [env, code <+ Label (l)]
+      | JMP (l) ->
+          let env = env.setStack (l).setBarrier in
+          [env, code <+ Jmp (l)]
+      | CJMP (c, l) ->
+          let [cond, env] = env.pop in
+          let env = env.setStack (l).setBarrier in
+          [env, code <+ Binop ("cmp", L (0), cond) <+ CJmp (c, l)]
+      | CALL (flab, n_args) ->
+          let [env, call_code] = env.call (flab, n_args) in
+          [env, code <+> call_code]
+      | BEGIN (flab, n_args, n_locals) ->
+          let env = env.enterFunction (flab, n_args, n_locals) in
+          [env, code <+> prologue (flab)]
+      | GLOBAL (x) ->
+          [env.addGlobal (x), code]
+      | END ->
+          let [env, ep_code] = epilogue (env) in
+          -- printf ("...\n");
+          [env, code <+> ep_code]
+      | DROP ->
+          let [_, env] = env.pop in
+          [env, code]
       esac
     }, [env, emptyBuffer ()], code)
 }
@@ -527,6 +692,7 @@ fun compile (env, code) {
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
 public fun compileX86 (args, code) {
+  -- printf (args.getBaseName);
   case compile (initEnv (), code) of
     [env, code] ->
        var asmFile = args.getBaseName ++ ".s",
@@ -534,7 +700,7 @@ public fun compileX86 (args, code) {
                        #val  -> "../runtime64/"
                      | path  -> path
                      esac ++ "/runtime.o";
-       
+
        fwrite (asmFile,
                map (insnString, 
                     getBuffer $

@@ -37,10 +37,10 @@ public fun evalOp (op, l, r) {
 --
 -- A expression is represented by a data structure of the following shape:
 --
--- expr = Assn    (string, expr)       |
+-- expr = Assn    (expr, expr)         |
 --        Seq     (expr, expr)         |
 --        Skip                         |
---        Read    (string)             |
+--        Read    (Ref (string))       |
 --        Write   (expr)               |
 --        If      (expr, expr, expr)   |
 --        While   (expr, expr)         |
@@ -49,15 +49,12 @@ public fun evalOp (op, l, r) {
 --        Ref     (string)             |
 --        Const   (int)                |
 --        Binop   (string, expr, expr) |
---        Scope   (def list, expr)     |
 --        Call    (string, expr list)  |
+--        Scope   (decl list, expr)    |
 --        Ignore  (expr)
 --
--- A definition is either a local variable definition or a function
--- definition:
+-- decl = (string, expr option)
 --
--- def = Var (string list)                |
---       Fun (string, string list, expr)
 
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
@@ -82,6 +79,18 @@ fun addNames (state, names) {
   foldl (fun (s, name) {s.addName (name, Var (0))}, state, names)
 }
 
+-- Adds a function scope and arg values to it
+fun addArgs (state, argsVals) {
+  foldl (
+    fun (s, p) {
+      let Int (n) = p.snd in
+        s.addName (p.fst, Var (n))
+    },
+    enterFunction (state),
+    argsVals
+  )
+}
+
 -- Helper function: adds a function in current scope
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
@@ -102,8 +111,118 @@ fun evalList (c, exprs) {
 }
 
 (* Assignment *)
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+public fun eval (c@[s, w], expr) {
+  -- printf ("Calling eval ([_, _], %s)\n", string (expr));
+  case expr of
+    Assn (e1, e2) ->
+      let [[s, w], v] = eval (c, e2) in
+        let [[s, w], assnV] = eval ([s, w], e1) in
+          case assnV of
+            Ref (x) ->
+              case v of
+                Int (n) -> [[s <- [x, Var (n)], w], Int (n)]
+              | _       -> failure ("Only int/bool variables are supported\n")
+              esac
+          | _       -> failure ("Expression %s is not an lvalue", string (e1))
+          esac
+  | Seq (e1, e2) ->
+      let [c, _] = eval (c, e1) in eval (c, e2)
+  | Skip -> [[s, w], None]
+  | Read (Ref (x)) ->
+      let [n, w] = readWorld (w) in
+        [[s <- [x, Var (n)], w], None]
+  | Write (e) ->
+      let [[s, w], v] = eval (c, e) in
+        case v of
+          Int (n) -> [[s, writeWorld (n, w)], None]
+        | v       -> failure ("Expected int at %s, got %s", string (e), string (v))
+        esac
+  | If (cond, tb, eb) ->
+      let [[s, w], condV] = eval (c, cond) in
+        case condV of
+          Int (condN) ->
+            if condN == 0 then
+              eval ([s, w], eb)
+            else
+              eval ([s, w], tb)
+            fi
+        | _           -> failure ("Expected int at %s, got %s", string (cond), string (condV))
+        esac
+  | While (cond, bd) ->
+      let [[s, w], condV] = eval (c, cond) in
+        case condV of
+          Int (condN) ->
+            if condN == 0 then
+              [[s, w], None]
+            else
+              let [[s, w], bdV] = eval ([s, w], bd) in
+                case bdV of
+                  None -> eval ([s, w], While (cond, bd))
+                | _    -> failure ("While loop body should evaluate to none")
+                esac
+            fi
+        | _           -> failure ("Expected int at %s, got %s", string (cond), string (condV))
+        esac
+  | DoWhile (cond, bd) -> eval (c, Seq (bd, While (cond, bd)))
+  | Var (x) ->
+      checkVar (s, x);
+      let Var (n) = s.lookup (x) in
+        [[s, w], Int (n)]
+  | Ref (x) -> checkVar (s, x); [[s, w], Ref (x)]
+  | Const (n) -> [c, Int (n)]
+  | Binop (op, lhs, rhs) ->
+      let [c, lhsV] = eval (c, lhs) in
+        case lhsV of
+          Int (lhsN) ->
+            let [c, rhsV] = eval (c, rhs) in
+              case rhsV of
+                Int (rhsN) ->
+                  -- printf ("Evaluating %d %s %d\n", lhsN, op, rhsN);
+                  [c, Int (evalOp (op, lhsN, rhsN))]
+              | _ -> failure ("Expected int at %s, got %s", string (rhs), string (rhsV))
+              esac
+        | _ -> failure ("Expected int at %s, got %s", string (lhs), string (lhsV))
+        esac
+  | Call (fname, args) ->
+      checkFun (s, fname);
+      let [[s, w], argVals] = evalList (c, args) in
+        -- printf ("got arg vals: %s\n", string (argVals));
+        case s.lookup (fname) of
+          Fun (arg_names, body) ->
+            -- printf ("arg_names: %s\n", string (arg_names));
+            if (size (arg_names) != size (argVals)) then
+              failure (
+                "Function %s called with an incorrect number of arguments (expected %d, got %d)",
+                fname, size (arg_names), size (argVals)
+              )
+            else
+              -- printf ("Evaluating %s (%s)\n", fname, string (argVals));
+              let fun_s = addArgs (s, arg_names.zip (argVals)) in
+                let [[fun_s, w], v] = eval ([fun_s, w], body) in
+                  [[s.leaveFunction (getGlobal (fun_s)), w], v]
+            fi
+        | _ -> failure ("Function expected at %s\n", fname)
+        esac
+  | Scope (defs, body) ->
+      let scoped = foldl (
+        fun (s, def) {
+          case def of
+            Var (names) -> s.addNames (names)
+          | Fun (fname, arg_names, body) -> s.addFunction (fname, arg_names, body)
+          esac
+        },
+        enterScope (s),
+        defs
+      ) in
+        let [[s, w], v] = eval ([scoped, w], body) in
+          [[leaveScope (s), w], v]
+  | Ignore (e) ->
+      let res = eval (c, e) in
+        -- printf ("Evaluating %s, result %s\n\n", string (e), string (res));
+        let [c, _] = res in
+          [c, None]
+  | _ -> failure ("Invalid expression")
+  esac
 }
 (* End *)
 
