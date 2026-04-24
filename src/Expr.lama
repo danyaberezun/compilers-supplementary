@@ -93,18 +93,36 @@ fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
                                         
+fun bindArgs (state, name, args, vals) {
+  case [args, vals] of
+    [{}, {}]             -> state
+  | [a : args, v : vals] -> bindArgs (state.addName (a, Var (v)), name, args, vals)
+  | _                    -> error (sprintf ("wrong number of arguments in ""%s""", name), getLoc (name))
+  esac
+}
+
+fun sameLength (xs, ys) {
+  case [xs, ys] of
+    [{}, {}]       -> true
+  | [_ : xs, _ : ys] -> sameLength (xs, ys)
+  | _              -> false
+  esac
+}
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
-  case foldl (fun ([c, vals], e) {
-                case eval (c, e) of
-                  [c, v] -> [c, v : vals]
-                esac
-              },
-              [c, {}],
-              exprs) of
-    [c, vals] -> [c, reverse (vals)]
-  esac
+  fun loop (c, exprs, vals) {
+    case exprs of
+      {}        -> [c, reverse (vals)]
+    | e : exprs ->
+        case eval (c, e) of
+          [c1, v] -> loop (c1, exprs, v : vals)
+        esac
+    esac
+  }
+
+  loop (c, exprs, {})
 }
 
 fun asInt (v) {
@@ -129,11 +147,16 @@ fun eval (c@[s, w], expr) {
         Var (v) -> [c, v]
       | _       -> error ("not var", getLoc (x))
       esac
-  | Ref(x)          -> [c, Addr (x)]
+  | Ref(x)          ->
+      checkVar (s, x);
+      [c, Addr (x)]
   | Const(n)        -> [c, n]
   | Binop(op, l, r) ->
-      case evalList (c, {l, r}) of
-        [c1, {l1, r1}] -> [c1, evalOp (op, asInt (l1), asInt (r1))]
+      case eval (c, l) of
+        [c1, l1] ->
+          case eval (c1, r) of
+            [c2, r1] -> [c2, evalOp (op, asInt (l1), asInt (r1))]
+          esac
       esac
   | Assn(l, e) ->
       case eval (c, l) of
@@ -141,7 +164,7 @@ fun eval (c@[s, w], expr) {
           case eval (c1, e) of
             [c2@[s2, w2], v] ->
               let n = asInt (v) in
-                [[s2 <- [asAddr (l1), n], w2], n]
+                [[s2 <- [asAddr (l1), Var (n)], w2], n]
           esac
       esac
   | Seq(e1, e2) ->
@@ -151,8 +174,9 @@ fun eval (c@[s, w], expr) {
   | Skip ->
       [c, 0]
   | Read(x) ->
+      checkVar (s, x);
       let [n, w1] = readWorld (w) in
-        [[s <- [x, n], w1], n]
+        [[s <- [x, Var (n)], w1], n]
   | Write(e) ->
       case eval (c, e) of
         [c1@[s1, w1], v] ->
@@ -192,10 +216,32 @@ fun eval (c@[s, w], expr) {
       case eval (c, e) of
         [c1, _] -> [c1, 0]
       esac
-  | Scope (_, _) ->
-      failure()
-  | Call (_, _) ->
-      failure()
+  | Scope (defs, e) ->
+      let s1 = foldl (fun (s, def) {
+                 case def of
+                   Var (names)         -> addNames (s, names)
+                 | Fun (name, args, b) -> addFunction (s, name, args, b)
+                 esac
+               },
+               enterScope (s), defs) in
+        case eval ([s1, w], e) of
+          [[s2, w2], v] -> [[leaveScope (s2), w2], v]
+        esac
+  | Call (name, exprs) ->
+      case s.lookup (name) of
+        Fun (args, body) ->
+          if sameLength (args, exprs)
+          then case evalList (c, exprs) of
+                 [c1@[s1, w1], vals] ->
+                   let state = bindArgs (enterFunction (s1), name, args, vals) in
+                     case eval ([state, w1], body) of
+                       [[s2, w2], v] -> [[leaveFunction (s1, getGlobal (s2)), w2], v]
+                     esac
+               esac
+          else error (sprintf ("wrong number of arguments in ""%s""", name), getLoc (name))
+          fi
+      | _ -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
+      esac
   esac
 }
 (* End *)
