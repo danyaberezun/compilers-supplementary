@@ -412,7 +412,7 @@ fun epilogue (env) {
   if compare (env.currentFunction, "main") == 0
   then [env, singletonBuffer (Mov (rbp, rsp)) <+ Pop (rbp) <+ Binop ("^", rax, rax) <+ Ret <+ metaDef]
   else case env.pop of
-         [y, env] -> [env, singletonBuffer (Mov (rbp, rsp)) <+ Pop (rbp) <+ Mov (y, rax) <+ Ret <+ metaDef]
+         [y, env] -> [env, singletonBuffer (Mov (y, rax)) <+ Mov (rbp, rsp) <+ Pop (rbp) <+ Ret <+ metaDef]
        esac
   fi
 }
@@ -502,7 +502,58 @@ fun savecode (env, nA) {
 -- 4. discard those parameters that were passed through stack from the stack;
 -- 5. restore saved live registers.         
 fun call (env, fLabel, nA) {
-  failure ("calls not implemented")
+  fun popArgs (env, n, args) {
+    if n == 0
+    then [env, args]
+    else case pop (env) of
+           [arg, env1] -> popArgs (env1, n - 1, arg : args)
+         esac
+    fi
+  }
+
+  fun pushStackArgs (i, args) {
+    case args of
+      {}          -> emptyBuffer ()
+    | arg : args1 ->
+        if i < nRegArgs
+        then pushStackArgs (i + 1, args1)
+        else pushStackArgs (i + 1, args1) <+ Push (arg)
+        fi
+    esac
+  }
+
+  fun moveRegArgs (i, args) {
+    case args of
+      {}          -> emptyBuffer ()
+    | arg : args1 ->
+        if i < nRegArgs
+        then move (arg, R (i)) <+> moveRegArgs (i + 1, args1)
+        else emptyBuffer ()
+        fi
+    esac
+  }
+
+  case popArgs (env, nA, {}) of
+    [env1, args] ->
+      case allocate (env1) of
+        [res, env2] ->
+          case savecode (env, nA) of
+            [pushs, pops] ->
+              let nStackArgs = max (0, nA - nRegArgs) in
+                [env2,
+                 pushs <+>
+                 pushStackArgs (0, args) <+>
+                 moveRegArgs (0, args) <+
+                 Call (fLabel) <+>
+                 (if nStackArgs == 0
+                  then emptyBuffer ()
+                  else singletonBuffer (Binop ("+", L (nStackArgs * wordSize), rsp))
+                  fi) <+>
+                 pops <+
+                 Mov (rax, res)]
+          esac
+      esac
+  esac
 }
 
 -- Gets a suffix for Set instruction from
@@ -537,11 +588,17 @@ fun compile (env, code) {
       case i of
         READ ->
           case allocate (env) of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (rax, s)]
+            [s, env1] ->
+              case savecode (env, 0) of
+                [pushs, pops] -> [env1, code <+> pushs <+ Call ("Lread") <+> pops <+ Mov (rax, s)]
+              esac
           esac
       | WRITE ->
           case pop (env) of
-            [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
+            [s, env1] ->
+              case savecode (env, 1) of
+                [pushs, pops] -> [env1, code <+> pushs <+> move (s, rdi) <+ Call ("Lwrite") <+> pops]
+              esac
           esac
       | CONST (n) ->
           case allocate (env) of
@@ -577,16 +634,28 @@ fun compile (env, code) {
                 "+"  -> [push (env, l), code <+> move (l, rax) <+ Binop ("+", r, rax) <+> move (rax, l)]
               | "-"  -> [push (env, l), code <+> move (l, rax) <+ Binop ("-", r, rax) <+> move (rax, l)]
               | "*"  -> [push (env, l), code <+> move (l, rax) <+ Binop ("*", r, rax) <+> move (rax, l)]
-              | "/"  -> [push (env, l), code <+> move (l, rax) <+ Cltd <+ IDiv (r) <+> move (rax, l)]
-              | "%"  -> [push (env, l), code <+> move (l, rax) <+ Cltd <+ IDiv (r) <+> move (rdx, l)]
-              | "<"  -> [push (env, l), code <+> move (l, rax) <+ Binop ("cmp", r, rax) <+ Mov (L (0), rdx) <+ Set (suffix (op), "%dl") <+> move (rdx, l)]
-              | "<=" -> [push (env, l), code <+> move (l, rax) <+ Binop ("cmp", r, rax) <+ Mov (L (0), rdx) <+ Set (suffix (op), "%dl") <+> move (rdx, l)]
-              | "==" -> [push (env, l), code <+> move (l, rax) <+ Binop ("cmp", r, rax) <+ Mov (L (0), rdx) <+ Set (suffix (op), "%dl") <+> move (rdx, l)]
-              | "!=" -> [push (env, l), code <+> move (l, rax) <+ Binop ("cmp", r, rax) <+ Mov (L (0), rdx) <+ Set (suffix (op), "%dl") <+> move (rdx, l)]
-              | ">=" -> [push (env, l), code <+> move (l, rax) <+ Binop ("cmp", r, rax) <+ Mov (L (0), rdx) <+ Set (suffix (op), "%dl") <+> move (rdx, l)]
-              | ">"  -> [push (env, l), code <+> move (l, rax) <+ Binop ("cmp", r, rax) <+ Mov (L (0), rdx) <+ Set (suffix (op), "%dl") <+> move (rdx, l)]
-              | "&&" -> [push (env, l), code <+ Binop ("cmp", L (0), l) <+ Mov (L (0), rax) <+ Set ("ne", "%al") <+ Binop ("cmp", L (0), r) <+ Mov (L (0), rdx) <+ Set ("ne", "%dl") <+ Binop ("&&", rdx, rax) <+> move (rax, l)]
-              | "!!" -> [push (env, l), code <+ Binop ("cmp", L (0), l) <+ Mov (L (0), rax) <+ Set ("ne", "%al") <+ Binop ("cmp", L (0), r) <+ Mov (L (0), rdx) <+ Set ("ne", "%dl") <+ Binop ("!!", rdx, rax) <+> move (rax, l)]
+              | "/"  -> [push (env, l),
+                          code <+>
+                          withRDX (env,
+                                   case r of
+                                     R (2) -> singletonBuffer (Push (r)) <+> move (l, rax) <+ Cltd <+ IDiv (I (0, rsp)) <+ Binop ("+", L (wordSize), rsp) <+> move (rax, l)
+                                   | _     -> move (l, rax) <+ Cltd <+ IDiv (r) <+> move (rax, l)
+                                   esac)]
+              | "%"  -> [push (env, l),
+                          code <+>
+                          withRDX (env,
+                                   case r of
+                                     R (2) -> singletonBuffer (Push (r)) <+> move (l, rax) <+ Cltd <+ IDiv (I (0, rsp)) <+ Binop ("+", L (wordSize), rsp) <+> move (rdx, l)
+                                   | _     -> move (l, rax) <+ Cltd <+ IDiv (r) <+> move (rdx, l)
+                                   esac)]
+              | "<"  -> [push (env, l), code <+> withRDX (env, move (l, rax) <+ Binop ("cmp", r, rax) <+ Mov (L (0), rdx) <+ Set (suffix (op), "%dl") <+> move (rdx, l))]
+              | "<=" -> [push (env, l), code <+> withRDX (env, move (l, rax) <+ Binop ("cmp", r, rax) <+ Mov (L (0), rdx) <+ Set (suffix (op), "%dl") <+> move (rdx, l))]
+              | "==" -> [push (env, l), code <+> withRDX (env, move (l, rax) <+ Binop ("cmp", r, rax) <+ Mov (L (0), rdx) <+ Set (suffix (op), "%dl") <+> move (rdx, l))]
+              | "!=" -> [push (env, l), code <+> withRDX (env, move (l, rax) <+ Binop ("cmp", r, rax) <+ Mov (L (0), rdx) <+ Set (suffix (op), "%dl") <+> move (rdx, l))]
+              | ">=" -> [push (env, l), code <+> withRDX (env, move (l, rax) <+ Binop ("cmp", r, rax) <+ Mov (L (0), rdx) <+ Set (suffix (op), "%dl") <+> move (rdx, l))]
+              | ">"  -> [push (env, l), code <+> withRDX (env, move (l, rax) <+ Binop ("cmp", r, rax) <+ Mov (L (0), rdx) <+ Set (suffix (op), "%dl") <+> move (rdx, l))]
+              | "&&" -> [push (env, l), code <+> withRDX (env, singletonBuffer (Binop ("cmp", L (0), l)) <+ Mov (L (0), rax) <+ Set ("ne", "%al") <+ Binop ("cmp", L (0), r) <+ Mov (L (0), rdx) <+ Set ("ne", "%dl") <+ Binop ("&&", rdx, rax) <+> move (rax, l))]
+              | "!!" -> [push (env, l), code <+> withRDX (env, singletonBuffer (Binop ("cmp", L (0), l)) <+ Mov (L (0), rax) <+ Set ("ne", "%al") <+ Binop ("cmp", L (0), r) <+ Mov (L (0), rdx) <+ Set ("ne", "%dl") <+ Binop ("!!", rdx, rax) <+> move (rax, l))]
               | _    -> failure ("codegeneration for binop %s is not yet implemented\n", op)
               esac
           esac
@@ -612,8 +681,10 @@ fun compile (env, code) {
           esac
       | GLOBAL (x) ->
           [addGlobal (env, x), code]
-      | CALL (_, _) ->
-          failure()
+      | CALL (f, nA) ->
+          case call (env, f, nA) of
+            [env1, callCode] -> [env1, code <+> callCode]
+          esac
       | BEGIN (f, nA, nL) ->
           let env1 = enterFunction (env, f, nA, nL) in
             [env1, code <+> prologue (f)]
