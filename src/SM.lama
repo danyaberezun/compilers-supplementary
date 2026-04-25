@@ -95,7 +95,8 @@ fun eval (env, w, insns) {
       Arg (i) -> args[i]
     | Loc (i) -> locs[i]
     | Glb (x) -> deref (globalState) (x)
-    esac 
+    | #val    -> loc
+    esac
   }
 
   -- Assigns a value to a location
@@ -121,12 +122,58 @@ fun eval (env, w, insns) {
     inner (n, {}, list)
   }
 
+  fun consumeArgs (s, st, n) {
+     if n == 0
+     then s
+     else s.assign(Arg (n-1), st.hd); s.consumeArgs (st.tl, n-1)
+     fi
+  }
+
   -- Core interpreter: takes a configuration and a program, returns a configuration
   fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+   fun cJmp(c, head) {
+      case c of
+      "nz" -> head != 0
+      | "z" -> head == 0
+      esac
+   }
+
+   fun evalSingle(c@[stack, cstack, state, world, insns]) {
+      case insns of
+      (insn : othr) -> evalSingle(case insn of
+                        READ               -> let [next, bumped] = world.readWorld in [next : stack, cstack, state, bumped, othr]
+                        | WRITE            -> let (head : tail) = stack in [tail, cstack, state, head.writeWorld(world), othr]
+                        | BINOP(s)         -> let (right : left : tail) = stack
+                                                in [s.evalOp(state.lookup(left), state.lookup(right)) : tail, cstack, state, world, othr]
+                        | LD(x)            -> [state.lookup(x) : stack, cstack, state, world, othr]
+                        | LDA(x)           -> [x : stack, cstack, state, world, othr]
+                        | ST(x)            -> let (head : tail) = stack
+                                                in state.assign(x, head); [head : tail, cstack, state, world, othr]
+                        | STI              -> let (head : x : tail) = stack
+                                                in state.assign(x, head); [head : tail, cstack, state, world, othr]
+                        | CONST(n)         -> [n : stack, cstack, state, world, othr]
+                        | LABEL(_)         -> [stack, cstack, state, world, othr]
+                        | JMP(l)           -> [stack, cstack, state, world, env.fromLabel(l)]
+                        | CJMP(c, l)       -> let (head : tail) = stack in [tail, cstack, state, world,
+                                                if cJmp(c, head) then env.fromLabel(l) else othr fi]
+                        | DROP             -> let (_ : tail) = stack in [tail, cstack, state, world, othr]
+                        | DUP              -> let stack@(head : _) = stack in [head : stack, cstack, state, world, othr]
+                        | CALL   (f, n)    -> let [remaining, args] = stack.take(n) in
+                                                [args.reverse, Frame (remaining, state, othr) : cstack, makeState (0, 0), world, env.fromLabel(f)]
+                        | BEGIN  (f, a, l) -> [{}, cstack, makeState (a, l).consumeArgs(stack, a), world, othr]
+                        | GLOBAL (x)       -> state.assign(Glb (x), 0); [stack, cstack, state, world, othr]
+                        | END              -> let Frame (remaining, state, othr) : cstack = cstack in
+                                                [stack +++ remaining, cstack, state, world, othr]
+                        esac)
+      | _ -> [stack, cstack, state, world]
+      esac
+   }
+   --failure (showSM (insns));
+   evalSingle([st, cst, s, w, insns])
   }
-  
-  eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
+  (* End *)
+
+  eval ([{}, {Frame ({}, makeState (0, 0), {})}, makeState (0, 0), w], insns) [3].getOutput
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -324,6 +371,37 @@ fun addArgs (env, names) {
 -- Helper function: adds a bunch of locals
 fun addVars (env, names) {
   foldl (fun (env, name) {addVar (env, name)}, env, names)
+}
+
+fun addDefs (env, defs) {
+  foldl (fun (env, def) {
+     case def of
+     Var (names) -> env.addVars(names)
+     | Fun (name, args, _) -> let [lab, env] = env.genFunLabel(name) in env.addFun(name, lab, args.size)
+     esac
+  }, env, defs)
+}
+
+fun rememberFuns (env, defs) {
+  foldl (fun (env, def) {
+     case def of
+     Var (names) -> env
+     | Fun (name, args, body) -> let Fun (lab, _) = env.lookupFun(name) in env.rememberFun(lab, args, body)
+     esac
+  }, env, defs)
+}
+
+fun compileGlobals (env, defs) {
+  if env.isGlobal then
+   foldl (fun (code, def) {
+      case def of
+      Var (names) -> foldl (fun (code, name) { code <+ GLOBAL (name) }, code, names)
+      | _ -> code
+      esac
+   }, emptyBuffer (), defs)
+  else
+   emptyBuffer ()
+  fi
 }
 
 -- Compiles an expression into a stack machine code.
