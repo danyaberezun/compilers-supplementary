@@ -244,7 +244,7 @@ fun makeEnv (stack, stackSlots, globals, strings, stringIndex, barrier, stackMap
       else enter (env.allocate [1], n - 1)
       fi
     }
-    
+
     enter (makeEnv ({}, 0, globals, strings, stringIndex, false, emptyMap (compare), fLabel, nl), min (na, nRegArgs))
   }
 
@@ -278,7 +278,7 @@ fun makeEnv (stack, stackSlots, globals, strings, stringIndex, barrier, stackMap
       | c    -> escaped [j] := c; j := j+1
       esac
     od;
-    
+
     [makeEnv (stack, stackSlots, globals, addSet (strings, [name, substring (escaped, 0, j)]), stringIndex+1, false, stackMap, fLabel, nLocals), name]
   }
 
@@ -304,7 +304,7 @@ fun makeEnv (stack, stackSlots, globals, strings, stringIndex, barrier, stackMap
     let sym = tagSym (tag) in
     [sym, makeEnv (stack, stackSlots, globals, addSet (strings, [sym, tag]), stringIndex, barrier, stackMap, fLabel, nLocals)]
   }
-  
+
   [envString,
    alloc,
    push,
@@ -550,24 +550,32 @@ fun call (env, fLabel, nA) {
       fi
    }
 
-   fun moveArgs (env) {
+   fun moveArgs (env, extra) {
       let [env, args] = env.popN(nA) in
+      let args = args +++ extra[1] in
       [env, foldr (fun ([code, moved], arg) {
                 [code <+> (if moved < nRegArgs then arg.move(R (moved)) else singletonBuffer (Push (arg)) fi), moved + 1]
              }, [emptyBuffer (), 0], args)[0]]
    }
 
-   fun discardArgs (moved, code) {
-      if moved == nA
+   fun discardArgs (moved, code, extra) {
+      if moved == nA + extra[0]
       then code
-      else discardArgs (moved + 1, code <+> (if moved < nRegArgs then emptyBuffer () else singletonBuffer (Pop (rax)) fi))
+      else discardArgs (moved + 1, code <+> (if moved < nRegArgs then emptyBuffer () else singletonBuffer (Pop (rax)) fi), extra)
       fi
    }
 
+   let extra = case fLabel of "Barray" -> [1, {L (nA)}] | "Bsexp" -> [1, {L (nA - 1)}] | _ -> [0, {}] esac in
    let [pushes, pops] = env.savecode(nA) in
-   let [env, move] = env.moveArgs in
+   let [env, move] = env.moveArgs(extra) in
    let [returned, env] = env.allocate in
-   [env, pushes <+> move <+ Call (fLabel) <+ Mov (rax, returned) <+> discardArgs (0, emptyBuffer ()) <+> pops]
+   [env, pushes
+         <+> move
+         <+ Binop ("^", rax, rax)
+         <+ Call (fLabel)
+         <+ Mov (rax, returned)
+         <+> discardArgs (0, emptyBuffer (), extra)
+         <+> pops]
 }
 
 fun loadEffective (from, to) {
@@ -652,6 +660,13 @@ fun compileBinop (op, stack@[y, x, env], code) {
       esac]
 }
 
+fun isLocation (loc) {
+   case loc of
+    M (i) -> false
+    | _ -> true
+   esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -659,20 +674,7 @@ fun compile (env, code) {
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of
-        READ ->
-          let [env, callCode] = call (env, "Lread", 0) in [env, code <+> callCode]
-      | WRITE ->
-          let [env, callCode] = call (env, "Lwrite", 1) in
-          let [_, env] = env.pop in
-          [env, code <+> callCode]
-      (* Assignment
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-      *)
-      | BINOP(op) -> compileBinop (op, env.pop2, code)
+      BINOP(op) -> compileBinop (op, env.pop2, code)
       | LD(name) ->
           case env.allocate of
             [s, env] -> [env, code <+> env.loc(name).move(s)]
@@ -701,6 +703,21 @@ fun compile (env, code) {
                               [env, code <+> prologue (f)]
       | GLOBAL (x)       -> [env.addGlobal(x), code]
       | END              -> let [env, epilog] = env.epilogue in [env, code <+> epilog]
+      | STRING (s)       -> let [env, name] = env.addString(s) in
+                            let [s, env] = env.allocate in
+                            let [env, calling] = call (env, "Bstring", 1) in
+                            [env, code <+> loadEffective(M (name), s) <+> calling]
+      | ARRAY  (n)       -> let [env, calling] = call (env, "Barray", n) in
+                            [env, code <+> calling]
+      | SEXP   (t, n)    -> let [s, env] = env.allocate in
+                            let [env, calling] = call (env, "Bsexp", n + 1) in
+                            [env, code <+ Mov (L (hash (t)), s) <+> calling]
+      | STA              -> let [env, calling] = call (env, "Bsta", 3) in
+                            [env, code <+> calling]
+      | ELEM             -> let [env, calling] = call (env, "Belem", 2) in
+                            [env, code <+> calling]
+      | BUILTIN (f, n)   -> let [env, calling] = call (env, "L" ++ f, n) in
+                            [env, code <+> calling]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
@@ -722,7 +739,7 @@ public fun compileX86 (args, code) {
                     getBuffer $
                       singletonBuffer (Meta ("\t.global\tmain\n")) <+>
                       dataSection (listBuffer (map (intDef   , getGlobals (env)))   <+>
-                                   listBuffer (map (stringDef, getStrings (env))))  <+>                                  
+                                   listBuffer (map (stringDef, getStrings (env))))  <+>
 		      codeSection (code)
                     ).stringcat);
 
