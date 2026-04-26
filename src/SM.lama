@@ -99,6 +99,13 @@ fun eval (env, w, insns) {
     esac
   }
 
+  fun boxed (vl) {
+     case vl of
+      #box -> vl
+      | _  -> [vl]
+     esac
+  }
+
   -- Assigns a value to a location
   fun assign ([args, locs], loc, vl) {
     case loc of
@@ -138,6 +145,20 @@ fun eval (env, w, insns) {
       esac
    }
 
+   fun assignAt(arr, i, expr) {
+      case arr of
+         Sexp (_, vals) -> vals[i] := expr
+         | _ -> arr[i] := expr
+      esac
+   }
+
+   fun element(arr, i) {
+      case arr of
+         Sexp (_, vals) -> vals[i]
+         | _ -> arr[i]
+      esac
+   }
+
    fun evalSingle(c@[stack, cstack, state, world, insns]) {
       case insns of
       (insn : othr) -> evalSingle(case insn of
@@ -164,11 +185,25 @@ fun eval (env, w, insns) {
                         | GLOBAL (x)       -> state.assign(Glb (x), 0); [stack, cstack, state, world, othr]
                         | END              -> let Frame (remaining, state, othr) : cstack = cstack in
                                                 [stack +++ remaining, cstack, state, world, othr]
+                        | STRING (s)       -> [s : stack, cstack, state, world, othr]
+                        | ARRAY  (n)       -> let [remaining, arr] = stack.take(n) in
+                                                [arr.listArray : remaining, cstack, state, world, othr]
+                        | SEXP   (t, n)    -> let [remaining, arr] = stack.take(n) in
+                                                [Sexp (t, arr.listArray) : remaining, cstack, state, world, othr]
+                        | STA              -> let (head : i : x : tail) = stack in
+                                                case i of
+                                                   -1  -> state.assign(x, head)
+                                                   | _ -> assignAt (x, i, head)
+                                                esac; [head : tail, cstack, state, world, othr]
+                        | ELEM             -> let (i : x : tail) = stack in
+                                                [element (x, i) : tail, cstack, state, world, othr]
+                        | BUILTIN (f, n)   -> let [remaining, args] = stack.take(n) in
+                                              let [v, world] = f.evalBuiltin (args, world) in
+                                                [v : remaining, cstack, state, world, othr]
                         esac)
       | _ -> [stack, cstack, state, world]
       esac
    }
-   --failure (showSM (insns));
    evalSingle([st, cst, s, w, insns])
   }
   (* End *)
@@ -447,7 +482,7 @@ public fun compileSM (stmt) {
      case expr of
      Binop (op, left, right)           -> [lab, env, Seq (left, right)] <<+ BINOP (op)
      | Skip                            -> [false, env, emptyBuffer ()]
-     | Assn  (x, e)                    -> [lab, env, Seq (x, e)] <<+ STI
+     | Assn  (x, e)                    -> [lab, env, Seq (x, e)] <<+ STA
      | Seq   (s1, s2)                  ->
          let [s2Lab, env] = env.genLabel in
          let [s2LabUsed, env, s1Code] = compile (s2Lab, env, s1) in
@@ -475,7 +510,7 @@ public fun compileSM (stmt) {
                <+> compile (lab, env, c)[2] <+ CJMP ("nz", start)]
      | Ignore (e)                      -> [lab, env, e] <<+ DROP
      | Var    (x)                      -> [false, env, singletonBuffer (LD (env.lookupVar (x)))]
-     | Ref    (x)                      -> [false, env, singletonBuffer (LDA (env.lookupVar (x)))]
+     | Ref    (x)                      -> [false, env, singletonBuffer (LDA (env.lookupVar (x))) <+ CONST (-1)]
      | Const  (n)                      -> [false, env, singletonBuffer (CONST (n))]
      | Scope (defs, expr)              ->
          let env = env.beginScope in
@@ -484,26 +519,27 @@ public fun compileSM (stmt) {
          let [labUsed, env, code] = compile (lab, env, expr) in
          [labUsed, env.endScope, env.compileGlobals(defs) <+> code]
      | Call (name, args)               ->
+         let [argsLab, env] = env.genLabel in
          let Fun (fLabel, nArgs) = env.lookupFun(name) in
-         let [labUsed, env, code] = compileMany (lab, env, args) in
-         [labUsed, env, code <+ CALL (fLabel, nArgs)]
+         let [argsLabUsed, env, code] = compileMany (argsLab, env, args) in
+         [false, env, code <+> label (argsLab, argsLabUsed) <+ case fLabel[0] of
+                                 '$' -> BUILTIN (name, nArgs)
+                                 | _ -> CALL (fLabel, nArgs)
+                                esac]
      | String (s)                      -> [false, env, singletonBuffer (STRING (s))]
      | Array   (ev)                    ->
-         let [labUsed, env, code] = compileMany (lab, env, ev) in
-         [labUsed, env, code <+ ARRAY (ev.length)]
+         let [argsLab, env] = env.genLabel in
+         let [argsLabUsed, env, code] = compileMany (argsLab, env, ev) in
+         [false, env, code <+> label (argsLab, argsLabUsed) <+ ARRAY (ev.size)]
      | Elem    (e, i)                  ->
-         let [s2Lab, env] = env.genLabel in
-         let [s2LabUsed, env, s1Code] = compile (s2Lab, env, i) in
-         let [labUsed, env, s2Code] = compile (lab, env, e) in
-         [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code <+ ELEM]
-     | ElemRef (e, i)                  ->
-         let [s2Lab, env] = env.genLabel in
-         let [s2LabUsed, env, s1Code] = compile (s2Lab, env, i) in
-         let [labUsed, env, s2Code] = compile (lab, env, e) in
-         [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
+         let [iLab, env] = env.genLabel in
+         let [iLabUsed, env, eCode] = compile (iLab, env, e) in
+         let [labUsed, env, iCode] = compile (lab, env, i) in
+         [labUsed, env, eCode <+> label (iLab, iLabUsed) <+> iCode <+ ELEM]
+     | ElemRef (e, i)                  -> compile (lab, env, Seq (e, i))
      | Sexp    (s, ev)                 ->
          let [labUsed, env, code] = compileMany (lab, env, ev) in
-         [labUsed, env, code <+ SEXP (s, ev.length)]
+         [labUsed, env, code <+ SEXP (s, ev.size)]
      | _                               ->  failure ("compileSM not implemented\n")
      esac
   }
