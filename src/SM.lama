@@ -8,7 +8,6 @@ import World;
 import State;
 import Expr;
 import Buffer;
-import Fun;
 
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
@@ -26,7 +25,7 @@ public fun showSMInsn (i) {
   | JMP   (l)    -> sprintf ("JMP %s", l)
   | CJMP  (c, l) -> sprintf ("CJMP %s, %s", c, l)
   | DUP          -> "DUP"
-  | DROP         -> "DROP"  
+  | DROP         -> "DROP"
   esac
 }
 
@@ -57,10 +56,60 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+fun checkCond (cond, value) {
+  case cond of
+    "z"  -> value == 0
+  | "nz" -> value != 0
+  esac
+}
+
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+  case insns of
+    {} -> c
+  | last:ins ->
+      let [st, s, w] = c in
+      case last of
+        READ ->
+          let [el, w1] = readWorld (w) in
+          eval (env, [el : st, s, w1], ins)
+      | WRITE ->
+          let el : tail = st in
+          eval (env, [tail, s, writeWorld (el, w)], ins)
+      | LD (x) ->
+          eval (env, [s (x) : st, s, w], ins)
+      | LDA (x) ->
+          eval (env, [Addr (x) : st, s, w], ins)
+      | ST (x) ->
+          let el : tail = st in
+          eval (env, [el : tail, s <- [x, el], w], ins)
+      | STI ->
+          let el : Addr (x) : tail = st in
+          eval (env, [el : tail, s <- [x, el], w], ins)
+      | CONST (n) ->
+          eval (env, [n : st, s, w], ins)
+      | BINOP (op) ->
+          let y : x : tail = st in
+          eval (env, [evalOp (op, x, y) : tail, s, w], ins)
+      | LABEL (_) ->
+          eval (env, c, ins)
+      | JMP (lab) ->
+          eval (env, c, fromLabel (env, lab))
+      | CJMP (cond, lab) ->
+          let value : tail = st in
+          if checkCond (cond, value)
+          then eval (env, [tail, s, w], fromLabel (env, lab))
+          else eval (env, [tail, s, w], ins)
+          fi
+      | DUP ->
+          let el : _ = st in
+          eval (env, [el : st, s, w], ins)
+      | DROP ->
+          let _ : tail = st in
+          eval (env, [tail, s, w], ins)
+      esac
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -101,28 +150,96 @@ fun genLabels (env, n) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
-public fun compileSM (stmt) {
-  fun label (lab, labUsed) {
-    if labUsed
-    then singletonBuffer (LABEL (lab))
-    else emptyBuffer ()
-    fi
-  }
-  
-  fun compile (lab, env, stmt) {
-    case stmt of
-      Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 ->  failure ("compileSM not implemented\n")
+public fun compileSM (expr) {
+  fun compile (env, expr) {
+    case expr of
+      Skip ->
+        [env, emptyBuffer ()]
+    | Const (n) ->
+        [env, singletonBuffer (CONST (n))]
+    | Var (x) ->
+        [env, singletonBuffer (LD (x))]
+    | Ref (x) ->
+        [env, singletonBuffer (LDA (x))]
+    | Ignore (e) ->
+        case compile (env, e) of
+          [env, code] -> [env, code <+ DROP]
+        esac
+    | Seq (e1, e2) ->
+        case compile (env, e1) of
+          [env, code1] ->
+            case compile (env, e2) of
+              [env, code2] -> [env, code1 <+> code2]
+            esac
+        esac
+    | Read (x) ->
+        [env, singletonBuffer (READ) <+ ST (x) <+ DROP]
+    | Write (e) ->
+        case compile (env, e) of
+          [env, code] -> [env, code <+ DUP <+ WRITE]
+        esac
+    | Binop (op, l, r) ->
+        case compile (env, l) of
+          [env, lcode] ->
+            case compile (env, r) of
+              [env, rcode] -> [env, lcode <+> rcode <+ BINOP (op)]
+            esac
+        esac
+    | Assn (l, r) ->
+        case compile (env, l) of
+          [env, lcode] ->
+            case compile (env, r) of
+              [env, rcode] -> [env, lcode <+> rcode <+ STI]
+            esac
+        esac
+    | If (cond, thenExpr, elseExpr) ->
+        case genLabels (env, 2) of
+          [elseLab, endLab, env] ->
+            case compile (env, cond) of
+              [env, ccode] ->
+                case compile (env, thenExpr) of
+                  [env, tcode] ->
+                    case compile (env, elseExpr) of
+                      [env, ecode] ->
+                        [env,
+                         ccode <+ CJMP ("z", elseLab) <+>
+                         tcode <+ JMP (endLab) <+ LABEL (elseLab) <+>
+                         ecode <+ LABEL (endLab)]
+                    esac
+                esac
+            esac
+        esac
+    | While (cond, body) ->
+        case genLabels (env, 2) of
+          [loopLab, endLab, env] ->
+            case compile (env, cond) of
+              [env, ccode] ->
+                case compile (env, body) of
+                  [env, bcode] ->
+                    [env,
+                     singletonBuffer (LABEL (loopLab)) <+>
+                     ccode <+ CJMP ("z", endLab) <+>
+                     bcode <+ JMP (loopLab) <+ LABEL (endLab)]
+                esac
+            esac
+        esac
+    | DoWhile (body, cond) ->
+        case genLabel (env) of
+          [loopLab, env] ->
+            case compile (env, body) of
+              [env, bcode] ->
+                case compile (env, cond) of
+                  [env, ccode] ->
+                    [env,
+                     singletonBuffer (LABEL (loopLab)) <+>
+                     bcode <+> ccode <+ CJMP ("nz", loopLab)]
+                esac
+            esac
+        esac
     esac
   }
 
-  case initCompEnv ().genLabel of
-    [endLab, env] ->
-       case compile (endLab, env, stmt) of
-         [endLabUsed, _, code] -> getBuffer $ code <+> label (endLab, endLabUsed) 
-       esac
+  case compile (initCompEnv (), expr) of
+    [_, code] -> getBuffer (code)
   esac
 }
