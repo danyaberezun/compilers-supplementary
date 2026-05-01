@@ -107,7 +107,7 @@ fun insnString (insn) {
   }
   
   case insn of
-    Cltd               -> "\tcqo\n"
+    Cqo                -> "\tcqo\n"
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
   | Sal   (s)          -> sprintf ("\tsalq\t%s\n", s)
   | IDiv  (s1)         -> sprintf ("\tidivq\t%s\n", opndString (s1))
@@ -478,7 +478,59 @@ fun savecode (env, nA) {
 -- 4. discard those parameters that were passed through stack from the stack;
 -- 5. restore saved live registers.         
 fun call (env, fLabel, nA) {
-  failure ("calls not implemented")
+  fun popN (env, n) {
+    if n == 0
+    then [env, {}]
+    else case env.pop of
+           [v, env] ->
+             case popN (env, n-1) of
+               [env, rest] -> [env, rest +++ {v}]
+             esac
+         esac
+    fi
+  }
+
+  fun placeArgs (args) {
+    fun walk (i, args) {
+      case args of
+      {} -> [emptyBuffer (), emptyBuffer ()]
+      | a : tl ->
+          case walk (i+1, tl) of
+            [regCode, stackCode] ->
+              if i < nRegArgs
+              then [move (a, R (i)) <+> regCode, stackCode]
+              else [regCode, stackCode <+ Push (a)]
+              fi
+          esac
+      esac
+    }
+    walk (0, args)
+  }
+
+  case env.savecode (nA) of
+    [pushes, pops] ->
+      case popN (env, nA) of
+        [env, args] ->
+          case placeArgs (args) of
+            [regCode, stackCode] ->
+              var nStack = if nA > nRegArgs then nA - nRegArgs else 0 fi;
+              case env.allocate of
+                [ret, env] ->
+                  [env,
+                   pushes
+                   <+> regCode
+                   <+> stackCode
+                   <+ Call (fLabel)
+                   <+> (if nStack == 0
+                        then emptyBuffer ()
+                        else singletonBuffer (Binop ("+", L (nStack * wordSize), rsp))
+                        fi)
+                   <+> move (rax, ret)
+                   <+> pops]
+              esac
+          esac
+      esac
+  esac
 }
 
 -- Gets a suffix for Set instruction from
@@ -508,26 +560,37 @@ fun compile (env, code) {
           let [env, callCode] = call (env, "Lread", 0) in
 	  [env, code <+> callCode]
       | WRITE ->
-      (* Assignment        
+          let [env, callCode] = call (env, "Lwrite", 1) in
+          let [_, env] = env.pop in
+          [env, code <+> callCode]
+      (* Assignment
          -- Some guidelines for generating functions:
          --
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
       *)
-          case env.pop of
-            [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
-          esac
+      | CALL  (f, n) ->
+          let [env, callCode] = call (env, f, n) in
+          [env, code <+> callCode]
+      | BEGIN (f, a, l) ->
+          let env = env.enterFunction (f, a, l) in
+          [env, code <+> prologue (f)]
+      | END ->
+          let [env, epi] = env.epilogue in
+          [env, code <+> epi]
+      | GLOBAL (x) ->
+          [env.addGlobal (x), code]
       | CONST (n) ->
           let [s, env] = env.allocate in [env, code <+ Mov(L (n), s)]
       | LD (x) ->
-          let env = env.addGlobal (x) in
+          let env = case x of Glb (g) -> env.addGlobal (g) | _ -> env esac in
           let [s, env] = env.allocate in [env, code <+> move (env.loc(x), s)]
       | LDA (x) ->
-          let env = env.addGlobal (x) in
+          let env = case x of Glb (g) -> env.addGlobal (g) | _ -> env esac in
           let [s, env] = env.allocate in [env, code <+ Lea (env.loc (x), rax) <+ Mov (rax, s)]
       | ST (x) ->
-          let env = env.addGlobal (x) in
+          let env = case x of Glb (g) -> env.addGlobal (g) | _ -> env esac in
           let s = env.peek in [env, code <+> move (s, env.loc (x))]
       | STI ->
           let [v, a, env] = env.pop2 in
@@ -543,91 +606,152 @@ fun compile (env, code) {
           case op of
             "/" ->
               [env, code <+
+                    Push (rdx) <+
+                    Push (rcx) <+
                     Mov (y, rax) <+
+                    Mov (x, rcx) <+
                     Cqo <+
-                    IDiv (x) <+
+                    IDiv (rcx) <+
+                    Pop (rcx) <+
+                    Pop (rdx) <+
                     Mov (rax, s)
               ]
             | "%" ->
               [env, code <+
+                    Push (rdx) <+
+                    Push (rcx) <+
                     Mov (y, rax) <+
+                    Mov (x, rcx) <+
                     Cqo <+
-                    IDiv (x) <+
-                    Mov (rdx, s)
+                    IDiv (rcx) <+
+                    Mov (rdx, rax) <+
+                    Pop (rcx) <+
+                    Pop (rdx) <+
+                    Mov (rax, s)
               ]
             | "&&" ->
               [env, code <+
+                    Push (rdx) <+
+                    Push (rdi) <+
+                    Push (rcx) <+
                     Mov (y, rax) <+
+                    Mov (x, rcx) <+
                     Binop ("^", rdx, rdx) <+
                     Binop ("cmp", L (0), rax) <+
                     Set ("ne", "%dl") <+
-                    Mov (x, rax) <+
                     Binop ("^", rdi, rdi) <+
-                    Binop ("cmp", L (0), rax) <+
+                    Binop ("cmp", L (0), rcx) <+
                     Set ("ne", "%dil") <+
                     Binop ("&&", rdi, rdx) <+
-                    Mov (rdx, s)
+                    Mov (rdx, rax) <+
+                    Pop (rcx) <+
+                    Pop (rdi) <+
+                    Pop (rdx) <+
+                    Mov (rax, s)
               ]
             | "!!" ->
               [env, code <+
+                    Push (rdx) <+
+                    Push (rdi) <+
+                    Push (rcx) <+
                     Mov (y, rax) <+
+                    Mov (x, rcx) <+
                     Binop ("^", rdx, rdx) <+
                     Binop ("cmp", L (0), rax) <+
                     Set ("ne", "%dl") <+
-                    Mov (x, rax) <+
                     Binop ("^", rdi, rdi) <+
-                    Binop ("cmp", L (0), rax) <+
+                    Binop ("cmp", L (0), rcx) <+
                     Set ("ne", "%dil") <+
                     Binop ("!!", rdi, rdx) <+
-                    Mov (rdx, s)
+                    Mov (rdx, rax) <+
+                    Pop (rcx) <+
+                    Pop (rdi) <+
+                    Pop (rdx) <+
+                    Mov (rax, s)
               ]
             | "==" ->
               [env, code <+
+                    Push (rdx) <+
+                    Push (rcx) <+
                     Mov (y, rax) <+
+                    Mov (x, rcx) <+
                     Binop ("^", rdx, rdx) <+
-                    Binop ("cmp", x, rax) <+
+                    Binop ("cmp", rcx, rax) <+
                     Set (suffix("=="), "%dl") <+
-                    Mov (rdx, s)
+                    Mov (rdx, rax) <+
+                    Pop (rcx) <+
+                    Pop (rdx) <+
+                    Mov (rax, s)
               ]
             | "!=" ->
               [env, code <+
+                    Push (rdx) <+
+                    Push (rcx) <+
                     Mov (y, rax) <+
+                    Mov (x, rcx) <+
                     Binop ("^", rdx, rdx) <+
-                    Binop ("cmp", x, rax) <+
+                    Binop ("cmp", rcx, rax) <+
                     Set (suffix("!="), "%dl") <+
-                    Mov (rdx, s)
+                    Mov (rdx, rax) <+
+                    Pop (rcx) <+
+                    Pop (rdx) <+
+                    Mov (rax, s)
               ]
             | "<" ->
               [env, code <+
+                    Push (rdx) <+
+                    Push (rcx) <+
                     Mov (y, rax) <+
+                    Mov (x, rcx) <+
                     Binop ("^", rdx, rdx) <+
-                    Binop ("cmp", x, rax) <+
+                    Binop ("cmp", rcx, rax) <+
                     Set (suffix("<"), "%dl") <+
-                    Mov (rdx, s)
+                    Mov (rdx, rax) <+
+                    Pop (rcx) <+
+                    Pop (rdx) <+
+                    Mov (rax, s)
               ]
             | ">" ->
               [env, code <+
+                    Push (rdx) <+
+                    Push (rcx) <+
                     Mov (y, rax) <+
+                    Mov (x, rcx) <+
                     Binop ("^", rdx, rdx) <+
-                    Binop ("cmp", x, rax) <+
+                    Binop ("cmp", rcx, rax) <+
                     Set (suffix(">"), "%dl") <+
-                    Mov (rdx, s)
+                    Mov (rdx, rax) <+
+                    Pop (rcx) <+
+                    Pop (rdx) <+
+                    Mov (rax, s)
               ]
             | "<=" ->
               [env, code <+
+                    Push (rdx) <+
+                    Push (rcx) <+
                     Mov (y, rax) <+
+                    Mov (x, rcx) <+
                     Binop ("^", rdx, rdx) <+
-                    Binop ("cmp", x, rax) <+
+                    Binop ("cmp", rcx, rax) <+
                     Set (suffix("<="), "%dl") <+
-                    Mov (rdx, s)
+                    Mov (rdx, rax) <+
+                    Pop (rcx) <+
+                    Pop (rdx) <+
+                    Mov (rax, s)
               ]
             | ">=" ->
               [env, code <+
+                    Push (rdx) <+
+                    Push (rcx) <+
                     Mov (y, rax) <+
+                    Mov (x, rcx) <+
                     Binop ("^", rdx, rdx) <+
-                    Binop ("cmp", x, rax) <+
+                    Binop ("cmp", rcx, rax) <+
                     Set (suffix(">="), "%dl") <+
-                    Mov (rdx, s)
+                    Mov (rdx, rax) <+
+                    Pop (rcx) <+
+                    Pop (rdx) <+
+                    Mov (rax, s)
               ]
             | "+" ->
               [env, code <+
