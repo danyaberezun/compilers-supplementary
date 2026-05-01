@@ -429,6 +429,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -478,7 +479,52 @@ fun savecode (env, nA) {
 -- 4. discard those parameters that were passed through stack from the stack;
 -- 5. restore saved live registers.         
 fun call (env, fLabel, nA) {
-  failure ("calls not implemented")
+  var env1 = env;
+  var args = {};
+  var n = nA;
+
+  while n > 0 do
+    case env1.pop of
+      [x, env2] ->
+        args := x : args;
+        env1 := env2;
+        n := n - 1
+    esac
+  od;
+
+  case savecode (env1, 0) of
+    [save, restore] ->
+      case env1.allocate of
+        [res, env] ->
+          var nStack = max (0, nA - nRegArgs);
+          var dropCode = if nStack == 0 then emptyBuffer () else singletonBuffer (Binop ("+", L (nStack * wordSize), rsp)) fi;
+          var stackCode = emptyBuffer ();
+          var regsCode = emptyBuffer ();
+          var callCode = emptyBuffer ();
+          var i = 0;
+          var xs = args;
+
+          while xs.size > 0 do
+            case xs of
+              x : tl ->
+                if i < min (nA, nRegArgs)
+                then regsCode := regsCode <+> move (x, R (i))
+                else stackCode := singletonBuffer (Push (x)) <+> stackCode
+                fi;
+                i := i + 1;
+                xs := tl
+            esac
+          od;
+
+          callCode := stackCode <+> regsCode <+ Call (fLabel);
+          [env,
+           save <+>
+           callCode <+>
+           dropCode <+>
+           restore <+>
+           move (rax, res)]
+      esac
+  esac
 }
 
 -- Gets a suffix for Set instruction from
@@ -509,7 +555,9 @@ fun compile (env, code) {
 	  [env, code <+> callCode]
       | WRITE ->
           let [env, callCode] = call (env, "Lwrite", 1) in
-	  [env, code <+> callCode]
+          case env.pop of
+            [_, env] -> [env, code <+> callCode]
+          esac
 	  
       (* Assignment        
          -- Some guidelines for generating functions:
@@ -518,8 +566,167 @@ fun compile (env, code) {
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
       *)
-        
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      | LD (x) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac
+      | LDA (x) ->
+          case env.allocate of
+            [s, env] ->
+              [env,
+               if memOpnd (s)
+               then code <+ Lea (env.loc (x), rax) <+> move (rax, s)
+               else code <+ Lea (env.loc (x), s)
+               fi]
+          esac
+      | ST (x) ->
+          case env.pop of
+            [s, env] -> [env.push (s), code <+> move (s, env.loc (x))]
+          esac
+      | STI ->
+          case env.pop2 of
+            [v, ptr, env] ->
+              var c1 =
+                case ptr of
+                  R (_) ->
+                    if memOpnd (v)
+                    then withRDX (env, code <+ Mov (v, rdx) <+ Mov (rdx, I (0, ptr)))
+                    else code <+ Mov (v, I (0, ptr))
+                    fi
+                | _ ->
+                    var code1 = code <+ Mov (ptr, rax);
+                    if memOpnd (v)
+                    then withRDX (env, code1 <+ Mov (v, rdx) <+ Mov (rdx, I (0, rax)))
+                    else code1 <+ Mov (v, I (0, rax))
+                    fi
+                esac;
+              [env.push (v), c1]
+          esac
+      | CONST (n) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (L (n), s)]
+          esac
+      | BINOP (op) ->
+          case env.pop2 of
+            [r, l, env] ->
+              case op of
+                "/" ->
+                  case r of
+                    R (i) ->
+                      if i == 2
+                      then var c1 = move (r, r11) <+> move (l, rax) <+ Cltd <+ IDiv (r11) <+> move (rax, l);
+                           [env.push (l), code <+ Push (r11) <+> c1 <+ Pop (r11)]
+                      else var c1 = move (l, rax) <+ Cltd <+ IDiv (r) <+> move (rax, l);
+                           [env.push (l), if env.freeReg (rdx) then code <+> c1 else code <+ Push (rdx) <+> c1 <+ Pop (rdx) fi]
+                      fi
+                  | _ ->
+                      var c1 = move (l, rax) <+ Cltd <+ IDiv (r) <+> move (rax, l);
+                      [env.push (l), if env.freeReg (rdx) then code <+> c1 else code <+ Push (rdx) <+> c1 <+ Pop (rdx) fi]
+                  esac
+              | "%" ->
+                  case r of
+                    R (i) ->
+                      if i == 2
+                      then var c1 = move (r, r11) <+> move (l, rax) <+ Cltd <+ IDiv (r11) <+> move (rdx, l);
+                           [env.push (l), code <+ Push (r11) <+> c1 <+ Pop (r11)]
+                      else var c1 = move (l, rax) <+ Cltd <+ IDiv (r) <+> move (rdx, l);
+                           [env.push (l), if env.freeReg (rdx) then code <+> c1 else code <+ Push (rdx) <+> c1 <+ Pop (rdx) fi]
+                      fi
+                  | _ ->
+                      var c1 = move (l, rax) <+ Cltd <+ IDiv (r) <+> move (rdx, l);
+                      [env.push (l), if env.freeReg (rdx) then code <+> c1 else code <+ Push (rdx) <+> c1 <+ Pop (rdx) fi]
+                  esac
+              | "<" ->
+                  var c1 =
+                    if memOpnd (l) && memOpnd (r)
+                    then code <+> move (l, rax) <+ Binop ("cmp", r, rax)
+                    else code <+ Binop ("cmp", r, l)
+                    fi;
+                  [env.push (l), c1 <+ Set (suffix (op), "%al") <+ Binop ("&&", L (1), rax) <+> move (rax, l)]
+              | "<=" ->
+                  var c1 =
+                    if memOpnd (l) && memOpnd (r)
+                    then code <+> move (l, rax) <+ Binop ("cmp", r, rax)
+                    else code <+ Binop ("cmp", r, l)
+                    fi;
+                  [env.push (l), c1 <+ Set (suffix (op), "%al") <+ Binop ("&&", L (1), rax) <+> move (rax, l)]
+              | "==" ->
+                  var c1 =
+                    if memOpnd (l) && memOpnd (r)
+                    then code <+> move (l, rax) <+ Binop ("cmp", r, rax)
+                    else code <+ Binop ("cmp", r, l)
+                    fi;
+                  [env.push (l), c1 <+ Set (suffix (op), "%al") <+ Binop ("&&", L (1), rax) <+> move (rax, l)]
+              | "!=" ->
+                  var c1 =
+                    if memOpnd (l) && memOpnd (r)
+                    then code <+> move (l, rax) <+ Binop ("cmp", r, rax)
+                    else code <+ Binop ("cmp", r, l)
+                    fi;
+                  [env.push (l), c1 <+ Set (suffix (op), "%al") <+ Binop ("&&", L (1), rax) <+> move (rax, l)]
+              | ">=" ->
+                  var c1 =
+                    if memOpnd (l) && memOpnd (r)
+                    then code <+> move (l, rax) <+ Binop ("cmp", r, rax)
+                    else code <+ Binop ("cmp", r, l)
+                    fi;
+                  [env.push (l), c1 <+ Set (suffix (op), "%al") <+ Binop ("&&", L (1), rax) <+> move (rax, l)]
+              | ">" ->
+                  var c1 =
+                    if memOpnd (l) && memOpnd (r)
+                    then code <+> move (l, rax) <+ Binop ("cmp", r, rax)
+                    else code <+ Binop ("cmp", r, l)
+                    fi;
+                  [env.push (l), c1 <+ Set (suffix (op), "%al") <+ Binop ("&&", L (1), rax) <+> move (rax, l)]
+              | "&&" ->
+                  var c1 =
+                    code <+> move (l, rax) <+ Binop ("cmp", L (0), rax) <+ Set ("ne", "%al") <+ Binop ("&&", L (1), rax);
+                  var c2 =
+                    withRDX (env, c1 <+> move (r, rdx) <+ Binop ("cmp", L (0), rdx) <+ Set ("ne", "%dl") <+ Binop ("&&", L (1), rdx) <+ Binop ("&&", rdx, rax));
+                  [env.push (l), c2 <+> move (rax, l)]
+              | "!!" ->
+                  var c1 =
+                    code <+> move (l, rax) <+ Binop ("cmp", L (0), rax) <+ Set ("ne", "%al") <+ Binop ("&&", L (1), rax);
+                  var c2 =
+                    withRDX (env, c1 <+> move (r, rdx) <+ Binop ("cmp", L (0), rdx) <+ Set ("ne", "%dl") <+ Binop ("&&", L (1), rdx) <+ Binop ("!!", rdx, rax));
+                  [env.push (l), c2 <+> move (rax, l)]
+              | _ ->
+                  [env.push (l),
+                   if memOpnd (l) && memOpnd (r)
+                   then code <+> move (l, rax) <+ Binop (op, r, rax) <+> move (rax, l)
+                   else code <+ Binop (op, r, l)
+                   fi]
+              esac
+          esac
+      | LABEL (l) ->
+          [if env.isBarrier then env.retrieveStack (l) else env fi, code <+ Label (l)]
+      | JMP   (l) ->
+          [env.setStack (l).setBarrier, code <+ Jmp (l)]
+      | CJMP  (c, l) ->
+          case env.pop of
+            [s, env] -> [env.setStack (l), code <+ Binop ("cmp", L (0), s) <+ CJmp (c, l)]
+          esac
+      | CALL (f, n) ->
+          case call (env, f, n) of
+            [env, callCode] -> [env, code <+> callCode]
+          esac
+      | BEGIN (f, a, l) ->
+          [enterFunction (env, f, a, l), code <+> prologue (f)]
+      | GLOBAL (x) ->
+          [addGlobal (env, x), code]
+      | END ->
+          case epilogue (env) of
+            [env, endCode] -> [env, code <+> endCode]
+          esac
+      | DUP ->
+          var top = env.peek;
+          case env.allocate of
+            [s, env] -> [env, code <+> move (top, s)]
+          esac
+      | DROP ->
+          case env.pop of
+            [_, env] -> [env, code]
+          esac
       esac
     }, [env, emptyBuffer ()], code)
 }
