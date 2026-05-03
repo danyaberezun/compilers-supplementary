@@ -395,6 +395,34 @@ fun move (from, to) {
   fi
 }
 
+fun call (env, fLabel, nA) {
+  fun pushArgs (env, acc, n) {
+    case n of
+      0 -> [env, acc]
+    | n -> case env.pop of
+             [x, env] -> pushArgs (env, Push (x) : acc, n - 1)
+           esac
+    esac
+  }
+
+  case unzip $ map (fun (r) {[Push (r), Pop (r)]}, env.liveRegisters (nA)) of
+    [pushRegs, popRegs] ->
+      case pushArgs (env, {}, nA) of
+        [env, pushArgs] ->
+          case env.allocate of
+            [y, env] ->
+              [env,
+               listBuffer (pushRegs) <+>
+               listBuffer (reverse (pushArgs)) <+
+               Call (fLabel) <+>
+               (if nA == 0 then emptyBuffer () else singletonBuffer (Binop ("+", L (wordSize * nA), esp)) fi) <+>
+               listBuffer (reverse (popRegs)) <+>
+               move (eax, y)]
+          esac
+      esac
+  esac
+}
+
 fun compileLea (from, to) {
   if memOpnd (to)
   then singletonBuffer (Lea (from, eax)) <+> move (eax, to)
@@ -424,17 +452,19 @@ fun compileSimpleBinop (op, l, r, dst) {
 }
 
 fun compileDiv (l, r, dst) {
-  if r == eax
-  then singletonBuffer (Push (eax)) <+> move (l, eax) <+ Cltd <+ Pop (ecx) <+ IDiv (ecx) <+> move (eax, dst)
-  else move (l, eax) <+> singletonBuffer (Cltd) <+ IDiv (r) <+> move (eax, dst)
-  fi
+  case r of
+    R (4) -> singletonBuffer (Push (eax)) <+> move (l, eax) <+ Cltd <+ IDiv (I (0, esp)) <+ Binop ("+", L (wordSize), esp) <+> move (eax, dst)
+  | R (5) -> singletonBuffer (Push (edx)) <+> move (l, eax) <+ Cltd <+ IDiv (I (0, esp)) <+ Binop ("+", L (wordSize), esp) <+> move (eax, dst)
+  | _     -> move (l, eax) <+> singletonBuffer (Cltd) <+ IDiv (r) <+> move (eax, dst)
+  esac
 }
 
 fun compileMod (l, r, dst) {
-  if r == eax
-  then singletonBuffer (Push (eax)) <+> move (l, eax) <+ Cltd <+ Pop (ecx) <+ IDiv (ecx) <+> move (edx, dst)
-  else move (l, eax) <+> singletonBuffer (Cltd) <+ IDiv (r) <+> move (edx, dst)
-  fi
+  case r of
+    R (4) -> singletonBuffer (Push (eax)) <+> move (l, eax) <+ Cltd <+ IDiv (I (0, esp)) <+ Binop ("+", L (wordSize), esp) <+> move (edx, dst)
+  | R (5) -> singletonBuffer (Push (edx)) <+> move (l, eax) <+ Cltd <+ IDiv (I (0, esp)) <+ Binop ("+", L (wordSize), esp) <+> move (edx, dst)
+  | _     -> move (l, eax) <+> singletonBuffer (Cltd) <+ IDiv (r) <+> move (edx, dst)
+  esac
 }
 
 fun compileCmp (op, l, r, dst) {
@@ -531,12 +561,14 @@ fun compile (env, code) {
               [s, env] -> [env, code <+> compileLea (env.loc (x), s)]
             esac
         | ST (x) ->
-            case env.pop of
-              [s, env] -> [env, code <+> move (s, env.loc (x))]
-            esac
+            [env, code <+> move (env.peek, env.loc (x))]
         | STI ->
             case env.pop2 of
-              [v, l, env] -> [env, code <+> storeIndirect (v, l)]
+              [v, l, env] ->
+                [env.push (v), code <+> if memOpnd (l)
+                                      then singletonBuffer (Mov (v, edx)) <+ Mov (l, eax) <+ Mov (edx, I (0, eax)) <+ Mov (edx, l)
+                                      else singletonBuffer (Mov (v, eax)) <+ Mov (eax, I (0, l)) <+ Mov (eax, l)
+                                      fi]
             esac
         | CONST (n) ->
             case env.allocate of
@@ -574,6 +606,10 @@ fun compile (env, code) {
             esac
         | GLOBAL (x) ->
             [env.addGlobal (x), code]
+        | CALL (f, nArgs) ->
+            case call (env, f, nArgs) of
+              [env, c] -> [env, code <+> c]
+            esac
         | BEGIN (f, _, nLocals) ->
             [env.enterFunction (f, nLocals), code <+> prologue (f)]
         | END ->

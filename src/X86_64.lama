@@ -479,7 +479,37 @@ fun savecode (env, nA) {
 -- 4. discard those parameters that were passed through stack from the stack;
 -- 5. restore saved live registers.         
 fun call (env, fLabel, nA) {
-  failure ("calls not implemented")
+  fun placeArgs (env, regCode, stackCode, i) {
+    if i < 0
+    then [env, regCode, stackCode]
+    else case env.pop of
+           [x, env] ->
+             if i < nRegArgs
+             then placeArgs (env, regCode <+> move (x, R (i)), stackCode, i - 1)
+             else placeArgs (env, regCode, stackCode <+ Push (x), i - 1)
+             fi
+         esac
+    fi
+  }
+
+  case savecode (env, nA) of
+    [pushRegs, popRegs] ->
+      case placeArgs (env, emptyBuffer (), emptyBuffer (), nA - 1) of
+        [env, regCode, stackCode] ->
+          case env.allocate of
+            [y, env] ->
+              var nStackArgs = max (0, nA - nRegArgs);
+              [env,
+               pushRegs <+>
+               stackCode <+>
+               regCode <+
+               Call (fLabel) <+>
+               (if nStackArgs == 0 then emptyBuffer () else singletonBuffer (Binop ("+", L (wordSize * nStackArgs), rsp)) fi) <+>
+               popRegs <+>
+               move (rax, y)]
+          esac
+      esac
+  esac
 }
 
 fun compileLea (from, to) {
@@ -510,49 +540,55 @@ fun compileSimpleBinop (op, l, r, dst) {
   fi
 }
 
-fun compileDiv (l, r, dst) {
-  if r == rax
-  then singletonBuffer (Push (rax)) <+> move (l, rax) <+ Cltd <+ Pop (rcx) <+ IDiv (rcx) <+> move (rax, dst)
-  else move (l, rax) <+> singletonBuffer (Cltd) <+ IDiv (r) <+> move (rax, dst)
-  fi
+fun compileDiv (env, l, r, dst) {
+  withRDX (env,
+  case r of
+    R (13) -> singletonBuffer (Push (rax)) <+> move (l, rax) <+ Cltd <+ IDiv (I (0, rsp)) <+ Binop ("+", L (wordSize), rsp) <+> move (rax, dst)
+  | R (2)  -> singletonBuffer (Push (rdx)) <+> move (l, rax) <+ Cltd <+ IDiv (I (0, rsp)) <+ Binop ("+", L (wordSize), rsp) <+> move (rax, dst)
+  | _      -> move (l, rax) <+> singletonBuffer (Cltd) <+ IDiv (r) <+> move (rax, dst)
+  esac)
 }
 
-fun compileMod (l, r, dst) {
-  if r == rax
-  then singletonBuffer (Push (rax)) <+> move (l, rax) <+ Cltd <+ Pop (rcx) <+ IDiv (rcx) <+> move (rdx, dst)
-  else move (l, rax) <+> singletonBuffer (Cltd) <+ IDiv (r) <+> move (rdx, dst)
-  fi
+fun compileMod (env, l, r, dst) {
+  withRDX (env,
+  case r of
+    R (13) -> singletonBuffer (Push (rax)) <+> move (l, rax) <+ Cltd <+ IDiv (I (0, rsp)) <+ Binop ("+", L (wordSize), rsp) <+> move (rdx, dst)
+  | R (2)  -> singletonBuffer (Push (rdx)) <+> move (l, rax) <+ Cltd <+ IDiv (I (0, rsp)) <+ Binop ("+", L (wordSize), rsp) <+> move (rdx, dst)
+  | _      -> move (l, rax) <+> singletonBuffer (Cltd) <+ IDiv (r) <+> move (rdx, dst)
+  esac)
 }
 
-fun compileCmp (op, l, r, dst) {
+fun compileCmp (env, op, l, r, dst) {
+  withRDX (env,
   move (l, rax) <+>
   if memOpnd (r)
   then singletonBuffer (Mov (r, rdx)) <+ Binop ("cmp", rdx, rax)
   else singletonBuffer (Binop ("cmp", r, rax))
-  fi <+ Mov (L (0), rdx) <+ Set (suffix (op), "%dl") <+> move (rdx, dst)
+  fi <+ Mov (L (0), rdx) <+ Set (suffix (op), "%dl") <+> move (rdx, dst))
 }
 
-fun compileLogic (op, l, r, dst) {
+fun compileLogic (env, op, l, r, dst) {
+  withRDX (env,
   move (l, rax) <+ Binop ("cmp", L (0), rax) <+ Mov (L (0), rdx) <+ Set ("ne", "%dl") <+>
   move (r, rax) <+ Binop ("cmp", L (0), rax) <+ Mov (L (0), rax) <+ Set ("ne", "%al") <+ Binop (op, rax, rdx) <+>
-  move (rdx, dst)
+  move (rdx, dst))
 }
 
-fun compileBinop (op, l, r, dst) {
+fun compileBinop (env, op, l, r, dst) {
   case op of
     "+"  -> compileSimpleBinop ("+", l, r, dst)
   | "-"  -> compileSimpleBinop ("-", l, r, dst)
   | "*"  -> compileSimpleBinop ("*", l, r, dst)
-  | "&&" -> compileLogic ("&&", l, r, dst)
-  | "!!" -> compileLogic ("!!", l, r, dst)
-  | "/"  -> compileDiv (l, r, dst)
-  | "%"  -> compileMod (l, r, dst)
-  | "<"  -> compileCmp ("<", l, r, dst)
-  | "<=" -> compileCmp ("<=", l, r, dst)
-  | "==" -> compileCmp ("==", l, r, dst)
-  | "!=" -> compileCmp ("!=", l, r, dst)
-  | ">=" -> compileCmp (">=", l, r, dst)
-  | ">"  -> compileCmp (">", l, r, dst)
+  | "&&" -> compileLogic (env, "&&", l, r, dst)
+  | "!!" -> compileLogic (env, "!!", l, r, dst)
+  | "/"  -> compileDiv (env, l, r, dst)
+  | "%"  -> compileMod (env, l, r, dst)
+  | "<"  -> compileCmp (env, "<", l, r, dst)
+  | "<=" -> compileCmp (env, "<=", l, r, dst)
+  | "==" -> compileCmp (env, "==", l, r, dst)
+  | "!=" -> compileCmp (env, "!=", l, r, dst)
+  | ">=" -> compileCmp (env, ">=", l, r, dst)
+  | ">"  -> compileCmp (env, ">", l, r, dst)
   | _    -> failure ("unknown binary operator %s\n", op)
   esac
 }
@@ -609,12 +645,14 @@ fun compile (env, code) {
             [s, env] -> [env, code <+> compileLea (env.loc (x), s)]
           esac
       | ST (x) ->
-          case env.pop of
-            [s, env] -> [env, code <+> move (s, env.loc (x))]
-          esac
+          [env, code <+> move (env.peek, env.loc (x))]
       | STI ->
           case env.pop2 of
-            [v, l, env] -> [env, code <+> storeIndirect (v, l)]
+            [v, l, env] ->
+              [env.push (v), code <+> if memOpnd (l)
+                                    then singletonBuffer (Mov (v, rdx)) <+ Mov (l, rax) <+ Mov (rdx, I (0, rax)) <+ Mov (rdx, l)
+                                    else singletonBuffer (Mov (v, rax)) <+ Mov (rax, I (0, l)) <+ Mov (rax, l)
+                                    fi]
           esac
       | CONST (n) ->
           case env.allocate of
@@ -623,8 +661,9 @@ fun compile (env, code) {
       | BINOP (op) ->
           case env.pop2 of
             [r, l, env] ->
+              var env0 = env;
               case env.allocate of
-                [s, env] -> [env, code <+> compileBinop (op, l, r, s)]
+                [s, env] -> [env, code <+> compileBinop (env0, op, l, r, s)]
               esac
           esac
       | LABEL (l) ->
@@ -652,6 +691,10 @@ fun compile (env, code) {
           esac
       | GLOBAL (x) ->
           [env.addGlobal (x), code]
+      | CALL (f, nArgs) ->
+          case call (env, f, nArgs) of
+            [env, c] -> [env, code <+> c]
+          esac
       | BEGIN (f, nArgs, nLocals) ->
           [env.enterFunction (f, nArgs, nLocals), code <+> prologue (f)]
       | END ->
