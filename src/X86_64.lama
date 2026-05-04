@@ -429,6 +429,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -477,8 +478,35 @@ fun savecode (env, nA) {
 -- 3. generate the call itself;
 -- 4. discard those parameters that were passed through stack from the stack;
 -- 5. restore saved live registers.         
-fun call (env, fLabel, nA) {
-  failure ("calls not implemented")
+fun call(env, label, nA) {
+	case savecode(env,nA) of [pushes,pops]->
+		var n=nA;
+		var moves=emptyBuffer();
+		--while n<nA do
+			--case env.pop of [s,envn]->
+				--env:=envn;
+
+		while n>nRegs do
+			n:=n-1;
+			case env.pop of [s,envn]->
+				env:=envn;
+				moves:=singletonBuffer(Push(s))<+>moves
+			esac
+		od;
+		while n do
+			n:=n-1;
+			case env.pop of [s,envn]->
+				env:=envn;
+				moves:=move(s,R(n))<+>moves
+			esac
+		od;
+		case env.allocate of [ans,env]->
+			if nA>nRegArgs then
+				pops:=singletonBuffer(Binop("+",L(wordSize*(nA-nRegArgs)),rsp))<+>pops
+			fi;
+			[env,pushes<+>moves<+Call(label)<+>pops<+>move(rax,ans)]
+		esac
+	esac
 }
 
 -- Gets a suffix for Set instruction from
@@ -491,37 +519,114 @@ fun suffix (op) {
   | "!=" -> "ne"
   | ">=" -> "ge"
   | ">"  -> "g"
+  |_->0
   esac
 }
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
+fun compileB (env, buffer, mycode){
+	case mycode of
+		[]->[env,buffer]
+		|a:b->
+			case compileB(env,buffer,b) of
+			[env,bufferb]->
+				var code = bufferb <+ Meta ("# " ++ showSMInsn (a) ++ "\n");
+				var result=(--printf(a.string);printf("\n");
+				case a of
+				READ ->
+					case call(env,"Lread",0) of
+						[env,callcode]->[env,code<+>callcode]
+					esac
+				|BEGIN(f,a,l)->[enterFunction(env,f,a,l),code<+>prologue(f)]
+				|END->
+					case epilogue(env) of
+						[env,endcode]->[env,code<+>endcode]
+					esac
+				|CALL(f,n)->
+					case call(env,f,n) of
+						[env,callcode]->[env,code<+>callcode]
+					esac
+				|GLOBAL(x)->[addGlobal(env,x),code]
+				|WRITE ->
+					case call(env,"Lwrite",1) of
+						[env,callcode]->[env,code<+>callcode]
+					esac
+				|LD(x) ->
+					case env.allocate of
+						[s,env]->[env,code<+>move(env.loc(x),s)]
+					esac
+				|LDA(x)->
+					case env.allocate of
+						[s,env]->[env,code<+Lea(env.loc(x),rax)<+>move(rax,s)]
+					esac
+				|CONST(x)->
+					case env.allocate of
+						[s,env]->[env,code<+Mov(L(x),s)]
+					esac
+				|ST(x) ->
+					case env.pop of
+						[s,env]->[env,code<+>move(s,env.loc(x))]
+					esac
+				|STI  ->case env.pop2 of
+						[f,v,env]->
+							case env.allocate of
+								[s,env]->[env,code<+Mov(v,rax)<+Mov(f,I(0,rax))<+>move(f,s)]
+							esac
+					esac
+				|DUP ->case env.peek of
+						s->case env.allocate of
+							[f,env]->[env,code<+>move(s,f)]
+						esac
+					esac
+				|DROP->case env.pop of
+						[s,env]->[env,code]
+					esac
+				|BINOP(x)->
+					case env.pop2 of
+						[s,f,env]->
+							case env.allocate of
+								[r,env]->
+								var straight=emptyBuffer()
+							<+Mov(L(0),rax)<+Binop("cmp",L(0),f)<+Set("ne","%al")<+Mov(rax, f)
+							<+Mov(L(0),rax)<+Binop("cmp",L(0),s)<+Set("ne","%al")<+Mov(rax, s);
+								var codediv=case s of
+									R(2)->listBuffer({Mov(s,rbx),Mov(f,rax),Cltd,IDiv(rbx)})
+									|_->listBuffer({Mov(f,rax),Cltd,IDiv(s)})
+								esac;
+								var code2=case x of
+										"&&"->code<+>straight
+										|"!!"->code<+>straight
+										|_->code
+									esac;
+								case x of
+									"/"->[env,code<+>withRDX(env,codediv)<+Mov(rax,r)]
+									|"%"->[env,code<+>withRDX(env,codediv<+Mov(rdx,rax))<+Mov(rax,r)]
+									|_->
+									case suffix(x) of
+										0->[env,code2<+Binop(x,s,f)<+>move(f,r)]
+										|su->[env,code<+Binop("^",rax,rax)<+Binop("cmp",s,f)<+Set(su,"%al")<+Mov(rax, r)]
+									esac
+								esac
+							esac
+					esac
+				|LABEL(x)->[env.retrieveStack(x),code<+Label(x)]
+				|JMP(x)->[env.setStack(x).setBarrier,code<+Jmp(x)]
+				|CJMP(x,y)->case env.pop of
+					[s,env]->[env.setStack(y),code<+Binop("cmp",L(0),s)<+CJmp(x,y)]
+					esac
+			esac);
+			if env.isBarrier then
+				case a of
+				  LABEL(x)->[env.retrieveStack(x),code<+Label(x)]
+				  |_->[env,code]
+				esac
+			else result fi
+		esac
+	esac
+}
 fun compile (env, code) {
-  foldl (
-    fun ([env, scode], i) {
-      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-
-      -- printf ("compiling %s\n", showSMInsn (i));
-      
-      case i of      
-        READ ->
-          let [env, callCode] = call (env, "Lread", 0) in
-	  [env, code <+> callCode]
-      | WRITE ->
-          let [env, callCode] = call (env, "Lwrite", 1) in
-	  [env, code <+> callCode]
-	  
-      (* Assignment        
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-      *)
-        
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-      esac
-    }, [env, emptyBuffer ()], code)
+	compileB(env,emptyBuffer(),code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
