@@ -122,6 +122,7 @@ fun insnString (insn) {
   | Jmp   (l)          -> sprintf ("\tjmp\t%s\n", l)
   | CJmp  (c, l)       -> sprintf ("\tj%s\t%s\n", c, l)
   | Meta  (m)          -> m
+  | Cqo -> "\tcqo\n"
   esac
 }
 
@@ -478,9 +479,39 @@ fun savecode (env, nA) {
 -- 4. discard those parameters that were passed through stack from the stack;
 -- 5. restore saved live registers.         
 fun call (env, fLabel, nA) {
-  failure ("calls not implemented")
-}
 
+  fun place (env, i) {
+    if i == 0 then [env, emptyBuffer ()]
+    else
+      let [arg, env1] = pop (env) in
+      let [env2, code] = place (env1, i - 1) in
+        if i <= nRegArgs
+        then [env2, move (arg, R (i - 1)) <+> code]
+        else [env2, move (arg, rax) <+ singletonBuffer (Push (rax)) <+> code]
+        fi
+    fi
+  }
+
+  let [pushes, pops] = savecode (env, nA) in
+  let [env1, argsCode] = place (env, nA) in
+  let [res, env2] = allocate (env1) in
+
+  let cleanup =
+    if nA > nRegArgs
+    then singletonBuffer (Binop ("+", L (wordSize * (nA - nRegArgs)), rsp))
+    else emptyBuffer ()
+    fi
+  in
+
+  [env2,
+    pushes <+>
+    argsCode <+>
+    singletonBuffer (Call (fLabel)) <+>
+    cleanup <+>
+    singletonBuffer (Mov (rax, res)) <+>
+    pops
+  ]
+}
 -- Gets a suffix for Set instruction from
 -- source language comparison operator
 fun suffix (op) {
@@ -509,7 +540,8 @@ fun compile (env, code) {
 	  [env, code <+> callCode]
       | WRITE ->
           let [env, callCode] = call (env, "Lwrite", 1) in
-	  [env, code <+> callCode]
+          let [_, env] = env.pop in [env, code <+> callCode]
+
 	  
       (* Assignment        
          -- Some guidelines for generating functions:
@@ -519,7 +551,138 @@ fun compile (env, code) {
          -- 2. generate epilogue for END instruction.
       *)
         
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      | LD (x) ->
+          let env1 =
+            case x of
+              Glb (g) -> env.addGlobal (g)
+            | _ -> env
+            esac in
+          case env1.allocate of
+            [s, new_env] -> [new_env, code <+> move (env1.loc (x), s)]
+          esac
+      | ST (x) ->
+        let env1 =
+          case x of
+            Glb (g) -> env.addGlobal (g)
+          | _ -> env
+          esac in
+        let s = env1.peek in
+        [env1, code <+> move (s, env1.loc (x))]
+      | CONST (n) ->
+          let [s, env] = env.allocate in [env, code <+ Mov(L(n), s)]
+      | LABEL (s) ->
+        let env1 =
+          if env.isBarrier
+          then env.retrieveStack (s)
+          else env
+          fi in
+        [env1, code <+ Label (s)]
+      | BINOP (op) ->
+        case env.pop2 of
+          [s1, s2, env1] ->
+            case env1.allocate of
+              [s, env2] ->
+                case op of
+                  "+" -> [env2, code <+ Mov (s2, rax) <+ Binop ("+", s1, rax) <+ Mov (rax, s)]
+
+                | "-" -> [env2, code <+ Mov (s2, rax) <+ Binop ("-", s1, rax) <+ Mov (rax, s)]
+
+                | "*" -> [env2, code <+ Mov (s2, rax) <+ Binop ("*", s1, rax) <+ Mov (rax, s)]
+
+                | "/" -> [env2, code <+ Push (rdx) <+ Push (rcx)
+                                    <+ Mov (s2, rax) <+ Mov (s1, rcx)
+                                    <+ Cqo <+ IDiv (rcx)
+                                    <+ Pop (rcx) <+ Pop (rdx)
+                                    <+ Mov (rax, s)]
+
+                | "%" -> [env2, code <+ Push (rdx) <+ Push (rcx)
+                                    <+ Mov (s2, rax) <+ Mov (s1, rcx)
+                                    <+ Cqo <+ IDiv (rcx)
+                                    <+ Mov (rdx, rax)
+                                    <+ Pop (rcx) <+ Pop (rdx)
+                                    <+ Mov (rax, s)]
+
+                | "&&" -> [env2, code <+ Push (rdx) <+ Push (rdi) <+ Push (rcx)
+                                    <+ Mov (s2, rax) <+ Mov (s1, rcx)
+                                    <+ Binop ("^", rdx, rdx)
+                                    <+ Binop ("cmp", L (0), rax)
+                                    <+ Set ("ne", "%dl")
+                                    <+ Binop ("^", rdi, rdi)
+                                    <+ Binop ("cmp", L (0), rcx)
+                                    <+ Set ("ne", "%dil")
+                                    <+ Binop ("&&", rdi, rdx)
+                                    <+ Mov (rdx, rax)
+                                    <+ Pop (rcx) <+ Pop (rdi) <+ Pop (rdx)
+                                    <+ Mov (rax, s)]
+
+                | "!!" -> [env2, code <+ Push (rdx) <+ Push (rdi) <+ Push (rcx)
+                                    <+ Mov (s2, rax) <+ Mov (s1, rcx)
+                                    <+ Binop ("^", rdx, rdx)
+                                    <+ Binop ("cmp", L (0), rax)
+                                    <+ Set ("ne", "%dl")
+                                    <+ Binop ("^", rdi, rdi)
+                                    <+ Binop ("cmp", L (0), rcx)
+                                    <+ Set ("ne", "%dil")
+                                    <+ Binop ("!!", rdi, rdx)
+                                    <+ Mov (rdx, rax)
+                                    <+ Pop (rcx) <+ Pop (rdi) <+ Pop (rdx)
+                                    <+ Mov (rax, s)]
+
+                | _ -> [env2, code <+ Push (rdx) <+ Push (rcx)
+                                  <+ Mov (s2, rax) <+ Mov (s1, rcx)
+                                  <+ Binop ("^", rdx, rdx)
+                                  <+ Binop ("cmp", rcx, rax)
+                                  <+ Set (suffix (op), "%dl")
+                                  <+ Mov (rdx, rax)
+                                  <+ Pop (rcx) <+ Pop (rdx)
+                                  <+ Mov (rax, s)]
+                esac
+            esac
+        esac
+      | JMP (l) ->  [env.setStack (l).setBarrier, code <+ Jmp (l)]
+
+      | CJMP (cond, l) ->
+          let [v, env1] = env.pop in
+          let env2 = setStack (env1, l) in
+          let env3 = setBarrier (env2) in
+          [env3,
+            code <+ Binop ("cmp", L (0), v) <+ CJmp (cond, l)
+          ]
+
+      | LDA (x) ->
+          let [dst, env1] = env.allocate in
+          [env1, code <+ Lea (env.loc(x), dst)]
+
+      | STI ->
+          let [value, addr, env1] = env.pop2 in
+          let env2 = env1.push (value) in
+          [env2,
+            code <+> move (value, I (0, addr))
+          ]
+
+      | DROP ->
+          let [_, env1] = env.pop in [env1, code]
+
+      | DUP ->
+          let top = env.peek in
+          let [dst, env1] = env.allocate in
+          [env1, code <+> move (top, dst)]
+
+      | GLOBAL (x) ->
+          let env1 = addGlobal (env, x) in
+          [env1, code]
+
+      | CALL (f, args) ->
+          let [env1, callCode] = call (env, f, args) in
+          [env1, code <+> callCode]
+
+      | BEGIN (f, a, l) ->
+          let env1 = enterFunction (env, f, a, l) in
+          [env1, code <+> prologue (f)]
+
+      | END ->
+          let [env1, epilogueCode] = epilogue (env) in
+          [env1, code <+> epilogueCode]
       esac
     }, [env, emptyBuffer ()], code)
 }
