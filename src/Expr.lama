@@ -101,16 +101,139 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun getVal (state, name) {
+  let Val(v) = lookupVal (state, name) in v
 }
 
+public fun getIndexable (arg) {
+  case arg of
+    Sexp (_, args) -> args
+  | _ -> arg
+  esac
+}
+
+fun valsToArray (vals) {
+  map (fun (Val(v)) {v}, vals).listArray
+}
+
+fun eval (c@[s, w], expr) {
+  case expr of
+    Skip -> [c, None]
+  | Binop (op, e1, e2) ->
+    let [nc, Val(v1)] = eval (c, e1) in
+    let [nc, Val(v2)] = eval (nc, e2) in
+    let res = evalOp (op, v1, v2) in
+    [nc, Val (res)]
+  | Seq (e1, e2) ->
+    let [nc, _] = eval (c, e1) in eval (nc, e2)
+  | Ignore (e) -> 
+    let [nc, _] = eval (c, e) in [nc, None]
+  | Set (x, e) ->
+    let [[s, w], Val(v)] = eval (c, e) in
+    let ns = s <- [x, Val (v)] in
+    [[ns, w], None]
+  | Assn (l, r) ->
+    let [nc, lr] = eval (c, l) in
+    let [[s, w], Val (rv)] = eval (nc, r) in
+    let ns = case lr of
+      Ref (x) -> s <- [x, Val (rv)]
+    | ElemRef (a, i) -> a[i] := rv; s
+    esac in
+    [[ns, w], Val (rv)]
+  | Ref (x) -> [c, Ref (x)]
+  | Var (x) -> [c, lookupVal (s, x)]
+  | Const (n) -> [c, Val (n)]
+  | If (cnd, t, e) ->
+    let [nc, Val(v)] = eval (c, cnd) in
+    if v != 0 
+    then eval (nc, t)
+    else eval (nc, e) 
+    fi
+  | While (cnd, b) ->
+    while let [[s, w], Val(v)] = eval (c, cnd) in
+          c := [s, w]; v != 0 do
+      let [nc, _] = eval (c, b) in c := nc
+    od; 
+    [c, None]
+  | DoWhile (b, cnd) ->
+    do let [nc, _] = eval (c, b) in c := nc
+    while let [[s, w], Val(v)] = eval (c, cnd) in 
+          c := [s, w]; v != 0 
+    od; [c, None]
+  | Scope (defs, body) -> 
+    let scoped = foldl (
+      fun (s, def) {
+        case def of
+          Var(names) -> addNames (s, names)
+        | Fun(name, args, body) -> addFunction (s, name, args, body)
+        esac
+      },
+      enterScope (s),
+      defs
+    ) in
+    let [[ns, nw], v] = eval ([scoped, w], body) in
+    [[leaveScope (ns), nw], v]
+  | Call (f, args) ->
+    let [[ns, nw], argVals] = evalList (c, args) in
+    let Fun (params, body) = lookupFun (s, f) in
+    if size (params) != size (argVals) then
+      error (sprintf (
+        "function ""%s"" expects %d arguments, but got %d", 
+        f, size (params), size (argVals)
+      ), getLoc (expr))
+    else
+      let cs = foldl (
+        fun (s, [p, v]) {addName (s, p, v)},
+        enterFunction (ns),
+        zip (params, argVals)
+      ) in
+      let [[s, w], v] = eval ([cs, nw], body) in
+      [[leaveFunction (ns, getGlobal (s)), w], v]
+    fi
+  | Builtin (name, argNames) ->
+    let args = foldl (fun (res, name) { 
+      let Val (v) = lookupVal (s, name) in v : res
+    }, {}, argNames).reverse in
+    let [v, w] = evalBuiltin (name, args, w) in
+    [[s, w], Val (v)]
+  | String (s) -> [c, Val (s)]
+  | Array (elems) -> 
+    let [nc, vals] = evalList (c, elems) in
+    let arr = valsToArray (vals) in
+    [nc, Val (arr)]
+  | Elem (a, i) ->
+    let [nc, Val(arr)] = eval (c, a) in
+    let [nc, Val(idx)] = eval (nc, i) in
+    let arr = getIndexable (arr) in 
+    [nc, Val (arr[idx])]
+  | ElemRef (a, i) ->
+    let [nc, Val(arr)] = eval (c, a) in
+    let [nc, Val(idx)] = eval (nc, i) in
+    let arr = getIndexable (arr) in
+    [nc, ElemRef (arr, idx)]
+  | Sexp (name, args) ->
+    let [nc, vals] = evalList (c, args) in
+    let args = valsToArray (vals) in
+    [nc, Val(Sexp (name, args))]
+  | _ -> failure ("Unknown expression %s\n", expr.string)
+  esac
+}
+
+fun populateBuiltins (state) {
+  let builtins = {
+    Builtin ("length", {"a"}),
+    Builtin ("read", {}),
+    Builtin ("write", {"a"})
+   } in foldl (
+    fun (s, body@Builtin (name, args)) {addFunction (s, name, args, body)},
+    state,
+    builtins
+  )
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
-  case eval ([emptyState ().enterScope.addName ("read",   Fun ({}, External))
-                                      .addName ("write",  Fun ({"a"}, External))
-                                      .addName ("length", Fun ({"a"}, External)), createWorld (input)], expr) of
+  case eval ([emptyState ().enterScope.populateBuiltins, createWorld (input)], expr) of
     [c, _] -> c.snd.getOutput
   esac
 }
