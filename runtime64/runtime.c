@@ -11,8 +11,7 @@ long Lread () {
   long result;
 
   ALIGN_STACK;
-  scanf  ("%ld", &result);
+  scanf ("%ld", &result);
   
   return result;
 }
-
