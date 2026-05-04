@@ -407,7 +407,7 @@ fun prologue (fLabel) {
 
 fun epilogue (env) {
   var metaDef = Meta (sprintf ("\t.set\t%s_SIZE,\t%d\n", env.currentFunction, env.staticSize * wordSize));
-
+  
   if compare (env.currentFunction, "main") == 0
   then [env, singletonBuffer (Mov (rbp, rsp)) <+ Pop (rbp) <+ Binop ("^", rax, rax) <+ Ret <+ metaDef]
   else case env.pop of
@@ -478,7 +478,43 @@ fun savecode (env, nA) {
 -- 4. discard those parameters that were passed through stack from the stack;
 -- 5. restore saved live registers.         
 fun call (env, fLabel, nA) {
-  failure ("calls not implemented")
+  fun popN (env, n) {
+    if n == 0
+    then [env, {}]
+    else  let [v, env] = env.pop in
+          let [env, rest] = popN (env, n-1) in
+          [env, rest +++ {v}]
+    fi
+  }
+
+  fun placeArgs (idx, args) {
+    case args of
+      {} -> [emptyBuffer(), emptyBuffer()]
+    | a:rest ->
+        let [regCode, stackCode] = placeArgs(idx+1, rest) in
+        if idx < nRegArgs
+        then [move(a, R (idx)) <+> regCode, stackCode]
+        else [regCode, stackCode <+ Push (a)]
+        fi
+    esac
+  }
+  
+  let [pushes, pops] = env.savecode(nA) in
+  let [env, args]    = popN(env, nA) in
+  let [regCode, stackCode] = placeArgs(0, args) in
+  let nStack = max(0, nA - nRegArgs) in
+  let [ret, env] = env.allocate in
+  [env,pushes
+    <+> regCode
+    <+> stackCode
+    <+ Call (fLabel)
+    <+> (if nStack == 0
+         then emptyBuffer()
+         else singletonBuffer(Binop ("+", L (nStack * wordSize), rsp))
+         fi)
+    <+> pops
+    <+> move(rax, ret)
+  ]
 }
 
 -- Gets a suffix for Set instruction from
@@ -501,7 +537,7 @@ fun compile (env, code) {
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
 
-      -- printf ("compiling %s\n", showSMInsn (i));
+      --printf ("compiling %s\n", showSMInsn (i));
       
       case i of      
         READ ->
@@ -509,18 +545,92 @@ fun compile (env, code) {
 	  [env, code <+> callCode]
       | WRITE ->
           let [env, callCode] = call (env, "Lwrite", 1) in
+          let [_, env] = env.pop in
 	  [env, code <+> callCode]
-	  
-      (* Assignment        
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-      *)
-        
+      | BINOP(op) ->
+          case env.pop2 of [r1, r2, env] ->
+            [env.push(r2), case op of
+                "+" -> code <+ Binop("+", r1, r2)
+              | "-" -> code <+ Binop("-", r1, r2)
+              | "*" -> code <+ Binop("*", r1, r2)
+              | "/" -> code <+> withRDX(env,
+                        case r1 of
+                          R(2) -> listBuffer({Mov(r1, rbx), Mov(r2, rax), Cltd, IDiv(rbx), Mov(rax, r2)})
+                          | _ -> listBuffer({Mov(r2, rax), Cltd, IDiv(r1), Mov(rax, r2)})
+                        esac)
+              | "%" -> code <+> withRDX(env,
+                        case r1 of
+                          R(2) -> listBuffer({Mov(r1, rbx), Mov(r2, rax), Cltd, IDiv(rbx), Mov(rdx, r2)})
+                          | _ -> listBuffer({Mov(r2, rax), Cltd, IDiv(r1), Mov(rdx, r2)})
+                        esac)
+              | "==" -> code <+> listBuffer({Binop("^", rax, rax), Binop("cmp", r1, r2), Set("e", "%al"), Mov(rax, r2)})
+              | "!=" -> code <+> listBuffer({Binop("^", rax, rax), Binop("cmp", r1, r2), Set("ne", "%al"), Mov(rax, r2)})
+              | "<" -> code <+> listBuffer({Binop("^", rax, rax), Binop("cmp", r1, r2), Set("l", "%al"), Mov(rax, r2)})
+              | "<=" -> code <+> listBuffer({Binop("^", rax, rax), Binop("cmp", r1, r2), Set("le", "%al"), Mov(rax, r2)})
+              | ">" -> code <+> listBuffer({Binop("^", rax, rax), Binop("cmp", r1, r2), Set("g", "%al"), Mov(rax, r2)})
+              | ">=" -> code <+> listBuffer({Binop("^", rax, rax), Binop("cmp", r1, r2), Set("ge", "%al"), Mov(rax, r2)})
+              | "&&" -> code <+> listBuffer({Binop("^", rax, rax), Binop("cmp", L(0), r1), Set("ne", "%al"), Mov(rax, r1), Binop("^", rax, rax), Binop("cmp", L(0), r2), Set("ne", "%al"), Mov(rax, r2), Binop("&&", r1, r2)})
+              | "!!" -> code <+>  listBuffer({Binop("^", rax, rax), Binop("cmp", L(0), r1), Set("ne", "%al"), Mov(rax, r1), Binop("^", rax, rax), Binop("cmp", L(0), r2), Set("ne", "%al"), Mov(rax, r2), Binop("!!", r1, r2)})
+            esac]
+          esac
+      | CONST (n) ->
+          let [s, env] = env.allocate in
+          [env, code <+ Mov (L (n), s)]
+      | LD (v) ->
+          let env = case v of 
+                      Glb (g) -> env.addGlobal(g) 
+                    | _ -> env
+                    esac in
+          let [s, env] = env.allocate in
+          [env, code <+ Mov (env.loc (v), s)]
+      | ST (v) ->
+          let env = case v of 
+                      Glb (g) -> env.addGlobal(g) 
+                    | _ -> env
+                    esac in
+          let value = env.peek in
+          [env, code <+> move(value, env.loc (v))]
+      | LABEL (s)      -> 
+          let env = if env.isBarrier then env.retrieveStack(s) else env fi in
+          [env, code <+ Label(s)]
+      | JMP   (lab)    -> 
+          let env = env.setStack(lab).setBarrier in
+          [env, code <+ Jmp(lab)]
+      | CJMP  (c, lab) -> 
+          let [s, env] = env.pop in
+          let env = env.setStack(lab) in
+          [env, code <+> move(s, rax) <+ Binop("cmp", L(0), rax) <+ CJmp(c, lab)]
+      | LDA (v) ->
+          let env = case v of 
+                      Glb (g) -> env.addGlobal(g) 
+                    | _ -> env
+                    esac in
+          let [s, env] = env.allocate in 
+          [env, code <+ Lea (env.loc (v), rax) <+ Mov (rax, s)]
+      | STI ->
+          let [v, addr, env] = env.pop2 in
+          let [s, env] = env.allocate in 
+          [env, code <+> env.withRDX(move (addr, rax) <+> move (v, rdx) <+ Mov (rdx, I (0, rax)) <+> move (rdx, s))]
+      | DROP -> 
+          let [_, env] = env.pop in 
+          [env, code]
+      | DUP -> 
+          let v = env.peek in
+          let [s, env] = env.allocate in
+          [env, code <+> move(v, s)]
+      | CALL (fLab, nA) ->
+          let [env, callCode] = call(env, fLab, nA) in
+          [env, code <+> callCode]
+      | BEGIN (fLab, nA, nL) ->
+          let env = env.enterFunction(fLab, nA, nL) in
+          [env, code <+> prologue(fLab)]
+      | END ->
+          let [env, epilogueCode] = env.epilogue in
+          [env, code <+> epilogueCode]
+      | GLOBAL (v) ->
+          [env.addGlobal(v), code]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-      esac
+        esac
     }, [env, emptyBuffer ()], code)
 }
 
