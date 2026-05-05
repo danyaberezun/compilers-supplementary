@@ -583,30 +583,87 @@ fun savecode (env, nA) {
 -- Don't forget to handle buitins (Barray/Bsexp), and
 -- to clear rax before calling to variable arg funcations
 fun call (env, fLabel, nA) {
-  fun placeArgs (env, nArgs) {
-    if nArgs == 0 then [env, emptyBuffer ()]
-    else
-      let [arg, env] = env.pop in
-      let [env, code] = placeArgs (env, nArgs - 1) in
-      let placeCode = 
-        if nArgs <= nRegArgs then
-          let target = R (nArgs - 1) in
-          moveIfDiff (arg, target)
-        else singletonBuffer (Push (arg))
-        fi in
-      [env, code <+> placeCode]
+  doCall (env, fLabel, nA, {})
+}
+
+fun doCall (env, fLabel, nA, addArgsList) {
+  var addArgs = listMap (addArgsList, compare);
+
+  fun getArg (env, i) {
+    case findMap (addArgs, i) of
+      None -> env.pop
+    | Some (arg) -> [arg, env]
+    esac
+  }
+
+  fun placeStackArgs (env, nArgs) {
+    if nArgs == 0 then [env, emptyBuffer (), emptyMap (compare)]
+    else 
+      let argIdx = nArgs - 1 in
+      let [arg, env] = getArg (env, argIdx) in
+      let [env, code, args] = placeStackArgs (env, nArgs - 1) in
+      if nArgs > nRegArgs then
+        [env, code <+> singletonBuffer (Push (arg)), args]
+      else
+        let reg = R (argIdx) in
+        [env, code, addMap (args, arg, reg)]
+      fi
     fi
   }
 
-  let [pushs, pops] = savecode (env, nA) in
-  let [env, placeCode] = placeArgs (env, nA) in
+  fun saveMove (dsts, init, from, to) {
+    case findMap (dsts, to) of
+      None -> Some ([from, to])
+    | Some (next) -> 
+      if compare (next, init) == 0
+      then None
+      else saveMove (dsts, init, to, next)
+      fi
+    esac
+  }
+
+  fun unfoldCycle (dsts, from, to) {
+    fun loop (dsts, cur, code) {
+      case findMap (dsts, cur) of
+        None -> [dsts, code]
+      | Some (next) -> 
+        let removed = removeMap (dsts, cur) in
+        let [dsts, code] = loop (removed, next, code) in
+        [dsts, code <+> move (cur, next)]
+      esac    
+    }
+
+    let removed = removeMap (dsts, from) in
+    let [dsts, code] = loop (removed, to, emptyBuffer ()) in
+    [dsts, move (from, rax) <+> code <+> move (rax, to)]
+  }
+
+  fun generateMoves (dsts) {
+    case bindings (dsts) of
+      {} -> emptyBuffer ()
+    | [from, to] : _ ->
+      case saveMove (dsts, from, from, to) of
+        None -> 
+        let [dsts, code] = unfoldCycle (dsts, from, to) in
+        code <+> generateMoves (dsts)
+      | Some ([sf, st]) ->
+        let nDsts = removeMap (dsts, sf) in 
+        move (sf, st) <+> generateMoves (nDsts)
+      esac
+    esac
+  }
+
+  let [pushs, pops] = savecode (env, nA - size (addArgsList)) in
+  let [env, stackPlaceCode, dsts] = placeStackArgs (env, nA) in
+  let regPlaceCode = generateMoves (dsts) in
   let stackShift = if nA > nRegArgs 
     then singletonBuffer (Binop ("+", L (wordSize * (nA - nRegArgs)), rsp))
     else emptyBuffer ()
   fi in
   let [ret, env] = env.allocate in
   [env, pushs <+> 
-        placeCode <+
+        stackPlaceCode <+>
+        regPlaceCode <+
         Binop ("^", rax, rax) <+
         Call (fLabel) <+> 
         stackShift <+>
@@ -767,7 +824,8 @@ fun compile (env, code) {
           let [env, callCode] = call (env, f, nArgs) in
           [env, code <+> callCode]
       | BUILTIN (f, nArgs) ->
-          let [env, callCode] = call (env, "L" ++ f, nArgs) in
+          let prefix = if compare("match_failure", f) == 0 then "B" else "L" fi in
+          let [env, callCode] = call (env, prefix ++ f, nArgs) in
           [env, code <+> callCode]
       | STRING (s) -> 
           let [env, name] = env.addString(s) in
@@ -787,14 +845,27 @@ fun compile (env, code) {
         [env, code <+> callCode]
       | SEXP (t, n) ->
         let [sym, env] = env.addTag(t) in
-        let [vals, env] = pops (env, n) in
-        let env = pushs (env, L(makeBox(n)) : vals +++ {M (sym)}) in
-        let [env, callCode] = call (env, "Bsexp", n + 2) in
-        [env, code <+> callCode]
+        let [tr, env] = env.allocate in
+        let [env, callCode] = doCall (
+          env, "Bsexp", n + 2, {[0, L(makeBox(n))]}
+        ) in [env, code <+> lea (M (sym), tr) <+> callCode]
       | DUP -> 
         let v = env.peek in
         let [l, env] = env.allocate in
         [env, code <+> move (v, l)]
+      | PATT (p) ->
+        case p of
+          Tag (t, n) ->
+            let [tag, env] = env.addTag(t) in
+            let [ar, env] = env.allocate in
+            let [nr, env] = env.allocate in
+            let [env, callCode] = call (env, "Btag", 3) in
+            [env, code <+> lea (M (tag), ar) <+ Mov (L (makeBox(n)), nr) <+> callCode]
+        | Array (n) ->
+            let [nr, env] = env.allocate in
+            let [env, callCode] = call (env, "Barray_patt", 2) in
+            [env, code <+> Mov (L (makeBox(n)), nr) <+> callCode]
+        esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac      
     }, [env, emptyBuffer ()], code)
