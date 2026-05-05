@@ -40,7 +40,7 @@ public fun evalOp (op, l, r) {
 --
 -- A expression is represented by a data structure of the following shape:
 --
--- expr = Assn    (expr, expr)         |
+-- expr = Assign    (expr, expr)       |
 --        Seq     (expr, expr)         |
 --        Skip                         |
 --        if      (expr, expr, expr)   |
@@ -86,6 +86,42 @@ fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
                                         
+fun unref (v, [s, w]) {
+  case v of
+    Lvalue(x) -> s(x)
+  | Rvalue(x) -> x
+  | _ -> failure("unexpected value in unref: %s\n", v.string)
+  esac
+}
+
+fun ref (v) {
+  case v of
+    Lvalue(x) -> x
+  | _ -> failure("unexpected value in ref: %s\n", v.string)
+  esac
+}
+
+fun unfoldSexp (v) {
+  case v of
+    Sexp (_, args) -> args
+  | _ -> v
+  esac
+}
+
+fun evalCall (c@[s, w], f, args) {
+  let [[ns, nw], argVals] = evalList (c, args) in
+  let Fun (params, body) = lookupFun (s, f) in
+  -- printf("%d %d %d\n", argVals[0], argVals[1], lout);
+  let cs = foldl (
+    fun (s, [p, Val (v)]) {addName (s, p, Val (v))},
+    enterFunction (ns),
+    zip (params, argVals)
+  ) in
+  let [[s, w], v] = eval ([cs, nw], body) in
+  [[leaveFunction (ns, getGlobal (s)), w], v]
+}
+
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -101,15 +137,121 @@ fun evalList (c, exprs) {
 }
 
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  -- printf("eval: %s\n", expr.string);
+  case expr of 
+    Assign (l, r) -> 
+      let [c, vl] = eval(c, l) in
+      let [[s, w], Val (vr)] = eval(c, r) in
+      let ns = case vl of
+        Ref (x) -> s <- [x, Val (vr)]
+      | ElemRef (a, i) -> a[i] := vr; s
+      esac
+      in [[ns, w], Val(vr)]
+    | Seq (l, r) ->
+      let [cl, _] = eval(c, l) in
+      eval(cl, r)
+    | Skip ->
+      [c, Void]
+    | If (e, tr, fls) ->
+      let [c, Val (v)] = eval(c, e) in
+      if v then
+        eval(c, tr) 
+      else eval(c, fls) fi
+    | While (e, body) ->
+      while let [ce, Val (v)] = eval(c, e) in c := ce; v do
+        let [nc, _] = eval(c, body) in c := nc
+      od;
+      [c, Void]
+
+-- let [ce, ve] = eval(c, e) in
+--       if unref(ve, ce) then eval(ce, Seq(body, While(e, body)))
+--       else [ce, Void] fi
+    | DoWhile (body, e) ->
+      eval(c, Seq(body, While(e, body)))
+    | Var (x) -> [c, s.lookupVal(x)]
+    | Ref (x) -> [c, Ref (x)]
+    | Binop (op, e1, e2) -> evalBinop(c, op, e1, e2)
+    | Const (n) -> [c, Val (n)]
+    | Scope (defs, expr) ->
+      let scoped = case defs of
+        _ -> foldl (
+        fun (s, def) {
+          case def of
+            Var(names) -> s.addNames (names)
+          | Fun(name, args, body) -> s.addFunction (name, args, body)
+          esac
+        },
+        enterScope (s), defs
+      ) esac in
+      let [[ns, nw], v] = eval ([scoped, w], expr) in
+      [[leaveScope (ns), nw], v]
+    | Call (f, args) -> evalCall (c, f, args)
+      -- checkFun (s, f);
+      -- let [[ns, nw], argVals] = evalList (c, args) in
+      -- printf("params=%s, out=%d\n", args, lout);
+      -- let Fun (params, body) = lookup (s, f) in
+      -- let cs = foldl (
+      --   fun (s, [p, v]) {addName (s, p, Var (unref (v, [ns, nw])))},
+      --   enterFunction (ns),
+      --   zip (params, argVals)
+      -- ) in
+      -- let [[s, w], v] = eval ([cs, nw], body) in
+      -- [[leaveFunction (ns, getGlobal (s)), w], v]
+    | String (s) -> [c, Val (s)]
+    | Array (exprs) -> 
+      let [c, vals] = evalList(c, exprs) in 
+      let arr = map (fun (Val(v)) {v}, vals).listArray in
+      [c, Val (arr)]
+    | Elem (expr1, expr2) ->
+      let [c, Val (a)] = eval(c, expr1) in
+      let [c, Val (i)] = eval(c, expr2) in
+      let a = unfoldSexp(a) in
+      [c, Val (a[i])]
+    | ElemRef (expr1, expr2) ->
+      let [c, Val (a)] = eval(c, expr1) in
+      let [c, Val (i)] = eval(c, expr2) in
+      let a = unfoldSexp(a) in
+      [c, ElemRef (a, i)]
+    | Sexp (name, args) ->
+      let [c, args] = evalList(c, args) in
+      let arr = map (fun (Val(v)) {v}, args).listArray in
+      [c, Val (Sexp (name, arr))]
+    | Builtin (name, args) -> 
+      let [[s, w], args] = evalList(c, args) in
+      let args = map(fun (Val(arg)) {arg}, args) in
+      let [rv, w] = evalBuiltin(name, args, w) in
+      [[s, w], Val (rv)]
+    | Ignore (e) ->
+      let [ce, _] = eval(c, e) in [ce, Void] 
+    esac
+}
+
+fun evalBinop (c@[s, w], op, e1, e2) {
+    let [c, Val (ve1)] = eval(c, e1) in
+    let [c, Val (ve2)] = eval(c, e2) in
+    let fv = case op of
+       "+" -> ve1 + ve2
+    |  "-" -> ve1 - ve2
+    |  "*" -> ve1 * ve2
+    |  "/" -> ve1 / ve2
+    |  "%" -> ve1 % ve2
+    |  "==" -> ve1 == ve2
+    |  "!=" -> ve1 != ve2
+    |  "<" -> ve1 < ve2
+    |  "<=" -> ve1 <= ve2
+    |  ">" -> ve1 > ve2
+    |  ">=" -> ve1 >= ve2
+    |  "&&" -> ve1 && ve2
+    |  "!!" -> ve1 !! ve2
+    esac in [c, Val (fv)]
 }
 
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
-  case eval ([emptyState ().enterScope.addName ("read",   Fun ({}, External))
-                                      .addName ("write",  Fun ({"a"}, External))
-                                      .addName ("length", Fun ({"a"}, External)), createWorld (input)], expr) of
+  case eval ([emptyState ().enterScope.addName ("read",   Fun ({}, Builtin("read", {})))
+                                      .addName ("write",  Fun ({"a"}, Builtin("write", {Var("a")})))
+                                      .addName ("length", Fun ({"a"}, Builtin("length", {Var("a")}))), createWorld (input)], expr) of
     [c, _] -> c.snd.getOutput
   esac
 }
