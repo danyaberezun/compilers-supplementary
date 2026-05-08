@@ -524,8 +524,95 @@ fun savecode (env, nA) {
 -- Generates a static call
 -- Don't forget to handle buitins (Barray/Bsexp), and
 -- to clear rax before calling to variable arg funcations
+fun callExt (env, fLabel, nA, preArgs, postArgs) {
+  fun popN (env, n) {
+    if n == 0
+    then [env, {}]
+    else case env.pop of
+           [v, env] ->
+             case popN (env, n-1) of
+               [env, rest] -> [env, rest +++ {v}]
+             esac
+         esac
+    fi
+  }
+
+
+  fun placeArgs (args) {
+    var n    = args.size,
+        nReg = if n > nRegArgs then nRegArgs else n fi;
+
+    fun split (i, args) {
+      if i >= nReg
+      then [{}, args]
+      else case args of
+             a : tl ->
+               case split (i+1, tl) of
+                 [regs, stack] -> [a : regs, stack]
+               esac
+           esac
+      fi
+    }
+
+    fun pushAll (args) {
+      case args of
+        {}     -> emptyBuffer ()
+      | a : tl -> singletonBuffer (Push (a)) <+> pushAll (tl)
+      esac
+    }
+
+    fun pushAllReverse (args) {
+      case args of
+        {}     -> emptyBuffer ()
+      | a : tl -> pushAllReverse (tl) <+ Push (a)
+      esac
+    }
+
+    fun popRegsTopDown (i, lo) {
+      if i < lo
+      then emptyBuffer ()
+      else singletonBuffer (Pop (R (i))) <+> popRegsTopDown (i-1, lo)
+      fi
+    }
+
+    case split (0, args) of
+      [regs, stack] ->
+        [pushAllReverse (stack) <+> pushAll (regs) <+> popRegsTopDown (nReg - 1, 0),
+         emptyBuffer ()]
+    esac
+  }
+
+  case env.savecode (nA) of
+    [pushes, pops] ->
+      case popN (env, nA) of
+        [env, args] ->
+          var allArgs = preArgs +++ args +++ postArgs,
+              nTotal  = allArgs.size,
+              nStack  = if nTotal > nRegArgs then nTotal - nRegArgs else 0 fi;
+          case placeArgs (allArgs) of
+            [regCode, stackCode] ->
+              case env.allocate of
+                [ret, env] ->
+                  [env,
+                   pushes
+                   <+> regCode
+                   <+> stackCode
+                   <+ Binop ("^", rax, rax)
+                   <+ Call (fLabel)
+                   <+> (if nStack == 0
+                        then emptyBuffer ()
+                        else singletonBuffer (Binop ("+", L (nStack * wordSize), rsp))
+                        fi)
+                   <+> move (rax, ret)
+                   <+> pops]
+              esac
+          esac
+      esac
+  esac
+}
+
 fun call (env, fLabel, nA) {
-  emptyBuffer ()
+  callExt (env, fLabel, nA, {}, {})
 }
 
 -- Gets a suffix for Set instruction from
@@ -547,35 +634,147 @@ fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      case i of
+        BEGIN (f, a, l) -> let env = env.enterFunction (f, a, l) in [env, code <+> prologue (f)]
+        | END -> let [env, epi] = env.epilogue in [env, code <+> epi]
+        | CALL (f, n) -> let [env, callCode] = call (env, f, n) in [env, code <+> callCode]
+        | BUILTIN (f, n) -> let [env, callCode] = call (env, "L" ++ f, n) in [env, code <+> callCode]
+        | ARRAY (n) -> let [env, callCode] = callExt (env, "Barray", n, {L (n)}, {}) in
+                       [env, code <+> callCode]
+        | SEXP (tag, n) ->
+            case env.addTag (tag) of
+              [sym, env] ->
+                case env.allocate of
+                  [tagSlot, env] ->
+                    let loadTag = singletonBuffer (Lea (M (sym), rax)) <+ Mov (rax, tagSlot) in
+                    let [env, callCode] = callExt (env, "Bsexp", n + 1, {L (n)}, {}) in
+                    [env, code <+> loadTag <+> callCode]
+                esac
+            esac
+        | STRING (s) ->
+            case env.addString (s) of
+              [env, name] ->
+                case env.allocate of
+                  [slot, env] ->
+                    let loadAddr = singletonBuffer (Lea (M (name), rax)) <+ Mov (rax, slot) in
+                    let [env, callCode] = call (env, "Bstring", 1) in
+                    [env, code <+> loadAddr <+> callCode]
+                esac
+            esac
+        | ELEM -> let [env, callCode] = call (env, "Belem", 2) in
+                  [env, code <+> callCode]
+        | STA -> let [env, callCode] = call (env, "Bsta", 3) in
+                 [env, code <+> callCode]
+        | GLOBAL (x) -> [env.addGlobal (x), code]
+        | CONST (n) -> let [s, env] = env.allocate in [env, code <+ Mov (L (n), s)]
+        | LD (x) -> let env = case x of Glb (g) -> env.addGlobal (g) | _ -> env esac in
+                    let [s, env] = env.allocate in [env, code <+> move (env.loc (x), s)]
+        | LDA (x) -> let env = case x of Glb (g) -> env.addGlobal (g) | _ -> env esac in
+                     let [s, env] = env.allocate in [env, code <+ Lea (env.loc (x), rax) <+ Mov (rax, s)]
+        | ST (x) -> let env = case x of Glb (g) -> env.addGlobal (g) | _ -> env esac in
+                    let s = env.peek in [env, code <+> move (s, env.loc (x))]
+        | STI -> let [v, a, env] = env.pop2 in
+                 let [s, env]    = env.allocate in
+                 [env, code <+> move (a, rax) <+> move (v, rdx) <+ Mov (rdx, I (0, rax)) <+> move (rdx, s)]
+        | DUP -> let s = env.peek in
+                 let [s2, env] = env.allocate in [env, code <+> move (s, s2)]
+        | DROP -> let [_, env] = env.pop in [env, code]
+        | BINOP (op) -> let [x, y, env] = env.pop2 in
+                        let [s, env]    = env.allocate in
+                        case op of
+                          "/" -> [env, code <+ Push (rdx) <+ Push (rcx)
+                                            <+ Mov (y, rax) <+ Mov (x, rcx)
+                                            <+ Cltd <+ IDiv (rcx)
+                                            <+ Pop (rcx) <+ Pop (rdx)
+                                            <+ Mov (rax, s)]
+                        | "%" -> [env, code <+ Push (rdx) <+ Push (rcx)
+                                            <+ Mov (y, rax) <+ Mov (x, rcx)
+                                            <+ Cltd <+ IDiv (rcx)
+                                            <+ Mov (rdx, rax)
+                                            <+ Pop (rcx) <+ Pop (rdx)
+                                            <+ Mov (rax, s)]
+                        | "&&" -> [env, code <+ Push (rdx) <+ Push (rdi) <+ Push (rcx)
+                                            <+ Mov (y, rax) <+ Mov (x, rcx)
+                                            <+ Binop ("^", rdx, rdx)
+                                            <+ Binop ("cmp", L (0), rax) <+ Set ("ne", "%dl")
+                                            <+ Binop ("^", rdi, rdi)
+                                            <+ Binop ("cmp", L (0), rcx) <+ Set ("ne", "%dil")
+                                            <+ Binop ("&&", rdi, rdx)
+                                            <+ Mov (rdx, rax)
+                                            <+ Pop (rcx) <+ Pop (rdi) <+ Pop (rdx)
+                                            <+ Mov (rax, s)]
+                        | "!!" -> [env, code <+ Push (rdx) <+ Push (rdi) <+ Push (rcx)
+                                            <+ Mov (y, rax) <+ Mov (x, rcx)
+                                            <+ Binop ("^", rdx, rdx)
+                                            <+ Binop ("cmp", L (0), rax) <+ Set ("ne", "%dl")
+                                            <+ Binop ("^", rdi, rdi)
+                                            <+ Binop ("cmp", L (0), rcx) <+ Set ("ne", "%dil")
+                                            <+ Binop ("!!", rdi, rdx)
+                                            <+ Mov (rdx, rax)
+                                            <+ Pop (rcx) <+ Pop (rdi) <+ Pop (rdx)
+                                            <+ Mov (rax, s)]
+                        | "==" -> [env, code <+ Push (rdx) <+ Push (rcx)
+                                            <+ Mov (y, rax) <+ Mov (x, rcx)
+                                            <+ Binop ("^", rdx, rdx)
+                                            <+ Binop ("cmp", rcx, rax)
+                                            <+ Set (suffix ("=="), "%dl")
+                                            <+ Mov (rdx, rax)
+                                            <+ Pop (rcx) <+ Pop (rdx)
+                                            <+ Mov (rax, s)]
+                        | "!=" -> [env, code <+ Push (rdx) <+ Push (rcx)
+                                            <+ Mov (y, rax) <+ Mov (x, rcx)
+                                            <+ Binop ("^", rdx, rdx)
+                                            <+ Binop ("cmp", rcx, rax)
+                                            <+ Set (suffix ("!="), "%dl")
+                                            <+ Mov (rdx, rax)
+                                            <+ Pop (rcx) <+ Pop (rdx)
+                                            <+ Mov (rax, s)]
+                        | "<" -> [env, code <+ Push (rdx) <+ Push (rcx)
+                                            <+ Mov (y, rax) <+ Mov (x, rcx)
+                                            <+ Binop ("^", rdx, rdx)
+                                            <+ Binop ("cmp", rcx, rax)
+                                            <+ Set (suffix ("<"), "%dl")
+                                            <+ Mov (rdx, rax)
+                                            <+ Pop (rcx) <+ Pop (rdx)
+                                            <+ Mov (rax, s)]
+                        | ">" -> [env, code <+ Push (rdx) <+ Push (rcx)
+                                            <+ Mov (y, rax) <+ Mov (x, rcx)
+                                            <+ Binop ("^", rdx, rdx)
+                                            <+ Binop ("cmp", rcx, rax)
+                                            <+ Set (suffix (">"), "%dl")
+                                            <+ Mov (rdx, rax)
+                                            <+ Pop (rcx) <+ Pop (rdx)
+                                            <+ Mov (rax, s)]
+                        | "<=" -> [env, code <+ Push (rdx) <+ Push (rcx)
+                                            <+ Mov (y, rax) <+ Mov (x, rcx)
+                                            <+ Binop ("^", rdx, rdx)
+                                            <+ Binop ("cmp", rcx, rax)
+                                            <+ Set (suffix ("<="), "%dl")
+                                            <+ Mov (rdx, rax)
+                                            <+ Pop (rcx) <+ Pop (rdx)
+                                            <+ Mov (rax, s)]
+                        | ">=" -> [env, code <+ Push (rdx) <+ Push (rcx)
+                                            <+ Mov (y, rax) <+ Mov (x, rcx)
+                                            <+ Binop ("^", rdx, rdx)
+                                            <+ Binop ("cmp", rcx, rax)
+                                            <+ Set (suffix (">="), "%dl")
+                                            <+ Mov (rdx, rax)
+                                            <+ Pop (rcx) <+ Pop (rdx)
+                                            <+ Mov (rax, s)]
+                        | "+" -> [env, code <+ Mov (y, rax) <+ Binop ("+", x, rax) <+ Mov (rax, s)]
+                        | "-" -> [env, code <+ Mov (y, rax) <+ Binop ("-", x, rax) <+ Mov (rax, s)]
+                        | "*" -> [env, code <+ Mov (y, rax) <+ Binop ("*", x, rax) <+ Mov (rax, s)]
+                        | _ -> failure ("invalid binop operation %s\n", op)
+                        esac
+        | LABEL (l) -> let env = if env.isBarrier then env.retrieveStack (l) else env fi in
+                       [env, code <+ Label (l)]
+        | JMP (l) -> let env = env.setStack (l) in
+                     let env = env.setBarrier in [env, code <+ Jmp (l)]
+        | CJMP (c, l) -> let [s, env] = env.pop in
+                         let env = env.setStack (l) in
+                         [env, code <+ Mov (s, rax) <+ Binop ("cmp", L (0), rax) <+ CJmp (c, l)]
 
-      -- printf ("compiling %s\n", showSMInsn (i));
-      
-      case i of      
-        READ ->
-          let [env, callCode] = call (env, "Lread", 0) in
-	  [env, code <+> callCode]
-      | WRITE ->
-          let [env, callCode] = call (env, "Lwrite", 1) in
-	  [env, code <+> callCode]
-	  
-      (* Assignment        
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-      *)         
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
 }
@@ -600,6 +799,6 @@ public fun compileX86 (args, code) {
 		      codeSection (code)
                     ).stringcat);
                     
-       system ({"gcc -g -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
+       system ({"gcc -g -fno-pie -no-pie -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
 }
