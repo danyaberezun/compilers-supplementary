@@ -101,7 +101,168 @@ fun evalList (c, exprs) {
 }
 
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  fun evalDefs (state, defs) {
+    foldl (fun (state, d) {
+             case d of
+               Var (names) ->
+                 addNames (state, names)
+             | Fun (name, args, body) ->
+                 addFunction (state, name, args, body)
+             esac
+           },
+           state,
+           defs)
+  }
+
+  case expr of
+    Skip ->
+      [c, 0]
+
+  | Const (n) ->
+      [c, n]
+
+  | String (s) ->
+      [c, s]
+
+  | Array (exprs) ->
+      case evalList (c, exprs) of
+        [c, vl] -> [c, listArray (vl)]
+      esac
+
+  | Sexp (tag, exprs) ->
+      case evalList (c, exprs) of
+        [c, vl] -> [c, Sexp (tag, listArray (vl))]
+      esac
+
+  | Elem (arr, idx) ->
+      case evalList (c, {arr, idx}) of
+        [c, {arr, i}] ->
+          [c,
+           case arr of
+             Sexp (_, ev) -> ev [i]
+           | _            -> arr [i]
+           esac]
+      esac
+
+  | ElemRef (arr, idx) ->
+      case evalList (c, {arr, idx}) of
+        [c, {arr, i}] ->
+          [c,
+           case arr of
+             Sexp (_, ev) -> ElemRef (ev, i)
+           | _            -> ElemRef (arr, i)
+           esac]
+      esac
+      
+  | Var (name) ->
+      case lookupVal (s, name) of
+        Val (v) -> [c, v]
+      esac
+
+  | Ref (name) ->
+      case lookupVal (s, name) of
+        Val (_) -> skip
+      esac;
+      [c, Ref (name)]
+
+  | Ignore (expr) ->
+      case eval (c, expr) of
+        [c, _] -> [c, 0]
+      esac
+
+  | Binop (op, l, r) ->
+      case evalList (c, {l, r}) of
+        [c, {l, r}] -> [c, evalOp (op, l, r)]
+      esac
+
+  | Assn (l, r) ->
+      case eval (c, l) of
+        [[s, w], Ref (name)] ->
+          case eval ([s, w], r) of
+            [[s, w], v] -> [[s <- [name, Val (v)], w], v]
+          esac
+      | [[s, w], ElemRef (arr, i)] ->
+          case eval ([s, w], r) of
+            [[s, w], v] ->
+              [c,
+               case arr of
+                 Sexp (_, ev) -> ev [i] := v
+               | _            -> arr [i] := v
+               esac]
+          esac
+      esac
+
+  | Builtin (name, args) ->
+      case evalList (c, args) of
+        [[s, w], vals] ->
+          case evalBuiltin (name, vals, w) of
+            [v, w] -> [[s, w], v]
+          esac
+      esac
+
+  | Seq (first, second) ->
+      case eval (c, first) of
+        [c, _] -> eval (c, second)
+      esac
+
+  | If (cond, t, e) ->
+      case eval (c, cond) of
+        [c, v] -> if v == 0 then eval (c, e) else eval (c, t) fi
+      esac
+
+  | While (cond, body) ->
+      case eval (c, cond) of
+        [c, v] ->
+          if v == 0
+          then [c, 0]
+          else
+            case eval (c, body) of
+              [c, _] -> eval (c, expr)
+            esac
+          fi
+      esac
+
+  | DoWhile (body, cond) ->
+      case eval (c, body) of
+        [c, _] ->
+          case eval (c, cond) of
+            [c, v] -> if v == 0 then [c, 0] else eval (c, expr) fi
+          esac
+      esac
+
+  | Scope (defs, expr) ->
+      case eval ([evalDefs (enterScope (s), defs), w], expr) of
+        [[s, w], v] -> [[leaveScope (s), w], v]
+      esac
+
+  | Call (name, args) ->
+      case lookupFun (s, name) of
+        Fun (params, body) ->
+          if size (params) != size (args)
+          then error (sprintf ("arity mismatch in call to ""%s""", name), getLoc (name))
+          else
+            case body of
+              External ->
+                case evalList (c, args) of
+                  [[s, w], vals] ->
+                    case evalBuiltin (name, vals, w) of
+                      [v, w] -> [[s, w], v]
+                    esac
+                esac
+            | _ ->
+                case evalList (c, args) of
+                  [[caller, w], vals] ->
+                    var fstate = foldl (fun (s, [p, v]) {addName (s, p, Val (v))},
+                                        enterFunction (caller),
+                                        zip (params, vals));
+                    case eval ([fstate, w], body) of
+                      [[s, w], v] -> [[leaveFunction (caller, getGlobal (s)), w], v]
+                    esac
+                esac
+            esac
+          fi
+      esac
+  esac
 }
 
 -- Evaluates a program with a given input and returns an output
