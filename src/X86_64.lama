@@ -98,7 +98,7 @@ fun insnString (insn) {
                     fi
 
     | M (x)      -> sprintf ("%s(%rip)", x)
-    | L (i@#val) -> sprintf ("$%d  ", i)
+    | L (i@#val) -> sprintf ("$%d", i)
     | L (i@#str) -> sprintf ("%s", i)
     | I (0, x)   -> sprintf ("(%s)", opndString (x))
     | I (n, x)   -> sprintf ("%d(%s)", n, opndString (x))
@@ -474,7 +474,7 @@ fun prologue (fLabel) {
   singletonBuffer (Meta("# PROLOGUE\n")) <+
   Push  (rbp) <+
   Mov   (rsp, rbp) <+
-  Binop ("-", L (sprintf ("$%s_SIZE", fLabel)), rsp)
+  Binop ("-", L (sprintf ("$(%s_SIZE + 15) & -16", fLabel)), rsp)
 }
 
 fun epilogue (env) {
@@ -520,7 +520,7 @@ fun withRDX (env, code) {
 -- intermediate register if needed
 fun move (from, to) {
   if memOpnd (from) && memOpnd (to)
-  then singletonBuffer (Mov (from, rdx)) <+ Mov (rdx, to)
+  then singletonBuffer (Mov (from, rax)) <+ Mov (rax, to)
   else singletonBuffer (Mov (from, to))
   fi
 }
@@ -548,7 +548,33 @@ fun savecode (env, nA) {
 -- Don't forget to handle buitins (Barray/Bsexp), and
 -- to clear rax before calling to variable arg funcations
 fun call (env, fLabel, nA) {
-  emptyBuffer ()
+  fun popAll (env, n, acc) {
+    if n == 0 then [env, acc]
+    else let [arg, env] = env.pop in
+         popAll(env, n - 1, arg : acc)
+    fi
+  }
+
+  fun moveArgs(args, i) {
+    case args of
+      {} -> emptyBuffer()
+      | a : tl -> if i < nRegArgs
+                  then move(a, R(i))
+                  else singletonBuffer(Push(a))
+                  fi <+> moveArgs(tl, i + 1)
+    esac
+  }
+
+  let [saveRegsCode, restoreRegsCode] = env.savecode(nA) in
+  let [env, args] = env.popAll(nA, {}) in
+  let [s, env] = env.allocate in
+
+  let nStackArgs = max(0, nA - nRegArgs) in
+  let cleanupCode = if nStackArgs > 0
+                then Binop("+", L(nStackArgs * wordSize), rsp)
+                else emptyBuffer()
+                fi in
+  [env, saveRegsCode <+> moveArgs(args, 0) <+> singletonBuffer(Call(fLabel)) <+> cleanupCode <+> restoreRegsCode <+> move(rax, s)]
 }
 
 -- Gets a suffix for Set instruction from
@@ -580,7 +606,7 @@ fun compileCmp(op, s1, s2) {
     Set (suffix (op), "%al") <+ Mov (rax, s2)
 }
 
-fun compileBinop (op, s1, s2) {
+fun compileBinop (env, op, s1, s2) {
 
   case op of
       "+" -> compileSimple(op, s1, s2)
@@ -589,20 +615,20 @@ fun compileBinop (op, s1, s2) {
     | "&" -> compileSimple(op, s1, s2)
     | "|" -> compileSimple(op, s1, s2)
     | "^" -> compileSimple(op, s1, s2)
-    | "/"  -> singletonBuffer (Mov (s2, rax)) <+ Cqo <+ IDiv (s1) <+ Mov (rax, s2)
-    | "%"  -> singletonBuffer (Mov (s2, rax)) <+ Cqo <+ IDiv (s1) <+ Mov (rdx, s2)
+    | "/"  -> withRDX(env, move(s2, rax) <+> move(s1, rbx) <+ Cqo <+ IDiv(rbx) <+ Mov(rax, s2))
+    | "%"  -> withRDX(env, move(s2, rax) <+> move(s1, rbx) <+ Cqo <+ IDiv(rbx) <+ Mov(rdx, s2))
     | "==" -> compileCmp(op, s1, s2)
     | "!=" -> compileCmp(op, s1, s2)
     | "<"  -> compileCmp(op, s1, s2)
     | "<=" -> compileCmp(op, s1, s2)
     | ">"  -> compileCmp(op, s1, s2)
     | ">=" -> compileCmp(op, s1, s2)
-    | "!!" -> compileBinop ("!=", L (0), s1) <+> compileBinop ("!=", L (0), s2) <+>
+    | "!!" -> env.compileBinop("!=", L (0), s1) <+> env.compileBinop("!=", L (0), s2) <+>
               (if memOpnd (s1) && memOpnd (s2)
                then singletonBuffer (Mov (s1, rax)) <+ Binop ("|", rax, s2)
                else singletonBuffer (Binop ("|", s1, s2))
                fi)
-    | "&&" -> (compileBinop ("!=", L (0), s1) <+> compileBinop ("!=", L (0), s2)) <+>
+    | "&&" -> (env.compileBinop("!=", L (0), s1) <+> env.compileBinop("!=", L (0), s2)) <+>
         (if memOpnd (s1) && memOpnd (s2)
          then singletonBuffer (Mov (s1, rax)) <+ Binop ("&", rax, s2)
          else singletonBuffer (Binop ("&", s1, s2))
@@ -627,9 +653,10 @@ fun compile (env, code) {
 	  [env, code <+> callCode]
         | WRITE ->
             let [env, callCode] = call (env, "Lwrite", 1) in
+            let [_, env] = env.pop in
 	  [env, code <+> callCode]
-	  
-      (* Assignment
+
+      (* Assignment *)
          -- Some guidelines for generating function calls:
          --
          -- 1. generate instructions to save live registers on the X86 stack (use
@@ -645,25 +672,26 @@ fun compile (env, code) {
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-      *)
-      | LD(x)     -> case env.addGlobal(x).allocate of
+        (* End *)
+        | LD(x)     -> case env.allocate of
                          [s, env] -> [env, code <+> move(env.loc(x), s)]
                        esac
-        | LDA(x)    -> case env.addGlobal(x).allocate of
-                          [s, env] -> [env, code <+ Lea(env.loc(x), rax) <+ Mov(rax, s)]
+        | LDA(x)    -> case env.allocate of
+                          [s, env] -> [env, code <+ Lea(env.loc(x), s)]
                         esac
-        | ST(x)     -> let s = env.peek in
-                       [env.addGlobal(x), code <+> move(s, env.loc(x))]
+        | ST (x) ->
+           let s = env.peek in
+           [env, code <+> move (s, env.loc (x))]
         | STI       -> case env.pop2 of
                           [v, r, env] ->
-                            let env = env.push(v) in
-                            [env, code <+> move(r, rax) <+> move(v, I(0, rax))]
+                            let env = env.push(r) in
+                            [env, code <+> move(v, I(0, r)) <+> move(v, r)]
                         esac
         | CONST(v)  -> case env.allocate of
                           [s, env] -> [env, code <+> move(L(v), s)]
                         esac
         | BINOP(op) -> case env.pop2 of
-                          [s1, s2, env] -> [env.push(s2), code <+> compileBinop(op, s1, s2)]
+                          [s1, s2, env] -> [env.push(s2), code <+> env.compileBinop(op, s1, s2)]
                         esac
         | DROP      -> let [_, env] = env.pop in [env, code]
         | DUP       -> let s = env.peek in
@@ -673,8 +701,14 @@ fun compile (env, code) {
         | JMP(l)    -> [env.setStack(l).setBarrier, code <+ Jmp(l)]
         | CJMP("z", l)-> let [s, env] = env.pop in
                        [env.setStack(l), code <+ Mov(s, rax) <+ Cmp(L(0), rax) <+ CJmp("e", l)]
-        | CJMP("nz", l)-> let [s, env] = env.pop in
+        | CJMP("nz", l) -> let [s, env] = env.pop in
                        [env.setStack(l), code <+ Mov(s, rax) <+ Cmp(L(0), rax) <+ CJmp("ne", l)]
+        | CALL(f, n) -> let [env, callCode] = env.call(f, n) in
+                       [env, code <+> callCode]
+        | BEGIN(f, a, l) -> [env.enterFunction(f, a, l), code <+> prologue(f)]
+        | GLOBAL(x) -> [env.addGlobal(x), code]
+        | END       -> let [env, epilogueCode] = env.epilogue in
+                       [env, code <+> epilogueCode]
         |_          -> failure("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)

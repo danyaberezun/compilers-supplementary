@@ -105,6 +105,7 @@ fun eval (env, w, insns) {
     | Loc (i) -> locs[i] := vl
     | Glb (x) -> var g = deref (globalState);
                  globalState ::= fun (y) {if compare (x, y) == 0 then vl else g (y) fi}
+    | _ -> failure("Match failure assign: \n%s\n%s\n%s\n", string([args, locs]), loc.string, v.string)
     esac
   }
 
@@ -122,8 +123,72 @@ fun eval (env, w, insns) {
   }
 
   -- Core interpreter: takes a configuration and a program, returns a configuration
-  fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+  fun eval (c@[stack, cstack, state, world], insns) {
+    case insns of
+      {}               -> c
+    | READ: rest       -> let inputWorld = readWorld(world) in
+                          world := snd(inputWorld);
+                          stack := {fst(inputWorld)} +++ stack;
+                          eval([stack, cstack, state, world], rest)
+    | WRITE: rest      -> world := writeWorld(hd(stack), world);
+                          stack := tl(stack);
+                          eval([stack, cstack, state, world], rest)
+    | BINOP(s): rest   -> var a, b;
+
+                          b := hd(stack);
+                          stack := tl(stack);
+                          a := hd(stack);
+                          stack := tl(stack);
+                          stack := {evalBinop(s, a, b)} +++ stack;
+                          eval([stack, cstack, state, world], rest)
+    | LD(x): rest      -> stack := {state.lookup(x)} +++ stack;
+                          eval([stack, cstack, state, world], rest)
+    | LDA(x): rest     -> stack := {x} +++ stack;
+                          eval([stack, cstack, state, world], rest)
+    | ST(loc): rest      -> state.assign(loc, hd(stack));
+                          eval([stack, cstack, state, world], rest)
+    | STI: rest        -> var v, stack2, loc;
+                          v := hd(stack);
+                          stack2 := tl(stack);
+                          loc := hd(stack2);
+                          stack := {v} +++ tl(stack2);
+                          state.assign(loc, v);
+                          eval([stack, cstack, state, world], rest)
+    | CONST(n): rest   -> stack := {n} +++ stack;
+                          eval([stack, cstack, state, world], rest)
+    | LABEL(s): rest   -> eval(c, rest)
+    | JMP(l): _        -> eval(c, fromLabel(env, l))
+    | CJMP("z", l): rest -> var a;
+                            a := hd(stack);
+                            stack := tl(stack);
+                            if a == 0
+                            then eval([stack, cstack, state, world], fromLabel(env, l))
+                            else eval([stack, cstack, state, world], rest)
+                            fi
+    | CJMP("nz", l): rest -> var a;
+                            a := hd(stack);
+                            stack := tl(stack);
+                            if a != 0
+                            then eval([stack, cstack, state, world], fromLabel(env, l))
+                            else eval([stack, cstack, state, world], rest)
+                            fi
+    | CALL(f, n): rest     -> eval ([stack, [state, rest] : cstack, state, world], fromLabel (env, f))
+    | BEGIN(f, a, l): rest -> var args;
+                              let [stack, args] = stack.take(a) in
+                              let state = makeState(a, l) in
+                              foldl(fun([s, i], arg) {s.assign(Arg(i), arg); [s, i + 1]}, [state, 0], args);
+                              eval([stack, cstack, state, world], rest)
+    | GLOBAL(x): rest     -> state.assign(Glb(x), 0);
+                             eval([stack, cstack, state, world], rest)
+    | END: _              -> case cstack of
+                               [state, pos] : cstack -> eval ([stack, cstack, state, world], pos)
+                             | {} -> c
+                             esac
+    | DROP: rest          -> eval([tl(stack), cstack, state, world], rest)
+    | DUP: rest           -> stack := {hd(stack)} +++ stack;
+                            eval([stack, cstack, state, world], rest)
+    | _ -> failure("SM eval for %s instruction is not implemented yet\n\n%s\n\n", showSMInsn(hd(insns)), insns.string)
+    esac
   }
 
   eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
@@ -350,14 +415,25 @@ fun addVars (env, names) {
 --    environment (use env.beginFun) and register arguments
 --    (use env.addArg).
 
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
-fun compileExpr (expr) {
-   case expr of
-     Var(stri)                    -> {LD(stri)}
-   | Const(value)                 -> {CONST(value)}
-   | Binop(operator, left, right) -> compileExpr(left) +++ compileExpr(right) +++ {BINOP(operator)}
-   esac
+fun addDefs(env, defs) {
+  var newEnv = foldl(fun (e, def) {
+    case def of
+      Var(names) -> e.addVars(names)
+    | Fun(name, args, _) -> case e.genFunLabel(name) of
+                               [label, e2] -> e2.addFun(name, label, size(args))
+                             esac
+    esac
+  }, env, defs);
+
+  foldl(fun ([e, code], def) {
+    case def of
+      Var(names) -> if e.isGlobal
+                     then [e, code <+> listBuffer(map(fun(name){GLOBAL(name)}, names))]
+                     else [e, code]
+                     fi
+    | Fun(name, args, body) -> [e.rememberFun(name, args, body), code]
+    esac
+  }, [newEnv, emptyBuffer()], defs)
 }
 
 -- Compiles a statement into a stack machine code.
@@ -400,7 +476,7 @@ public fun compileSM (stmt) {
                          let [labUsed, env, s2Code] = compile(lab, env, s2) in
                          [labUsed, env, s1Code <+> label(s2Lab, s2LabUsed) <+ DROP <+> s2Code]
       | Skip          -> [false, env, singletonBuffer(CONST(0))]
-      | Read(x)       -> [false, env, singletonBuffer(READ) <+ ST(x) <+ DROP <+ CONST(0)]
+      | Read(x)       -> [false, env, singletonBuffer(READ) <+ ST(env.lookupVar(x)) <+ DROP <+ CONST(0)]
       | Write(e)      -> var eLab, eLabUsed, eCode;
                          let [eLab, env] = env.genLabel in
                          let [eLabUsed, env, eCode] = compile(eLab, env, e) in
@@ -429,8 +505,8 @@ public fun compileSM (stmt) {
                          let [eLabUsed, env, eCode] = compile(eLab, env, e) in
                          [false, env, label(bStartLab, true) <+> sCode <+> label(sLab, sLabUsed) <+ DROP <+>
                                       eCode <+> label(eLab, eLabUsed) <+ CJMP("nz", bStartLab) <+ CONST(0)]
-      | Var(x)        -> [false, env, singletonBuffer (LD (x))]
-      | Ref(x)        -> [false, env, singletonBuffer (LDA (x))]
+      | Var(x)        -> [false, env, singletonBuffer (LD(env.lookupVar(x)))]
+      | Ref(x)        -> [false, env, singletonBuffer (LDA (env.lookupVar(x)))]
       | Const(n)      -> [false, env, singletonBuffer (CONST (n))]
       | Binop(op, l, r) -> var lLab, rLab, lCode, rCode, lLabUsed, rLabUsed;
                          let [lLab, env] = env.genLabel in
@@ -438,6 +514,17 @@ public fun compileSM (stmt) {
                          let [lLabUsed, env, lCode] = compile(lLab, env, l) in
                          let [rLabUsed, env, rCode] = compile(rLab, env, r) in
                          [false, env, lCode <+> label(lLab, lLabUsed) <+> rCode <+> label(rLab, rLabUsed) <+ BINOP(op)]
+      | Scope(defs, exprs) -> let env = env.beginScope in
+                         let [env, globalCode] = env.addDefs(defs) in
+                         let [labUsed, env, code] = compile(lab, env, exprs) in
+                         let env = env.endScope in
+                         [labUsed, env, globalCode <+> code]
+      | Call(name, args) -> case args of
+                              {} -> [false, env, singletonBuffer(CALL(name, 0))]
+                            | _  -> let [lab, env] = env.genLabel in
+                                    let [lbusd, env, code] = compileMany (lab, env, args) in
+                                    [false, env, code <+ CALL(name, size(args))]
+                           esac
       | Ignore(e)     -> var eLab, eLabUsed, eCode;
                          let [eLab, env] = env.genLabel in
                          let [eLabUsed, env, eCode] = compile(eLab, env, e) in
