@@ -113,7 +113,6 @@ fun insnString (insn) {
   
   case insn of
     Cqo                -> "\tcqo\n"
-  -- | Set   (suf, s)     -> sprintf ("\tset%s\t%%cl\n\tmovzbl\t%%cl,\t%s\n", suf, opndString(s))
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
   | Sal   (s)          -> sprintf ("\tsalq\t%s\n", opndString(s))
   | IDiv  (s1)         -> sprintf ("\tidivq\t%s\n", opndString (s1))
@@ -565,13 +564,44 @@ fun call (env, fLabel, nA) {
     fi
   }
 
-  fun moveArgs(args, i) {
+  fun isVariadic(fLabel) {
+    case fLabel of 
+      "Barray" -> true
+    | "Bsexp"  -> true
+    | _        -> false
+    esac
+  }
+
+  fun pushArgs(args, i) {
     case args of
       {} -> emptyBuffer()
-      | a : tl -> if i < nRegArgs
-                  then move(a, R(i))
-                  else singletonBuffer(Push(a))
-                  fi <+> moveArgs(tl, i + 1)
+    | arg : args ->
+        if i >= nRegArgs
+        then pushArgs(args, i + 1) <+> singletonBuffer(Push(arg))
+        else pushArgs(args, i + 1)
+        fi
+    esac
+  }
+
+  fun moveRegs(args, i) {
+    case args of
+      {} -> emptyBuffer()
+    | arg : args ->
+        if i < nRegArgs
+        then move(arg, R(i)) <+> moveRegs(args, i + 1)
+        else emptyBuffer()
+        fi
+    esac
+  }
+
+  fun moveRegsReversed(args, i) {
+    case args of
+      {} -> emptyBuffer()
+    | arg : args ->
+        if i < nRegArgs
+        then moveRegsReversed(args, i + 1) <+> move(arg, R(i))
+        else emptyBuffer()
+        fi
     esac
   }
 
@@ -579,12 +609,38 @@ fun call (env, fLabel, nA) {
   let [env, args] = env.popAll(nA, {}) in
   let [s, env] = env.allocate in
 
-  let nStackArgs = max(0, nA - nRegArgs) in
+  let args = case fLabel of
+                     "Barray" -> L(nA) : args
+                   | "Bsexp"  -> L(nA - 1) : args
+                   | _        -> args
+                   esac in
+
+  let pushArgsCode = pushArgs(args, 0) in
+  let moveRegsCode = if isVariadic(fLabel) 
+                     then moveRegsReversed(args, 0)
+                     else moveRegs(args, 0)
+                     fi in
+  
+  let moveArgsCode = pushArgsCode <+> moveRegsCode in
+
+  let argsLen = case fLabel of
+                        "Barray" -> nA + 1
+                      | "Bsexp"  -> nA + 1
+                      | _        -> nA
+                      esac in
+
+  let nStackArgs = max(0, argsLen - nRegArgs) in
   let cleanupCode = if nStackArgs > 0
-                then Binop("+", L(nStackArgs * wordSize), rsp)
-                else emptyBuffer()
-                fi in
-  [env, saveRegsCode <+> moveArgs(args, 0) <+> singletonBuffer(Call(fLabel)) <+> cleanupCode <+> restoreRegsCode <+> move(rax, s)]
+                    then singletonBuffer(Binop("+", L(nStackArgs * wordSize), rsp))
+                    else emptyBuffer()
+                    fi in
+
+  let clearRaxCode = if isVariadic(fLabel) 
+                 then singletonBuffer(Binop("^", rax, rax))
+                 else emptyBuffer()
+                 fi in
+
+  [env, saveRegsCode <+> moveArgsCode <+> clearRaxCode <+> singletonBuffer(Call(fLabel)) <+> cleanupCode <+> restoreRegsCode <+> move(rax, s)]
 }
 
 -- Gets a suffix for Set instruction from
@@ -628,7 +684,6 @@ fun compileCmp(op, s1, s2) {
 }
 
 fun compileBinop (env, op, s1, s2) {
-
   case op of
       "+" -> compileSimple(op, s1, s2)
     | "-" -> compileSimple(op, s1, s2)
@@ -720,7 +775,7 @@ fun compile (env, code) {
         | LABEL(l)  -> let env = if env.isBarrier then env.retrieveStack(l) else env fi in
                        [env, code <+ Label(l)]
         | JMP(l)    -> [env.setStack(l).setBarrier, code <+ Jmp(l)]
-        | CJMP("z", l)-> let [s, env] = env.pop in
+        | CJMP("z", l) -> let [s, env] = env.pop in
                        [env.setStack(l), code <+ Mov(s, rax) <+ Cmp(L(0), rax) <+ CJmp("e", l)]
         | CJMP("nz", l) -> let [s, env] = env.pop in
                        [env.setStack(l), code <+ Mov(s, rax) <+ Cmp(L(0), rax) <+ CJmp("ne", l)]
@@ -730,6 +785,26 @@ fun compile (env, code) {
         | GLOBAL(x) -> [env.addGlobal(x), code]
         | END       -> let [env, epilogueCode] = env.epilogue in
                        [env, code <+> epilogueCode]
+        | STRING(s) -> let [env, name] = env.addString(s) in 
+                       let [s, env] = env.allocate in
+                       let loadStringCode = if memOpnd(s) 
+                                            then singletonBuffer(Lea(M(name), rax)) <+ Mov(rax, s) 
+                                            else singletonBuffer(Lea(M(name), s)) 
+                                            fi in
+                       let [env, bStringCode] = env.call("Bstring", 1) in
+                       [env, code <+> loadStringCode <+> bStringCode]
+        | ARRAY(n)  -> let [env, bArrayCode] = env.call("Barray", n) in
+                       [env, code <+> bArrayCode]
+        | SEXP(t, n) -> let [s, env] = env.allocate in
+                       let moveSexpHashCode = move(L(hash(t)), s) in 
+                       let [env, bStaCode] = env.call("Bsexp", n + 1) in
+                       [env, code <+> moveSexpHashCode <+> bStaCode]
+        | STA       -> let [env, bStaCode] = env.call("Bsta", 3) in
+                       [env, code <+> bStaCode]
+        | ELEM      -> let [env, bElemCode] = env.call("Belem", 2) in
+                       [env, code <+> bElemCode]
+        | BUILTIN(f, n) -> let [env, builtinCallCode] = env.call(sprintf("L%s", f), n) in
+                       [env, code <+> builtinCallCode]
         |_          -> failure("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
