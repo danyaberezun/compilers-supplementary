@@ -119,7 +119,75 @@ fun eval (env, w, insns) {
   -- Core interpreter: takes a configuration and a program, returns a configuration
   (* Assignment *)
   fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+    case insns of
+      {}        -> c
+    | insn : insns -> case insn of
+                        READ           -> case readWorld (w) of
+                                            [n, w] -> eval ([n : st, cst, s, w], insns)
+                                          esac
+                      | WRITE          -> let n : st = st in eval ([st, cst, s, writeWorld(n, w)], insns)
+                      | BINOP(op)      -> let a : b : st = st in
+                                          eval
+                                          (
+                                            [(case op of
+                                                "+"  -> b + a
+                                              | "-"  -> b - a
+                                              | "*"  -> b * a
+                                              | "/"  -> b / a
+                                              | "%"  -> b % a
+                                              | "<"  -> b < a
+                                              | "<=" -> b <= a
+                                              | ">"  -> b > a
+                                              | ">=" -> b >= a
+                                              | "==" -> b == a
+                                              | "!=" -> b != a
+                                              | "!!" -> b !! a
+                                              | "&&" -> b && a
+                                              | _    -> failure("Unknown operator: %s\n", op)
+                                              esac) : st, cst, s, w],
+                                            insns
+                                          )
+                      | LD(x)          -> eval ([lookup(s, x) : st, cst, s, w], insns)
+                      | LDA(x)         -> eval ([x : st, cst, s, w], insns)
+                      | ST(x)          -> let n : st = st in assign(s, x, n); eval([st, cst, s, w], insns)
+                      | STI            -> let n : x : st = st in assign(s, x, n); eval([n : st, cst, s, w], insns)
+                      | CONST(n)       -> eval ([n : st, cst, s, w], insns)
+                      | LABEL(s)       -> eval (c, insns)
+                      | JMP(l)         -> let [findLabel] = env in eval (c, findLabel(l))
+                      | CJMP(x, l)     -> let n : st = st in
+                                          case x of
+                                            "z"  -> case n of
+                                                      0 -> let [findLabel] = env in eval ([st, cst, s, w], findLabel(l))
+                                                    | _ -> eval ([st, cst, s, w], insns)
+                                                    esac
+                                          | "nz" -> case n of
+                                                      0 -> eval ([st, cst, s, w], insns)
+                                                    | _ -> let [findLabel] = env in eval ([st, cst, s, w], findLabel(l))
+                                                    esac
+                                          | _    -> failure("unsupported conditional jump: %s\n", c)
+                                          esac
+                      | CALL(f, a)     -> if a then
+                                            let [st, args] = take(st, a) in
+                                            let [findLabel] = env in
+                                            let [n : st1, cst1, s1, w1] = eval([reverse(args), cst, s, w], findLabel(f)) in
+                                            eval([n : st, cst, s, w1], insns)
+                                          else
+                                            let [findLabel] = env in
+                                            let [n : st1, cst1, s1, w1] = eval([{}, cst, s, w], findLabel(f)) in
+                                            eval([n : st, cst, s, w1], insns)
+                                          fi
+                      | BEGIN(f, a, l) -> var s_new; s_new := makeState(a, l);
+                                          for var j; j := a - 1, j >= 0, j := j - 1 do
+                                            assign(s_new, Arg(j), hd(st));
+                                            st := tl(st)
+                                          od;
+                                          eval([st, cst, s_new, w], insns)
+                      | GLOBAL(x)      -> assign([42, 42], Glb(x), 42); eval([st, cst, s, w], insns)
+                      | END            -> c
+                      | DUP            -> eval([hd(st) : st, cst, s, w], insns)
+                      | DROP           -> let n : st = st in eval([st, cst, s, w], insns)
+                      esac
+    esac
   }
   (* End *)
 
@@ -375,13 +443,90 @@ public fun compileSM (stmt) {
     esac
   }
 
+fun getVarNamesFromDefs(defs) {
+  case defs of
+    {}         -> {}
+  | def : defs -> case def of
+                    Var(xs) -> xs +++ getVarNamesFromDefs(defs)
+                  | _       -> getVarNamesFromDefs(defs)
+                  esac
+  esac
+}
+
+fun compileDefs(defs) {
+  case defs of
+    {}         -> emptyBuffer()
+  | def : defs -> case def of
+                    Var(xs) -> foldl(fun (i, x) {i <+ GLOBAL(x)}, emptyBuffer(), xs)
+                  | _ -> emptyBuffer()
+                  esac <+> compileDefs(defs)
+  esac
+}
+
   fun compile (lab, env, stmt) {
     case stmt of
-      Skip              -> [false, env, emptyBuffer ()]
-    | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
-    | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
-    | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 -> failure ("compileSM not implemented\n")
+      Skip               -> [false, env, emptyBuffer ()]
+    | Var    (x)         -> [false, env, singletonBuffer (LD (lookupVar(env, x)))]
+    | Ref    (x)         -> [false, env, singletonBuffer (LDA (lookupVar(env, x)))]
+    | Const  (n)         -> [false, env, singletonBuffer (CONST (n))]
+    | Scope  (defs, e)   -> let env = beginScope(env) in
+                            let env = foldl(fun (env, def) {
+                                            case def of
+                                              Var(_)                -> env
+                                            | Fun(name, args, body) -> let [lab, env] = genFunLabel(env, name) in
+                                                                       addFun(env, name, lab, size(args))
+                                            esac}, env, defs) in
+                            let env = addVars(env, getVarNamesFromDefs(defs)) in
+                            let env = foldl(fun (env, def) {
+                                            case def of
+                                              Var(_)                -> env
+                                            | Fun(name, args, body) -> let Fun(lab, _) = lookupFun(env, name) in
+                                                                       rememberFun(env, lab, args, body)
+                                            esac}, env, defs) in
+                            if isGlobal(env) then
+                              let [lab, env, insns] = compile(lab, env, e) in
+                              [false, endScope(env), compileDefs(defs) <+> insns]
+                            else
+                              let [lab, env, insns] = compile(lab, env, e) in
+                              [false, endScope(env), insns]
+                            fi
+    | Assn   (Ref(x), e) -> let [lab1, env1, insns1] = compile(lab, env, e) in
+                            [lab1, env1, insns1 <+ DUP <+ ST (lookupVar(env, x))]
+    | Assn   (e1, e2)    -> let [lab1, env1, insns1] = compile(lab, env, e1) in
+                            let [lab2, env2, insns2] = compile(lab1, env1, e2) in
+                            [lab2, env2, insns1 <+> insns2 <+ STI]
+    | Seq    (e1, e2)    -> let [lab1, env1, insns1] = compile (lab, env, e1) in
+                            let [lab2, env2, insns2] = compile (lab1, env1, e2) in
+                            [lab2, env2, insns1 <+> insns2]
+    | Read   (x)         -> [false, env, singletonBuffer(READ) <+ ST (lookupVar(env, x))]
+    | Write  (e)         -> let [lab1, env1, insns1] = compile(lab, env, e) in
+                            [lab1, env1, insns1 <+ WRITE <+ CONST(0)]
+    | If     (c, e1, e2) -> let [l1, l2, env]           = genLabels(env, 2) in
+                            let [lab, env, condition] = compile(lab, env, c) in
+                            let [lab, env, if_body]   = compile(lab, env, e1) in
+                            let [lab, env, else_body] = compile(lab, env, e2) in
+                            [lab, env, condition <+ CJMP("z", l1) <+> if_body <+ JMP(l2) <+ LABEL(l1) <+> else_body <+ LABEL(l2)]
+    | While  (e1, e2)    -> let [l1, l2, env]  = genLabels(env, 2) in
+                            let [lab, env, loop_body] = compile (lab, env, e2) in
+                            let [lab, env, condition] = compile (lab, env, e1) in
+                            [lab, env, singletonBuffer(JMP(l2)) <+ LABEL(l1) <+> loop_body <+ LABEL(l2) <+> condition <+ CJMP("nz", l1)]
+    | DoWhile(e1, e2)    -> let [l, env] = genLabel(env) in
+                            let [lab, env, loop_body] = compile (lab, env, e1) in
+                            let [lab, env, condition] = compile (lab, env, e2) in
+                            [lab, env, singletonBuffer(LABEL(l)) <+> loop_body <+> condition <+ CJMP("nz", l)]
+    | Binop  (o, e1, e2) -> let [lab, env, insns1] = compile (lab, env, e1) in
+                            let [lab, env, insns2] = compile (lab, env, e2) in
+                            [lab, env, insns1 <+> insns2 <+ BINOP(o)]
+    | Call   (f, exprs)  -> let Fun(labFun, n) = lookupFun(env, f) in
+                            let [labArgs, env] = genLabel(env) in
+                            if size(exprs) then
+                              let [argsUsed, env, insns] = compileMany(labArgs, env, exprs) in
+                              [false, env, insns <+> label(labArgs, argsUsed) <+ CALL(labFun, n)]
+                            else
+                              [false, env, label(labArgs, false) <+ CALL(labFun, n)]
+                            fi
+    | Ignore (e)         -> let [lab1, env1, insns1] = compile(lab, env, e) in
+                            [lab1, env1, insns1 <+ DROP]
     esac
   }
 
