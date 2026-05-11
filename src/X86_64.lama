@@ -74,7 +74,7 @@ var wordSize = 8;
 --   Call  (string)             -- calls a function by its name 
 --   Ret                        -- returns from a function
 --   Meta  (string)             -- metainformation (declarations, etc.)
-                                                               
+
 -- Machine instruction printer
 fun insnString (insn) {
   
@@ -98,7 +98,7 @@ fun insnString (insn) {
                     else sprintf ("%d(%%rbp)", wordSize * 2 + (-1-i) * wordSize)
                     fi
 
-    | M (x)      -> sprintf ("%s(%rip)", x)
+    | M (x)      -> sprintf ("%s(%%rip)", x)
     | L (i@#val) -> sprintf ("$%d", i)
     | L (i@#str) -> sprintf ("%s", i)
     | I (0, x)   -> sprintf ("(%s)", opndString (x))
@@ -521,11 +521,67 @@ fun savecode (env, nA) {
   )
 }
 
+fun popN (env, n) {
+  if n == 0
+  then [env, {}]
+  else case env.pop of
+         [v, env] ->
+           case popN (env, n-1) of
+             [env, rest] -> [env, rest +++ {v}]
+           esac
+       esac
+  fi
+}
+
+fun regArgs (args, i) {
+  case args of
+    {} -> emptyBuffer ()
+  | x : xs ->
+      if i < nRegArgs
+      then move (x, R (i)) <+> regArgs (xs, i + 1)
+      else regArgs (xs, i + 1)
+      fi
+  esac
+}
+
+fun stackArgs (args, i) {
+  case args of
+    {} -> emptyBuffer ()
+  | x : xs ->
+      var code = stackArgs (xs, i + 1);
+      if i >= nRegArgs then code <+ Push (x) else code fi
+  esac
+}
+
+fun rawCallCode (fLabel, args, nA, pushes, pops) {
+  var nStack = if nA > nRegArgs then nA - nRegArgs else 0 fi;
+  pushes
+  <+> stackArgs (args, 0)
+  <+> regArgs (args, 0)
+  <+ Call (fLabel)
+  <+> (if nStack == 0
+       then emptyBuffer ()
+       else singletonBuffer (Binop ("+", L (nStack * wordSize), rsp))
+       fi)
+  <+> pops
+}
+
 -- Generates a static call
 -- Don't forget to handle buitins (Barray/Bsexp), and
 -- to clear rax before calling to variable arg funcations
 fun call (env, fLabel, nA) {
-  emptyBuffer ()
+  case savecode (env, nA) of
+    [pushes, pops] ->
+      case popN (env, nA) of
+        [env, args] ->
+          case env.allocate of
+            [ret, env] ->
+              [env,
+               rawCallCode (fLabel, args, nA, pushes, pops)
+               <+> move (rax, ret)]
+          esac
+      esac
+  esac
 }
 
 -- Gets a suffix for Set instruction from
@@ -541,41 +597,173 @@ fun suffix (op) {
   esac
 }
 
+fun operateOpnd (op, y, x) {
+   case op of
+     "+"  -> [rax, move (x, rax) <+ Binop ("+", y, rax)]
+   | "-"  -> [rax, move (x, rax) <+ Binop ("-", y, rax)]
+   | "*"  -> [rax, move (x, rax) <+ Binop ("*", y, rax)]
+   | "&&" -> [rax, move (x, rax) <+ Binop ("cmp", L (0), rax) <+ Set ("ne", "%al") <+> move (y, r15) <+ Binop ("cmp", L (0), r15) <+ Set ("ne", "%r15b") <+ Binop ("&&", r15, rax) <+ Binop ("&&", L (255), rax)]
+   | "!!" -> [rax, move (x, rax) <+ Binop ("!!", y, rax) <+ Binop ("cmp", L (0), rax) <+ Set ("ne", "%al") <+ Binop ("&&", L (255), rax)]
+   | "/"  -> [rax, move (y, r15) <+> move (x, rax) <+ Cltd <+ IDiv (r15)]
+   | "%"  -> [rdx, move (y, r15) <+> move (x, rax) <+ Cltd <+ IDiv (r15)]
+   | _    -> [rax, move (x, rax) <+ Binop ("cmp", y, rax) <+ Set (suffix (op), "%al") <+ Binop ("&&", L (255), rax)]
+   esac
+}
+
+fun builtinLabel (name) {
+  case name of
+    "read"   -> "Lread"
+  | "write"  -> "Lwrite"
+  | "length" -> "Llength"
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
+  fun touchGlobal (env, x) {
+    case x of
+      Glb (name) -> env.addGlobal (name)
+    | _          -> env
+    esac
+  }
+
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-
-      -- printf ("compiling %s\n", showSMInsn (i));
-      
       case i of      
         READ ->
           let [env, callCode] = call (env, "Lread", 0) in
-	  [env, code <+> callCode]
+	        [env, code <+> callCode]
       | WRITE ->
           let [env, callCode] = call (env, "Lwrite", 1) in
-	  [env, code <+> callCode]
-	  
-      (* Assignment        
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
+          let [_, env] = env.pop in
+          [env, code <+> callCode]
+      (* Assignment
          -- Some guidelines for generating functions:
          --
          -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
-      *)         
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      *)
+      | CALL  (f, n) ->
+          let [env, callCode] = call (env, f, n) in
+          [env, code <+> callCode]
+      | BEGIN (f, a, l) ->
+          let env = env.enterFunction (f, a, l) in
+          [env, code <+> prologue (f)]
+      | END ->
+          let [env, epi] = env.epilogue in
+          [env, code <+> epi]
+      | GLOBAL (x) ->
+          [env.addGlobal (x), code]
+      | BINOP(op) -> 
+          let [y, x, env] = env.pop2 in
+          let [s, env] = env.allocate in
+          let [opnd, oprt] = operateOpnd(op, x, y) in 
+          [env, code <+> oprt <+> move(opnd, s)]
+      | ST (x) ->
+          case touchGlobal (env, x).pop of
+            [v, env] ->
+              case env.allocate of
+                [s, env] ->
+                  [env, code <+> move (v, env.loc (x)) <+> move (v, s)]
+              esac
+          esac
+      | STI ->
+          let [v, x, env] = env.pop2 in
+          case env.allocate of
+            [s, env] -> [env, code <+> move(x, rax) <+> move(v, rdx) <+ Mov(rdx, I(0, rax)) <+> move(rdx, s)]
+          esac
+      | LD (x) ->
+          case touchGlobal (env, x).allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac
+      | LDA (x) ->
+          case touchGlobal (env, x).allocate of
+            [s, env] -> [env, code <+ Lea (env.loc (x), s)]
+          esac
+      | CONST (n) ->
+          case env.allocate of
+            [s, env] -> [env, code <+ Mov (L(n), s)]
+          esac
+      | LABEL(l) ->
+          [env.retrieveStack(l), code <+ Label(l)]
+      | JMP(l) ->
+          [env.setStack(l).setBarrier, code <+ Jmp(l)]
+      | CJMP(c, l) ->
+          case env.pop of
+            [s, env] -> [env.setStack(l), code <+ Binop("cmp", L(0), s) <+ CJmp(c, l)]
+          esac
+      | DUP -> 
+          case env.peek of
+            z -> case env.allocate of
+                  [s, env] -> [env, code <+> move (z, s)]
+                esac 
+          esac
+      | DROP ->
+          case env.pop of
+            [s, env] -> [env, code]
+          esac
+      | BEGIN (f, a, l) ->
+          let env = env.enterFunction (f, a, l) in
+          [env, code <+> prologue (f)]
+      | END ->
+          let [env, epi] = env.epilogue in
+          [env, code <+> epi]
+      | BUILTIN (f, n) ->
+          case call (env, builtinLabel (f), n) of
+            [env, callCode] -> [env, code <+> callCode]
+          esac
+      | STRING(s) -> (
+          case savecode (env, 0) of
+            [pushes, pops] ->
+              case env.addString (s) of
+                [strLoc, env] ->
+                  case env.allocate of
+                    [ret, env] ->
+                      [env, code <+> pushes <+ Lea (strLoc, rdi) <+ Call ("Bstring") <+> move (rax, ret) <+> pops]
+                  esac
+              esac
+          esac
+      )
+      | ARRAY (n) ->
+          case savecode (env, n + 1) of
+            [pushes, pops] ->
+              case popN (env, n) of
+                [env, args] ->
+                  case env.pop of
+                    [_, env] ->
+                      case env.allocate of
+                        [ret, env] -> [env, code <+> rawCallCode ("Barray", L (n) : args, n + 1, pushes, pops) <+> move (rax, ret)]
+                      esac
+                  esac
+              esac
+          esac
+      | SEXP (tag, n) ->
+          case savecode (env, n + 2) of
+            [pushes, pops] ->
+              case env.pop of
+                [tagValue, env] ->
+                  case popN (env, n) of
+                    [env, args] ->
+                      case env.pop of
+                        [_, env] ->
+                          case env.allocate of
+                            [ret, env] -> [env, code <+> rawCallCode ("Bsexp", L (n) : (args +++ {tagValue}), n + 2, pushes, pops) <+> move (rax, ret)]
+                          esac
+                      esac
+                  esac
+              esac
+          esac
+      | ELEM ->
+          case call (env, "Belem", 2) of
+            [env, callCode] -> [env, code <+> callCode]
+          esac
+      | STA ->
+          case call (env, "Bsta", 3) of
+            [env, callCode] -> [env, code <+> callCode]
+          esac
       esac
     }, [env, emptyBuffer ()], code)
 }
