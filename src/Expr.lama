@@ -57,6 +57,12 @@ public fun evalOp (op, l, r) {
 --        Elem    (expr, expr)         |
 --        ElemRef (expr, expr)         |
 --        Builtin (string, expr list)
+--
+-- A definition is either a local variable definition or a function
+-- definition:
+--
+-- def = Var (string list)                |
+--       Fun (string, string list, expr)
 
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
@@ -81,11 +87,24 @@ fun addNames (state, names) {
   foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
 }
 
+fun addBindings (state, names) {
+  foldl (fun (s, [name, value]) {s.addName (name, value)}, state, names)
+}
+
 -- Helper function: adds a function in current scope
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
+
+fun addDefs (state, defs) {
+  foldl (fun (s, def) {
+     case def of
+     Var (names) -> s.addNames (names)
+     | Fun (name, args, body) -> s.addFunction (name, args, body)
+     esac
+  }, state, defs)
+}
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -101,7 +120,58 @@ fun evalList (c, exprs) {
 }
 
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+   case expr of
+   Var (name)                        -> [c, s.lookup (name)]
+   | Ref (name)                      -> [c, Ref (name)]
+   | Const (x)                       -> [c, x]
+   | Binop (op, left, right)         ->
+      let [c, left] = c.eval (left) in
+      let [c, right] = c.eval (right) in
+      [c, op.evalOp (left, right)]
+   | Assn (name, expr)               ->
+      let [c, expr] = c.eval(expr) in
+      case c.eval(name) of
+         [c@[s, w], Ref (name)] -> [[s <- [name, expr], w], expr]
+         | [c, ElemRef (arr, i)] -> case arr of
+                                        Sexp (_, vals) -> vals[i] := expr; [c, expr]
+                                        | _ -> arr[i] := expr; [c, expr]
+                                    esac
+      esac
+   | Seq  (head, tail)               -> let [c, _] = c.eval (head) in c.eval (tail)
+   | Skip                            -> [c, Void]
+   | If (cond, thn, els)             -> let [c, res] = c.eval (cond) in
+                                          if res then c.eval (thn) else c.eval (els) fi
+   | While (cond, body)              -> let [c, res] = c.eval (cond) in
+                                          if res then c.eval (Seq (body, While (cond, body))) else [c, Void] fi
+   | DoWhile (body, cond)            -> let [c, res] = c.eval (body) in
+                                          let [c, res] = c.eval (cond) in
+                                             if res then c.eval (expr) else [c, Void] fi
+   | Ignore (expr)                   -> let [c, _] = c.eval(expr) in [c, Void]
+   | Fun (name, args, body)          -> [[s.addFunction (name, args, body)], Void]
+   | Scope (defs, expr)              -> let s = s.enterScope in
+                                        let s = s.addDefs (defs) in
+                                        let [[s, w], result] = [s, w].eval (expr) in
+                                        [[s.leaveScope, w], result]
+   | Call (name, args)               -> let [[s, w], evaluated] = c.evalList (args) in
+                                        let Fun (args, body) = s.lookup (name) in
+                                        case body of
+                                          External -> let [v, w] = name.evalBuiltin (evaluated, w) in [[s, w], v]
+                                          | _      -> let inner = s.enterFunction in
+                                                      let inner = inner.addBindings (args.zip (evaluated)) in
+                                                      let [[inner, w], result] = [inner, w].eval (body) in
+                                                      [[s.leaveFunction (inner.getGlobal), w], result]
+                                        esac
+   | String (s)                      -> [c, s]
+   | Array (ev)                      -> let [c, elements] = c.evalList(ev) in [c, elements.listArray]
+   | Elem (e, i)                     -> let [c, index] = c.eval(i) in
+                                        let [c, arr] = c.eval(e) in
+                                        [c, case arr of Sexp (_, vals) -> vals[index] | _ -> arr[index] esac]
+   | ElemRef (e, i)                  -> let [c, index] = c.eval(i) in
+                                        let [c, arr] = c.eval(e) in
+                                        [c, ElemRef (arr, index)]
+   | Sexp (s, ev)                    -> let [c, ev] = c.evalList(ev) in [c, Sexp (s, ev.listArray)]
+   | _                               -> failure("unknown expr\n")
+   esac
 }
 
 
