@@ -41,7 +41,7 @@ fun initEvalEnv (insns) {
             esac
           }
         }) $ [emptyMap (compare), insns];
-  
+
   [fun (l) {
      case findMap (map, l) of Some (insns) -> insns esac
   }]
@@ -54,35 +54,51 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (c, insns) {
-   foldl(fun ([stack, state, world], i) {
-        case i of
-          READ     -> let [value, newWorld] = readWorld(world) in [value : stack, state, newWorld]
-        | WRITE    -> let elem: other = stack in [other, state, writeWorld(elem, world)]
-        | BINOP(s) -> let v2: (v1: other) = stack in
-                         [(
-                             case s of
-                               "+"  -> v1 + v2
-                             | "-"  -> v1 - v2
-                             | "*"  -> v1 * v2
-                             | "/"  -> v1 / v2
-                             | "%"  -> v1 % v2
-                             | "<"  -> v1 < v2
-                             | ">"  -> v1 > v2
-                             | "<=" -> v1 <= v2
-                             | ">=" -> v1 >= v2
-                             | "=="  -> v1 == v2
-                             | "!=" -> v1 != v2
-                             | "&&" -> v1 && v2
-                             | "!!" -> v1 !! v2
-                             | _    -> failure("Operation not implemented: %s\n", s)
-                             esac
-                          ) : other, state, world]
-        | LD(x)    -> [state(x) : stack, state, world]
-        | ST(x)    -> let elem: other = stack in [other, state <- [x, elem], world]
-        | CONST(n) -> [n : stack, state, world]
-        esac
-     }, c, insns)
+fun eval (env, c, insns) {
+  case insns of
+    {} -> c
+  | i : rest ->
+      let [stack, state, world] = c in
+      case i of
+        READ           -> let [value, newWorld] = readWorld (world) in
+                            eval (env, [value : stack, state, newWorld], rest)
+      | WRITE          -> let elem : other = stack in
+                            eval (env, [other, state, writeWorld (elem, world)], rest)
+      | BINOP (s)      -> let v2 : (v1 : other) = stack in
+                            eval (env, [(case s of
+                                           "+"  -> v1 + v2
+                                         | "-"  -> v1 - v2
+                                         | "*"  -> v1 * v2
+                                         | "/"  -> v1 / v2
+                                         | "%"  -> v1 % v2
+                                         | "<"  -> v1 < v2
+                                         | ">"  -> v1 > v2
+                                         | "<=" -> v1 <= v2
+                                         | ">=" -> v1 >= v2
+                                         | "==" -> v1 == v2
+                                         | "!=" -> v1 != v2
+                                         | "&&" -> v1 && v2
+                                         | "!!" -> v1 !! v2
+                                         | _    -> failure ("Operation not implemented: %s\n", s)
+                                         esac) : other, state, world], rest)
+      | LD (x)         -> eval (env, [state (x) : stack, state, world], rest)
+      | ST (x)         -> let elem : other = stack in
+                            eval (env, [other, state <- [x, elem], world], rest)
+      | CONST (n)      -> eval (env, [n : stack, state, world], rest)
+      | LABEL (_)      -> eval (env, c, rest)
+      | JMP (l)        -> eval (env, c, fromLabel (env, l))
+      | CJMP ("z", l)  -> let elem : other = stack in
+                            if elem == 0
+                            then eval (env, [other, state, world], fromLabel (env, l))
+                            else eval (env, [other, state, world], rest)
+                            fi
+      | CJMP ("nz", l) -> let elem : other = stack in
+                            if elem != 0
+                            then eval (env, [other, state, world], fromLabel (env, l))
+                            else eval (env, [other, state, world], rest)
+                            fi
+      esac
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -121,13 +137,13 @@ fun genLabels (env, n) {
 }
 
 -- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
+-- Takes an expression, returns a Buffer of stack machine instructions
 fun compileExpr (expr) {
-   case expr of
-     Var(x)          -> {LD(x)}
-   | Const(x)        -> {CONST(x)}
-   | Binop(op, l, r) -> compileExpr(l) +++ compileExpr(r) +++ {BINOP(op)}
-   esac
+  case expr of
+    Var (x)          -> singletonBuffer (LD (x))
+  | Const (n)        -> singletonBuffer (CONST (n))
+  | Binop (op, l, r) -> compileExpr (l) <+> compileExpr (r) <+ BINOP (op)
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
@@ -151,14 +167,14 @@ public fun compileSM (stmt) {
   -- Returns a triple:
   --    boolean flag indicating if "lab" was used
   --    updated environment
-  --    code buffer  
+  --    code buffer
   fun compile (lab, env, stmt) {
     case stmt of
-      Skip           -> [false, env, emptyBuffer ()]
-    | Read  (x)      -> [false, env, singletonBuffer (READ) <+ ST (x)]
-    | Write (e)      -> [false, env, compileExpr (e) <+ WRITE]
-    | Assn  (x, e)   -> [false, env, compileExpr (e) <+ ST (x)]
-    | Seq   (s1, s2) ->
+      Skip             -> [false, env, emptyBuffer ()]
+    | Read  (x)        -> [false, env, singletonBuffer (READ) <+ ST (x)]
+    | Write (e)        -> [false, env, compileExpr (e) <+ WRITE]
+    | Assn  (x, e)     -> [false, env, compileExpr (e) <+ ST (x)]
+    | Seq   (s1, s2)   ->
         case env.genLabel of
           [s2Lab, env] ->
              case compile (s2Lab, env, s1) of
@@ -168,9 +184,42 @@ public fun compileSM (stmt) {
                   esac
              esac
         esac
+    | If (cond, s1, s2) ->
+        case env.genLabel of
+          [elseLab, env] ->
+             case compile (lab, env, s1) of
+               [_, env, s1Code] ->
+                  case compile (lab, env, s2) of
+                    [_, env, s2Code] ->
+                       [true, env, compileExpr (cond) <+ CJMP ("z", elseLab) <+> s1Code <+ JMP (lab) <+ LABEL (elseLab) <+> s2Code]
+                  esac
+             esac
+        esac
+    | While (cond, body) ->
+        case env.genLabel of
+          [loopLab, env] ->
+             case env.genLabel of
+               [bodyEndLab, env] ->
+                  case compile (bodyEndLab, env, body) of
+                    [bodyLabUsed, env, bodyCode] ->
+                       [true, env, singletonBuffer (LABEL (loopLab)) <+> compileExpr (cond) <+ CJMP ("z", lab) <+> bodyCode <+> label (bodyEndLab, bodyLabUsed) <+ JMP (loopLab)]
+                  esac
+             esac
+        esac
+    | DoWhile (body, cond) ->
+        case env.genLabel of
+          [loopLab, env] ->
+             case env.genLabel of
+               [bodyEndLab, env] ->
+                  case compile (bodyEndLab, env, body) of
+                    [bodyLabUsed, env, bodyCode] ->
+                       [false, env, singletonBuffer (LABEL (loopLab)) <+> bodyCode <+> label (bodyEndLab, bodyLabUsed) <+> compileExpr (cond) <+ CJMP ("nz", loopLab)]
+                  esac
+             esac
+        esac
     | _              -> failure ("compileSM not implemented\n")
     esac
-  }  
+  }
 
   case initCompEnv ().genLabel of
     [endLab, env] ->
