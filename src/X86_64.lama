@@ -114,6 +114,7 @@ fun insnString (insn) {
   
   case insn of
     Cltd               -> "\tcqo\n"
+  | Cqo                -> "\tcqo\n"
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
   | Sal   (s)          -> sprintf ("\tsalq\t%s\n", s)
   | IDiv  (s1)         -> sprintf ("\tidivq\t%s\n", opndString (s1))
@@ -535,9 +536,34 @@ fun savecode (env, nA) {
 -- Don't forget to handle buitins (Barray/Bsexp), and
 -- to clear rax before calling to variable arg funcatio
 fun call (env, fLabel, nA) {
-  emptyBuffer ()
+  fun passArgs (env, passed, left) {
+    if left == 0 then [env, emptyBuffer (), emptyBuffer ()] else
+    let [arg, env] = env.pop in
+    let [mv, vm] = if left <= nRegArgs then [move (arg, R (left - 1)), emptyBuffer()] else [singletonBuffer (Push (arg)), singletonBuffer (Pop (arg))] fi in
+    let [env, pass, pops] = env.passArgs (passed + 1, left - 1) in
+    [env, pass <+> mv, vm <+> pops] fi
+  }
+
+  let [save, rest] = savecode (env, nA) in
+  let [env, pass, pops] = env.passArgs (0, nA) in
+  let [res, env] = env.allocate in
+  [env, save <+> pass <+ Call (fLabel) <+> pops <+> rest <+> move (rax, res)]
 }
 
+fun varargCall (env, fLabel, nA, n) {
+  fun passArgs (env, passed, left) {
+    if passed == nA then [env, emptyBuffer (), emptyBuffer ()] else
+    let [arg, env] = env.pop in
+    let [mv, vm] = if left <= nRegArgs then [move (arg, R (left - 1)), emptyBuffer()] else [singletonBuffer (Push (arg)), singletonBuffer (Pop (arg))] fi in
+    let [env, pass, pops] = env.passArgs (passed + 1, left - 1) in
+    [env, pass <+> mv, vm <+> pops] fi
+  }
+
+  let [save, rest] = savecode (env, nA) in
+  let [env, pass, pops] = env.passArgs (0, nA + 1) in
+  let [res, env] = env.allocate in
+  [env, save <+> move (L (n.makeBox), R (0)) <+> pass <+> binop ("^", rax, rax) <+ Call (fLabel) <+> pops <+> rest <+> move (rax, res)]
+}
 -- Gets a suffix for Set instruction from
 -- source language comparison operator
 fun suffix (op) {
@@ -548,6 +574,21 @@ fun suffix (op) {
   | "!=" -> "ne"
   | ">=" -> "ge"
   | ">"  -> "g"
+  esac
+}
+
+fun binop(op, sl, sr) {
+  if memOpnd(sl) && memOpnd(sr)
+  then singletonBuffer(Mov(sl, rax)) <+ Binop(op, rax, sr)
+  else singletonBuffer(Binop(op, sl, sr))
+  fi
+}
+
+fun builtinName (n) {
+  case n of
+    "read"   -> "Lread"
+  | "write"  -> "Lwrite"
+  | "length" -> "Llength"
   esac
 }
 
@@ -562,6 +603,10 @@ fun toFixedNum (r) {
   singletonBuffer (Sal1 (r)) <+ Or1 (r)
 }
 
+fun unbox(r) {
+  singletonBuffer (Sar1 (r))
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -572,32 +617,124 @@ fun compile (env, code) {
       -- printf ("compiling %s\n", showSMInsn (i));
       
       case i of      
-        READ ->
-          let [env, callCode] = call (env, "Lread", 0) in
-	  [env, code <+> callCode]
-      | WRITE ->
-          let [env, callCode] = call (env, "Lwrite", 1) in
-	  [env, code <+> callCode]
-	  
-      (* Assignment
-        1
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-      *)         
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)      
+        LD (x) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac
+      | LDA (x) -> let [r, env] = env.allocate in
+                   [env, code <+> lea (env.loc (x), r)]
+      
+      | DROP   -> let [_, env] = env.pop in [env, code]
+      | DUP    -> let r1 = env.peek in
+                  let [r2, env1] = env.allocate in
+                  [env1, code <+> move (r1, r2)]
+      | ST (x) ->
+          case env.pop of
+            [s, env] -> [env, code <+> move (s, env.loc (x))]
+          esac
+      | STI -> let [sl, sr, env] = env.pop2 in
+               let env = env.push (sr) in
+               [env, code <+> move (sl, I (0, sr)) <+> move (sl, sr) ]
+      | CONST (n) -> 
+          case env.allocate of
+            [s, env] -> [env, code <+> move (L (n.makeBox), s)]
+          esac
+      | BINOP (op) ->
+          let [sl, sr, env2] = env.pop2 in
+          let env3 = env2.push (sr) in
+          case op of
+              "+"  -> [env3, code <+> binop ("+", sl, sr) <+> binop ("-", L (1), sr)]
+
+            | "-"  -> [env3, code <+> binop ("-", sl, sr) <+> binop ("+", L (1), sr)]
+            
+            | "*"  -> [env3, code <+> unbox(sl) <+> unbox(sr)
+                                  <+> binop ("*", sl, sr)
+                                  <+> toFixedNum (sr)]
+
+            | "&&" -> [env3, code <+> unbox(sl) <+> unbox(sr)
+                                  <+ Binop ("^", rax, rax)
+                                  <+ Binop ("cmp", sl, rax)
+                                  <+ Set ("ne", "%al") <+> move (rax, sl)
+                                  <+ Binop ("^", rax, rax)
+                                  <+ Binop ("cmp", sr, rax)
+                                  <+ Set ("ne", "%al") <+> move (rax, sr)
+                                  <+> binop ("&&", sl, sr)
+                                  <+> toFixedNum (sr)]
+
+            | "!!" -> [env3, code <+> unbox(sl) <+> unbox(sr)
+                                  <+ Binop ("^", rax, rax)
+                                  <+ Binop ("cmp", sl, rax)
+                                  <+ Set ("ne", "%al") <+> move (rax, sl)
+                                  <+ Binop ("^", rax, rax)
+                                  <+ Binop ("cmp", sr, rax)
+                                  <+ Set ("ne", "%al") <+> move (rax, sr)
+                                  <+> binop ("!!", sl, sr)
+                                  <+> toFixedNum (sr)]
+
+            | "^"  -> [env3, code <+> binop ("^", sl, sr) <+ Or1 (sr)]
+
+            | "/"  -> case sl of
+                        R (2) -> let [sll, _] = env.allocate in
+                                 [env3, code <+> unbox(sl) <+> unbox(sr) <+> move (sl, sll) <+> move (sr, rax) <+ Cqo <+ IDiv (sll) <+> move (rax, sr) <+> toFixedNum(sr)] 
+                      | _     -> case sr of
+                                   R (2) -> [env3, code <+> unbox(sl) <+> unbox(sr)  <+> move (sr, rax) <+ Cqo <+ IDiv (sl) <+> move (rax, sr) <+> toFixedNum(sr)]
+                                 | _     -> [env3, code <+> unbox(sl) <+> unbox(sr)  <+> move (sr, rax) <+> env.withRDX (singletonBuffer (Cqo) <+ IDiv (sl) <+> move (rax, sr) <+> toFixedNum(sr))]
+                                 esac
+                      esac
+
+            | "%"  -> case sl of
+                        R (2) -> let [sll, _] = env.allocate in
+                                 [env3, code <+> unbox(sl) <+> unbox(sr)  <+> move (sl, sll) <+> move (sr, rax) <+ Cqo <+ IDiv (sll) <+> move (rdx, sr) <+> toFixedNum(sr)] 
+                      | _     -> case sr of
+                                   R (2) -> [env3, code <+> unbox(sl) <+> unbox(sr)  <+> move (sr, rax) <+ Cqo <+ IDiv (sl) <+> move (rdx, sr) <+> toFixedNum(sr)]
+                                 | _     -> [env3, code <+> unbox(sl) <+> unbox(sr)  <+> move (sr, rax) <+> env.withRDX (singletonBuffer (Cqo) <+ IDiv (sl) <+> move (rdx, sr) <+> toFixedNum(sr))]
+                                 esac
+                      esac
+
+            | _    -> [env3, code <+ Binop ("^", rax, rax) <+> binop ("cmp", sl, sr)
+                                  <+ Set (suffix (op), "%al") <+> move(rax, sr) <+> toFixedNum (sr)]
+          esac
+        | LABEL (s)       -> let env = if env.isBarrier then env.retrieveStack (s) else env fi in
+                            [env, code <+ Label (s)]
+        | JMP (l)         -> let env = env.setStack (l).setBarrier in
+                          [env, code <+ Jmp (l)]
+        | CJMP ("z", l)   -> let [rg, env] = env.pop in
+                            let env = env.setStack (l) in
+                            [env, code <+> move (L (1), rax) <+ Binop ("cmp", rg, rax) <+ CJmp ("e", l)]
+        | CJMP ("nz", l)  -> let [rg, env] = env.pop in
+                            let env = env.setStack (l) in
+                            [env, code <+> move (L (1), rax) <+ Binop ("cmp", rg, rax) <+ CJmp ("ne", l)] 
+        | CALL (f, n)     -> let [env, ccode] = call (env, f, n) in
+                            [env, code <+> ccode]
+        | BEGIN (f, a, l) -> let env = env.enterFunction (f, a, l) in
+                            [env, code <+> prologue (f)]
+        | END             -> let [env, epi] = epilogue (env) in [env, code <+> epi]
+
+        | GLOBAL (x)      -> [env.addGlobal (x), code]       
+
+        | STRING (v)      -> let [env, loc] = env.addString (v) in
+                            let [r, env] = env.allocate in
+                            let [env, ccode] = call (env, "Bstring", 1) in
+                            [env, code <+> lea (M (loc), r) <+> ccode]
+
+        | ARRAY (n)       -> let [env, ccode] = varargCall (env, "Barray", n, n) in
+                            [env, code <+> ccode] 
+
+        | SEXP (t, n)     -> let [r, env] = env.allocate in
+                            let [env, ccode] = varargCall (env, "Bsexp", n + 1, n) in
+                            let [env, loc] = env.addString (t) in
+                            [env, code <+> lea (M (loc), r) <+> ccode]
+
+        | ELEM            -> let [env, ccode] = call (env, "Belem", 2) in
+                            [env, code <+> ccode]
+
+        | STA             -> let [env, ccode] = call (env, "Bsta", 3) in
+                            [env, code <+> ccode]
+  
+        | BUILTIN (f, n)  -> let [env, ccode] = call (env,  builtinName (f), n) in
+                            [env, code <+> ccode]
+
+        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)  
       esac        
     }, [env, emptyBuffer ()], code)
 }

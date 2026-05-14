@@ -6,7 +6,6 @@ import State;
 import World;
 import Lexer;
 import Parser;
-import Fun;
 import Builtins;
 
 -- As association map which maps "\otimes" into "\oplus"
@@ -40,7 +39,7 @@ public fun evalOp (op, l, r) {
 --
 -- A expression is represented by a data structure of the following shape:
 --
--- expr = Assn    (expr, expr)         |
+-- expr = Assn    (string, expr)       |
 --        Seq     (expr, expr)         |
 --        Skip                         |
 --        if      (expr, expr, expr)   |
@@ -56,6 +55,7 @@ public fun evalOp (op, l, r) {
 --        Array   (expr list)          |
 --        Elem    (expr, expr)         |
 --        ElemRef (expr, expr)         |
+--        Sexp    (string, expr list)  |
 --        Builtin (string, expr list)
 
 -- Helper function: checks that given name designates a regular variable in
@@ -91,7 +91,7 @@ fun addFunction (state, name, args, body) {
 fun evalList (c, exprs) {
   case foldl (fun ([c, vals], e) {
                 case eval (c, e) of
-                  [c, v] -> [c, v : vals]
+                  [c, vl] -> [c, vl : vals]
                 esac
               },
               [c, {}],
@@ -100,16 +100,98 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun extScope (s, ds) {
+  case ds of
+    {} -> s
+  | Var (vs)      : ds -> extScope (s.addNames (vs), ds)
+  | Fun (n, a, b) : ds -> extScope (s.addFunction (n, a, b), ds)
+  esac
 }
 
+fun addArgs(s, as, vs) {
+  case [as, vs] of
+    [{}, {}] -> s
+  | [a : as, v : vs] -> addArgs (s.addName (a, Var (v)), as, vs)
+  esac
+}
+
+fun arrToFn(a) {
+  fun (i) { a[i] }
+}
+
+fun augm(f, x, y) {
+  fun (o) { if (o == x) then y else f (o) fi }
+}
+
+fun arraugm(a, x, y) {
+    a[x] := y;
+    a
+}
+
+fun eval (c@[s, w, m, lm], expr) {
+  fun finalize (vs) {
+    --printf("finalizing %s\n", vs.string);
+    case vs of
+      {} -> {}
+    | x@#array -> mapArray (finalize, vs)
+    | v : vs -> finalize (v) : finalize (vs)
+    | Arr (v) -> (m (v)).finalize
+    | _ -> vs
+    esac
+  }
+
+  --let a = {0, 1, 2}.listArray.arrToFn in
+  --printf("%d\n", a(0));
+  --let b = fun (_) { 0 } in
+  --let bb = augm(b, 3, a) in printf("%d\n", bb (3)(2));
+  --printf("evaluating %s\n", expr.string);
+  --case expr of Foo -> failure("") esac;
+  case expr of
+      Var (x)          -> let Var (v) = s.lookup (x) in
+                          [c, v]
+   |  Seq (l, r)       -> let [c1, NoValue] = eval (c, l) in eval (c1, r)
+   |  Skip             -> [c, NoValue]
+   |  If (i, t, e)     -> let [c1, v] = eval (c, i) in
+                          if v != 0 then eval (c1, t) else eval (c1, e) fi
+   |  While (co, b)    -> let [c1, v] = eval (c, co) in
+                          if v != 0 then eval (c1, Seq (b, While (co, b))) else [c1, NoValue] fi
+   |  DoWhile (co, b)  -> eval (c, Seq (b, While (co, b)))
+   |  Ref (x)          -> [c, VarRef (x)]
+   |  Const (n)        -> [c, n]
+   |  Assn (l, r)      -> let [[s, w, m, lm], {vl, vr}] = evalList (c, {l, r}) in
+                          case vl of
+                            VarRef (x)    -> [[s <- [x, Var (vr)], w, m, lm], vr]
+                          | ArrRef (a, i) -> [[s, w, augm (m, a, arraugm(m (a), i, vr)), lm], vr]
+                          esac
+   |  Binop (op, l, r) -> let [c, {vl, vr}] = evalList (c, {l, r}) in
+                          [c, evalOp (op, vl, vr)]
+   |  Ignore (e)       -> let [c1, _] = eval (c, e) in [c1, NoValue]
+   |  Scope (d, e)     -> let [[s2, w2, m, lm], v] = eval ([extScope (enterScope (s), d), w, m, lm], e) in
+                          [[leaveScope (s2), w2, m, lm], v]
+   |  Call (n, as)     -> let Fun(a, b) = s.lookup (n) in
+                          let [[s, w, m, lm], avs] = evalList (c, as) in
+                          --printf("%s\n", avs.string);
+                          case b of
+                            External -> let [v, w] = evalBuiltin (n, avs.finalize, w) in [[s, w, m, lm], v]
+                          | _        -> let fs = s.enterFunction.addArgs (a, avs) in
+                                        let [[fs, w, m, lm], v] = eval([fs, w, m, lm], b) in
+                                        [[s.leaveFunction (getGlobal (fs)), w, m, lm], v]
+                          esac
+   | String  (v)       -> [[s, w, augm(m, lm, v), lm + 1], Arr (lm)]
+   | Array   (es)      -> let [[s, w, m, lm], avs] = evalList (c, es) in
+                          [[s, w, augm(m, lm, avs.listArray), lm + 1], Arr (lm)]
+   | Elem    (a, i)    -> let [c, {Arr (av), iv}] = evalList (c, {a, i}) in [c, m (av)[iv]]
+   | ElemRef (a, i)    -> let [c, {Arr (av), iv}] = evalList (c, {a, i}) in [c, ArrRef (av, iv)]
+   | Sexp    (n, es)   -> let [[s, w, m, lm], avs] = evalList (c, es) in
+                          [[s, w, augm(m, lm, avs.listArray), lm + 1], Arr (lm)]             
+   esac
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
   case eval ([emptyState ().enterScope.addName ("read",   Fun ({}, External))
                                       .addName ("write",  Fun ({"a"}, External))
-                                      .addName ("length", Fun ({"a"}, External)), createWorld (input)], expr) of
+                                      .addName ("length", Fun ({"a"}, External)), createWorld (input), fun (_) {0}, 0], expr) of
     [c, _] -> c.snd.getOutput
   esac
 }
