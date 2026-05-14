@@ -34,6 +34,15 @@ public fun evalOp (op, l, r) {
   esac
 }
 
+-- Evaluates a pure assignment-4 expression in a given state.
+public fun oldEvalExpr (st, expr) {
+  case expr of
+    Var(x)          -> st(x)
+  | Const(n)        -> n
+  | Binop(op, l, r) -> evalOp (op, oldEvalExpr (st, l), oldEvalExpr (st, r))
+  esac
+}
+
 -- Evaluates an expression "expr" in a configuration "c".
 -- A configuration is a pair of a state "s" and a world "w".
 -- Returns a final configuration (if any)
@@ -85,25 +94,215 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
+
+fun bindArgs (state, name, args, vals) {
+  case [args, vals] of
+    [{}, {}]             -> state
+  | [a : args, v : vals] -> bindArgs (state.addName (a, Val (v)), name, args, vals)
+  | _                    -> error (sprintf ("wrong number of arguments in ""%s""", name), getLoc (name))
+  esac
+}
+
+fun sameLength (xs, ys) {
+  case [xs, ys] of
+    [{}, {}]         -> true
+  | [_ : xs, _ : ys] -> sameLength (xs, ys)
+  | _                -> false
+  esac
+}
                                         
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
-  case foldl (fun ([c, vals], e) {
-                case eval (c, e) of
-                  [c, v] -> [c, v : vals]
-                esac
-              },
-              [c, {}],
-              exprs) of
-    [c, vals] -> [c, reverse (vals)]
+  fun loop (c, exprs, vals) {
+    case exprs of
+      {}        -> [c, reverse (vals)]
+    | e : exprs ->
+        case eval (c, e) of
+          [c1, v] -> loop (c1, exprs, v : vals)
+        esac
+    esac
+  }
+
+  loop (c, exprs, {})
+}
+
+fun asInt (v) {
+  case v of
+    Addr (_) -> failure()
+  | _        -> v
+  esac
+}
+
+fun asAddr (v) {
+  case v of
+    Addr (x) -> x
+  | _        -> failure()
   esac
 }
 
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Var(x)          ->
+      case s.lookup (x) of
+        Val (v) -> [c, v]
+      | _       -> error ("not var", getLoc (x))
+      esac
+  | Ref(x)          ->
+      lookupVal (s, x);
+      [c, Addr (x)]
+  | Const(n)        -> [c, n]
+  | Binop(op, l, r) ->
+      case eval (c, l) of
+        [c1, l1] ->
+          case eval (c1, r) of
+            [c2, r1] -> [c2, evalOp (op, asInt (l1), asInt (r1))]
+          esac
+      esac
+  | Assn(l, e) ->
+      case eval (c, l) of
+        [c1, l1] ->
+          case eval (c1, e) of
+            [c2@[s2, w2], v] ->
+              case asAddr (l1) of
+                ElemAddr (x, i) ->
+                  x[i] := v;
+                  [c2, v]
+              | x -> [[s2 <- [x, Val (v)], w2], v]
+              esac
+          esac
+      esac
+  | Seq(e1, e2) ->
+      case eval (c, e1) of
+        [c1, _] -> eval (c1, e2)
+      esac
+  | Skip ->
+      [c, 0]
+  | Read(x) ->
+      lookupVal (s, x);
+      let [n, w1] = readWorld (w) in
+        [[s <- [x, Val (n)], w1], n]
+  | Write(e) ->
+      case eval (c, e) of
+        [c1@[s1, w1], v] ->
+          let n = asInt (v) in
+            [[s1, writeWorld (n, w1)], n]
+      esac
+  | If(cond, yes, no) ->
+      case eval (c, cond) of
+        [c1, v] ->
+          if asInt (v) != 0
+          then eval (c1, yes)
+          else eval (c1, no)
+          fi
+      esac
+  | While(cond, body) ->
+      case eval (c, cond) of
+        [c1, v] ->
+          if asInt (v) != 0
+          then case eval (c1, body) of
+                 [c2, _] -> eval (c2, expr)
+               esac
+          else [c1, 0]
+          fi
+      esac
+  | DoWhile(body, cond) ->
+      case eval (c, body) of
+        [c1, _] ->
+          case eval (c1, cond) of
+            [c2, v] ->
+              if asInt (v) != 0
+              then eval (c2, expr)
+              else [c2, 0]
+              fi
+          esac
+      esac
+  | Ignore(e) ->
+      case eval (c, e) of
+        [c1, _] -> [c1, 0]
+      esac
+  | Scope (defs, e) ->
+      let s1 = foldl (fun (s, def) {
+                 case def of
+                   Var (names)         -> addNames (s, names)
+                 | Val (names)         -> addNames (s, names)
+                 | Fun (name, args, b) -> addFunction (s, name, args, b)
+                 esac
+               },
+               enterScope (s), defs) in
+        case eval ([s1, w], e) of
+          [[s2, w2], v] -> [[leaveScope (s2), w2], v]
+        esac
+  | String (ss) ->
+      var r = makeString (ss.length), i = 0;
+      for skip, i < ss.length, i := i + 1 do
+        r[i] := ss[i]
+      od;
+      [c, r]
+  | Array (exprs) ->
+      case evalList (c, exprs) of
+        [c1, vals] -> [c1, listArray (vals)]
+      esac
+  | Sexp (tag, exprs) ->
+      case evalList (c, exprs) of
+        [c1, vals] -> [c1, Sexp (tag, listArray (vals))]
+      esac
+  | Elem (data, index) ->
+      case eval (c, data) of
+        [c1, x] ->
+          case eval (c1, index) of
+            [c2, i] ->
+              case x of
+                Sexp (_, xs) -> [c2, xs[asInt (i)]]
+              | _            -> [c2, x[asInt (i)]]
+              esac
+          esac
+      esac
+  | ElemRef (data, index) ->
+      case eval (c, data) of
+        [c1, x] ->
+          case eval (c1, index) of
+            [c2, i] ->
+              case x of
+                Sexp (_, xs) -> [c2, Addr (ElemAddr (xs, asInt (i)))]
+              | _            -> [c2, Addr (ElemAddr (x, asInt (i)))]
+              esac
+          esac
+      esac
+  | Builtin (name, exprs) ->
+      case evalList (c, exprs) of
+        [[s1, w1], vals] ->
+          case evalBuiltin (name, vals, w1) of
+            [v, w2] -> [[s1, w2], v]
+          esac
+      esac
+  | Call (name, exprs) ->
+      case s.lookup (name) of
+        Fun (args, External) ->
+          if sameLength (args, exprs)
+          then case evalList (c, exprs) of
+                 [[s1, w1], vals] ->
+                   case evalBuiltin (name, vals, w1) of
+                     [v, w2] -> [[s1, w2], v]
+                   esac
+               esac
+          else error (sprintf ("wrong number of arguments in ""%s""", name), getLoc (name))
+          fi
+      | Fun (args, body) ->
+          if sameLength (args, exprs)
+          then case evalList (c, exprs) of
+                 [c1@[s1, w1], vals] ->
+                   let state = bindArgs (enterFunction (s1), name, args, vals) in
+                     case eval ([state, w1], body) of
+                       [[s2, w2], v] -> [[leaveFunction (s1, getGlobal (s2)), w2], v]
+                     esac
+               esac
+          else error (sprintf ("wrong number of arguments in ""%s""", name), getLoc (name))
+          fi
+      | _ -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
+      esac
+  esac
 }
-
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
