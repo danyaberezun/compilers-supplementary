@@ -6,6 +6,7 @@ import List;
 import Buffer;
 import Fun;
 import Manifest;
+import Array;
 
 fun min (x, y) {
   if x > y then y else x fi
@@ -113,7 +114,8 @@ fun insnString (insn) {
   }
   
   case insn of
-    Cltd               -> "\tcqo\n"
+    Cqo                -> "\tcqo\n"
+  | Cltd               -> "\tcqo\n"
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
   | Sal   (s)          -> sprintf ("\tsalq\t%s\n", s)
   | IDiv  (s1)         -> sprintf ("\tidivq\t%s\n", opndString (s1))
@@ -535,7 +537,36 @@ fun savecode (env, nA) {
 -- Don't forget to handle buitins (Barray/Bsexp), and
 -- to clear rax before calling to variable arg funcatio
 fun call (env, fLabel, nA) {
-  emptyBuffer ()
+  fun processArgs(initEnv, nA) {
+    fun cpy (arg) {
+      case arg of
+        R (r) -> r < nRegArgs
+      | _ -> false
+      esac
+    }
+    var env = initEnv, code = emptyBuffer (), r = {};
+    for var i; i := nA, i > 0, i := i - 1 do
+      let [arg, env1] = pop (env) in env := env1;
+      if i > nRegArgs then code := code <+ Push (arg)
+      else
+        r := arg:r;
+        if cpy (arg) then code := code <+ Push (arg) 
+        fi
+      fi
+    od;
+    r := listArray (r);
+    for var i; i := 0, i < length (r), i := i + 1 do
+      let arg = r[i] in
+      if cpy (arg) then code := code <+ Pop (rax) <+ Mov (rax, R (i))
+      else code := code <+> move (arg, R (i))
+      fi
+    od;
+    [env, code]
+  }
+
+  let [saveCode, restCode] = savecode (env, nA) in let [env, processCode] = processArgs (env, nA) in
+  let stack1 = nA - min (nA, nRegArgs) in let [s, env] = env.allocate in
+  [env, saveCode <+> processCode <+ Binop ("^", rax, rax) <+ Call (fLabel) <+ Mov (rax, s) <+ Binop ("+", L (stack1 * wordSize), rsp) <+> restCode]
 }
 
 -- Gets a suffix for Set instruction from
@@ -562,6 +593,20 @@ fun toFixedNum (r) {
   singletonBuffer (Sal1 (r)) <+ Or1 (r)
 }
 
+fun pushn (env, xs) {
+  case xs of
+    {} -> env
+    | x:xs -> let env = pushn (env, xs) in let env = push (env, x) in env
+  esac
+}
+
+fun popn (env, n) {
+  case n of 
+    0 -> [{}, env]
+    | _ ->  let [x, env] = pop (env) in let [xs, env] = popn (env, n - 1) in [x:xs, env]
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -571,16 +616,9 @@ fun compile (env, code) {
 
       -- printf ("compiling %s\n", showSMInsn (i));
       
-      case i of      
-        READ ->
-          let [env, callCode] = call (env, "Lread", 0) in
-	  [env, code <+> callCode]
-      | WRITE ->
-          let [env, callCode] = call (env, "Lwrite", 1) in
-	  [env, code <+> callCode]
+      case i of
 	  
-      (* Assignment
-        1
+      (* Assignment        
          -- Some guidelines for generating function calls:
          --
          -- 1. generate instructions to save live registers on the X86 stack (use
@@ -597,8 +635,89 @@ fun compile (env, code) {
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
       *)         
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)      
-      esac        
+      LD(x) -> case env.allocate of [s, env] -> [env, code <+ Mov(env.loc(x), s)] esac
+      | ST (x) ->
+        let [s, env] = pop (env) in let env = push (env, loc (env, x)) in [env, code <+> move(s, loc (env, x))]
+      | CONST (n) ->
+          let [s, env] = env.allocate in [env, code <+ Mov(L(makeBox (n)), s)]
+      | BINOP (op) -> 
+        let [s1, s2, env] = env.pop2 in
+        let env = env.push (s2) in
+        [
+          env,
+          code <+ Sar1 (s1) <+ Sar1 (s2) <+>
+          case op of
+              "+"  -> emptyBuffer () <+ Mov (s2, rax) <+ Binop (op, s1, rax) <+ Mov (rax, s2)
+            | "-"  -> emptyBuffer () <+ Mov (s2, rax) <+ Binop (op, s1, rax) <+ Mov (rax, s2)
+            | "*"  -> emptyBuffer () <+ Mov (s2, rax) <+ Binop (op, s1, rax) <+ Mov (rax, s2)
+            | "/"  -> emptyBuffer () <+> case s1 of
+                  R (2) -> singletonBuffer (Mov (s2, rax)) <+ Mov (rdx, rbx) <+ Cltd <+ IDiv (rbx) <+ Mov (rax, s2) <+ Mov (rbx, rdx)
+                | _ -> case s2 of
+                      R (2) -> singletonBuffer (Mov (rdx, rax)) <+ Cltd <+ IDiv (s1) <+ Mov (rax, rdx)
+                    | _ -> withRDX (env, singletonBuffer (Mov (s2, rax)) <+ Cltd <+ IDiv (s1) <+ Mov (rax, s2))
+                    esac
+                esac
+            | "%"  -> emptyBuffer () <+> case s1 of
+                  R (2) -> singletonBuffer (Mov (s2, rax)) <+ Mov (rdx, rbx) <+ Cltd <+ IDiv (rbx) <+ Mov (rdx, s2) <+ Mov (rbx, rdx)
+                | _ -> case s2 of
+                      R (2) -> singletonBuffer (Mov (rdx, rax)) <+ Cltd <+ IDiv (s1)
+                    | _ -> withRDX (env, singletonBuffer (Mov (s2, rax)) <+ Cltd <+ IDiv (s1) <+ Mov (rdx, s2))
+                    esac
+                esac
+            | "==" -> emptyBuffer () <+ Mov (s2, rax) <+ Binop ("cmp", s1, rax) <+ Set (suffix (op), "%al") <+ Binop ("&&", L(1), rax) <+ Mov (rax, s2)
+            | "!=" -> emptyBuffer () <+ Mov (s2, rax) <+ Binop ("cmp", s1, rax) <+ Set (suffix (op), "%al") <+ Binop ("&&", L(1), rax) <+ Mov (rax, s2)
+            | "<"  -> emptyBuffer () <+ Mov (s2, rax) <+ Binop ("cmp", s1, rax) <+ Set (suffix (op), "%al") <+ Binop ("&&", L(1), rax) <+ Mov (rax, s2)
+            | "<=" -> emptyBuffer () <+ Mov (s2, rax) <+ Binop ("cmp", s1, rax) <+ Set (suffix (op), "%al") <+ Binop ("&&", L(1), rax) <+ Mov (rax, s2)
+            | ">"  -> emptyBuffer () <+ Mov (s2, rax) <+ Binop ("cmp", s1, rax) <+ Set (suffix (op), "%al") <+ Binop ("&&", L(1), rax) <+ Mov (rax, s2)
+            | ">=" -> emptyBuffer () <+ Mov (s2, rax) <+ Binop ("cmp", s1, rax) <+ Set (suffix (op), "%al") <+ Binop ("&&", L(1), rax) <+ Mov (rax, s2)
+            | "&&" -> emptyBuffer () <+ Binop ("cmp", L (0), s1) <+ Set (suffix ("!="), "%al") <+ Binop ("&&", L(1), rax)
+                          <+ Binop ("cmp", L (0), s2) <+ Set (suffix ("!="), "%bl") <+ Binop ("&&", L(1), rbx)
+                          <+ Binop ("&&", rax, rbx) <+ Mov (rbx, s2)
+            | "!!" -> emptyBuffer () <+ Binop ("cmp", L (0), s1) <+ Set (suffix ("!="), "%al") <+ Binop ("&&", L(1), rax)
+                          <+ Binop ("cmp", L (0), s2) <+ Set (suffix ("!="), "%bl") <+ Binop ("&&", L(1), rbx)
+                          <+ Binop ("!!", rax, rbx) <+ Mov (rbx, s2)
+          esac <+> toFixedNum (s2)
+        ]
+      | LABEL(l) ->
+          let env = if env.isBarrier
+          then env.retrieveStack (l) 
+          else env 
+          fi in
+          [env, code <+ Label(l)]
+      | JMP(l) -> 
+          let env = env.setStack (l).setBarrier in
+          [env, code <+ Jmp(l)]
+      | CJMP(c, l) ->
+          case env.pop of
+            [s, env] -> [setBarrier(setStack(env, l)), code <+ Sar1(s) <+ Binop("cmp", L(0), s) <+ CJmp(c, l)]
+          esac
+      | LDA(x) -> case env.allocate of [s, env] -> [env, code <+ Lea(env.loc(x), s)] esac
+      | STI -> case env.pop2 of
+            [s, ref, env] -> [env.push(s), code <+> move(s, I(0, ref))]
+          esac
+      | DROP -> 
+          let [x, env] = env.pop in [env, code]
+      | DUP -> 
+          let x = env.peek in
+          let [s, env] = env.allocate in
+          [env, code <+> move(x, s)]
+      | GLOBAL (x) -> [addGlobal (env, x), code]
+      | CALL (f, nargs) -> let [env, callCode] = call (env, f, nargs) in [env, code <+> callCode]
+      | BEGIN (f, a, l) -> [enterFunction (env, f, a, l), code <+> prologue (f)]
+      | END -> let [env, epilogueCode] = epilogue (env) in [env, code <+> epilogueCode]
+      | STRING (x) -> let [env, n] = addString(env, x) in let [s, env] = env.allocate in
+        let [env, callCode] = call (env, "Bstring", 1) in [env, code <+> lea(M (n), s) <+> callCode] 
+      | BUILTIN (fname, nargs) -> let [env, callCode] = call (env, "L" ++ fname, nargs) in [env, code <+> callCode]
+      | SEXP (tag, n) -> 
+          let [t, env] = addTag(env, tag) in let [a, env] = popn (env, n) in
+          let env = push (env, L (makeBox(n))) in let env = pushn (env, a) in
+          let env = push (env, M (t)) in let [env, callCode] = call (env, "Bsexp", n + 2) in [env, code <+> callCode]
+      | ARRAY  (n) ->
+          let [a, env] = popn (env, n) in let env = push (env, L (makeBox(n))) in
+          let env = pushn (env, a) in let [env, callCode] = call (env, "Barray", n + 1) in [env, code <+> callCode]
+      | ELEM -> let [env, callCode] = call (env, "Belem", 2) in [env, code <+> callCode]
+      | STA -> let [env, callCode] = call (env, "Bsta", 3) in [env, code <+> callCode]
+      esac
     }, [env, emptyBuffer ()], code)
 }
 
