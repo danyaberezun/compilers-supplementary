@@ -478,7 +478,60 @@ fun savecode (env, nA) {
 -- 4. discard those parameters that were passed through stack from the stack;
 -- 5. restore saved live registers.         
 fun call (env, fLabel, nA) {
-  failure ("calls not implemented")
+  fun popArgs (env, n) {
+    if n == 0
+    then [env, {}]
+    else case env.pop of
+           [v, env] ->
+             case popArgs (env, n-1) of
+               [env, rest] -> [env, rest +++ {v}]
+             esac
+         esac
+    fi
+  }
+
+  fun distributeArgs (args) {
+    fun go (idx, args) {
+      case args of
+        {} -> [emptyBuffer (), emptyBuffer ()]
+      | a : tl ->
+          case go (idx + 1, tl) of
+            [toRegs, toStack] ->
+              if idx < nRegArgs
+              then [move (a, R (idx)) <+> toRegs, toStack]
+              else [toRegs, toStack <+ Push (a)]
+              fi
+          esac
+      esac
+    }
+
+    go (0, args)
+  }
+
+  case savecode (env, nA) of
+    [saves, restores] ->
+      case popArgs (env, nA) of
+        [env, args] ->
+          case distributeArgs (args) of
+            [regMoves, stackPushes] ->
+              var stackArgs = if nA > nRegArgs then nA - nRegArgs else 0 fi;
+              case env.allocate of
+                [ret, env] ->
+                  [env,
+                   saves
+                   <+> regMoves
+                   <+> stackPushes
+                   <+ Call (fLabel)
+                   <+> (if stackArgs == 0
+                        then emptyBuffer ()
+                        else singletonBuffer (Binop ("+", L (stackArgs * wordSize), rsp))
+                        fi)
+                   <+> move (rax, ret)
+                   <+> restores]
+              esac
+          esac
+      esac
+  esac
 }
 
 -- Gets a suffix for Set instruction from
@@ -494,9 +547,62 @@ fun suffix (op) {
   esac
 }
 
+fun operateOpnd (op, y, x) {
+  case op of
+    "+" ->
+      [rax, move (x, rax) <+ Binop ("+", y, rax)]
+  | "-" ->
+      [rax, move (x, rax) <+ Binop ("-", y, rax)]
+  | "*" ->
+      [rax, move (x, rax) <+ Binop ("*", y, rax)]
+  | "&&" ->
+      [rax,
+       move (x, rax) <+
+       Binop ("cmp", L (0), rax) <+
+       Set ("ne", "%al") <+>
+       move (y, r15) <+
+       Binop ("cmp", L (0), r15) <+
+       Set ("ne", "%r15b") <+
+       Binop ("&&", r15, rax) <+
+       Binop ("&&", L (255), rax)]
+  | "!!" ->
+      [rax,
+       move (x, rax) <+
+       Binop ("!!", y, rax) <+
+       Binop ("cmp", L (0), rax) <+
+       Set ("ne", "%al") <+
+       Binop ("&&", L (255), rax)]
+  | "/" ->
+      [rax,
+       move (y, r15) <+>
+       move (x, rax) <+
+       Cltd <+
+       IDiv (r15)]
+  | "%" ->
+      [rdx,
+       move (y, r15) <+>
+       move (x, rax) <+
+       Cltd <+
+       IDiv (r15)]
+  | _ ->
+      [rax,
+       move (x, rax) <+
+       Binop ("cmp", y, rax) <+
+       Set (suffix (op), "%al") <+
+       Binop ("&&", L (255), rax)]
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
+  fun touchGlobal (env, x) {
+    case x of
+      Glb (name) -> addGlobal (env, name)
+    | _          -> env
+    esac
+  }
+
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
@@ -509,6 +615,7 @@ fun compile (env, code) {
 	  [env, code <+> callCode]
       | WRITE ->
           let [env, callCode] = call (env, "Lwrite", 1) in
+          let [_, env] = pop (env) in
 	  [env, code <+> callCode]
 	  
       (* Assignment        
@@ -518,8 +625,74 @@ fun compile (env, code) {
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
       *)
-        
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      | CALL (f, n) ->
+         let [env, callCode] = call (env, f, n) in
+         [env, code <+> callCode]
+      | BEGIN (f, a, l) ->
+         let env = enterFunction (env, f, a, l) in
+         [env, code <+> prologue (f)]
+      | END ->
+         let [env, epi] = epilogue (env) in
+         [env, code <+> epi]
+      | GLOBAL (x) ->
+         [addGlobal (env, x), code]
+      | BINOP (op) ->
+         let [y, x, env] = pop2 (env) in
+         let [s, env] = allocate (env) in
+         let [opnd, opCode] = operateOpnd (op, y, x) in
+         [env, code <+> opCode <+> move (opnd, s)]
+      | ST (x) ->
+         case pop (touchGlobal (env, x)) of
+           [v, env] ->
+             case allocate (env) of
+               [s, env] ->
+                 [env, code <+> move (v, loc (env, x)) <+> move (v, s)]
+             esac
+         esac
+      | STI ->
+         let [v, x, env] = pop2 (env) in
+         case allocate (env) of
+           [s, env] ->
+             [env, code <+> move (x, rax) <+> move (v, rdx) <+ Mov (rdx, I (0, rax)) <+> move (rdx, s)]
+         esac
+      | LD (x) ->
+         case allocate (touchGlobal (env, x)) of
+           [s, env] -> [env, code <+> move (loc (env, x), s)]
+         esac
+      | LDA (x) ->
+         case allocate (touchGlobal (env, x)) of
+           [s, env] -> [env, code <+ Lea (loc (env, x), s)]
+         esac
+      | CONST (n) ->
+         case allocate (env) of
+           [s, env] -> [env, code <+ Mov (L (n), s)]
+         esac
+      | LABEL (l) ->
+         case if isBarrier (env) then retrieveStack (env, l) else env fi of
+           env -> [env, code <+ Label (l)]
+         esac
+      | JMP (l) ->
+         case setBarrier (setStack (env, l)) of
+           env -> [env, code <+ Jmp (l)]
+         esac
+      | CJMP (c, l) ->
+         case pop (env) of
+           [s, env] ->
+             case setStack (env, l) of
+               env -> [env, code <+> move (s, rax) <+ Binop ("cmp", L (0), rax) <+ CJmp (c, l)]
+             esac
+         esac
+      | DUP ->
+         case peek (env) of
+           z ->
+             case allocate (env) of
+               [s, env] -> [env, code <+> move (z, s)]
+             esac
+         esac
+      | DROP ->
+         case pop (env) of
+           [_, env] -> [env, code]
+         esac
       esac
     }, [env, emptyBuffer ()], code)
 }
