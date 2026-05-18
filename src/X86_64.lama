@@ -467,7 +467,7 @@ fun prologue (fLabel) {
 }
 
 fun epilogue (env) {
-  var metaDef = Meta (sprintf ("\t.set\t%s_SIZE,\t%d\n", env.currentFunction, env.staticSize * wordSize));
+  var metaDef = Meta (sprintf ("\t.set\t%s_SIZE,\t%d\n", env.currentFunction, env.staticSize * wordSize)); --TODO
 
   if compare (env.currentFunction, "main") == 0
   then [env, singletonBuffer (Mov (rbp, rsp)) <+ Pop (rbp) <+ Binop ("^", rax, rax) <+ Ret <+ metaDef]
@@ -534,8 +534,34 @@ fun savecode (env, nA) {
 -- Generates a static call
 -- Don't forget to handle buitins (Barray/Bsexp), and
 -- to clear rax before calling to variable arg funcatio
-fun call (env, fLabel, nA) {
-  emptyBuffer ()
+fun call(env, label, nA) {
+	case savecode(env,nA) of [pushes,pops]->
+		var n=nA;
+		var moves=emptyBuffer();
+		while n>nRegArgs do
+			n:=n-1;
+			case env.pop of [s,envn]->
+				env:=envn;
+				moves:=singletonBuffer(Push(s))<+>moves
+			esac
+		od;
+		while n do
+			n:=n-1;
+			case env.pop of [s,envn]->
+				env:=envn;
+				moves:=move(s,R(n))<+>moves
+			esac
+		od;
+		case env.allocate of [ans,env]->
+			if nA>nRegArgs then
+				pops:=singletonBuffer(Binop("+",L(wordSize*(nA-nRegArgs)),rsp))<+>pops
+			fi;
+			if case label of "Barray"->1|"Bsexp"->1|_->0 esac then
+				moves:=moves<+Mov(L(0),rax)
+			fi;
+			[env,pushes<+>moves<+Call(label)<+>pops<+>move(rax,ans)]
+		esac
+	esac
 }
 
 -- Gets a suffix for Set instruction from
@@ -548,6 +574,7 @@ fun suffix (op) {
   | "!=" -> "ne"
   | ">=" -> "ge"
   | ">"  -> "g"
+  |_->0
   esac
 }
 
@@ -564,42 +591,157 @@ fun toFixedNum (r) {
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
-fun compile (env, code) {
-  foldl (
-    fun ([env, scode], i) {
-      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+fun lByName(nm){
+	case nm of
+		"length"->"Llength"
+		|"read"->"Lread"
+		|"write"->"Lwrite"
+	esac
+}
+fun popMany(env,n){
+	case n of
+		0->[{},env]
+		|_->case env.pop of [s,env]->
+			case popMany(env,n-1) of [r,env] ->
+				[s:r,env]
+			esac
+		esac
+	esac
+}
+fun pushMany(env,a){
+	case a of
+		{}->env
+		|aa:r->case pushMany(env,r) of env->
+			env.push(aa)
+		esac
+	esac
+}
+fun compileB (env, buffer, mycode){
+	case mycode of
+		[]->[env,buffer]
+		|a:b->
+			case compileB(env,buffer,b) of
+			[env,bufferb]->
+				var code = bufferb <+ Meta ("# " ++ showSMInsn (a) ++ "\n");
+				var result=(--printf(a.string);printf("\n");
+				case a of
+				BEGIN(f,a,l)->[enterFunction(env,f,a,l),code<+>prologue(f)]
+				|END->
+					case epilogue(env) of
+						[env,endcode]->[env,code<+>endcode]
+					esac
+				|CALL(f,n)->
+					case call(env,f,n) of
+						[env,callcode]->[env,code<+>callcode]
+					esac
+				|BUILTIN(f,n)->
+					case call(env,lByName(f),n) of
+						[env,callcode]->[env,code<+>callcode]
+					esac
+				|GLOBAL(x)->[addGlobal(env,x),code]
+				|LD(x) ->
+					case env.allocate of
+						[s,env]->[env,code<+>move(env.loc(x),s)]
+					esac
+				|LDA(x)->
+					case env.allocate of
+						[s,env]->[env,code<+Lea(env.loc(x),rax)<+>move(rax,s)]
+					esac
+				|CONST(x)->
+					case env.allocate of
+						[s,env]->[env,code<+Mov(L(x*2+1),s)]
+					esac
+				|ST(x) ->
+					case env.pop of
+						[s,env]->[env,code<+>move(s,env.loc(x))]
+					esac
+				|STI  ->case env.pop2 of
+						[f,v,env]->
+							case env.allocate of
+								[s,env]->[env,code<+Mov(v,rax)<+Mov(f,I(0,rax))<+>move(f,s)]
+							esac
+					esac
+				|DUP ->case env.peek of
+						s->case env.allocate of
+							[f,env]->[env,code<+>move(s,f)]
+						esac
+					esac
+				|DROP->case env.pop of
+						[s,env]->[env,code]
+					esac
+				|BINOP(x)->
+					case env.pop2 of
+						[s,f,env]->
+							case env.allocate of
+								[r,env]->
+								var straight=emptyBuffer()
+							<+Mov(L(0),rax)<+Binop("cmp",L(0),f)<+Set("ne","%al")<+Mov(rax, f)
+							<+Mov(L(0),rax)<+Binop("cmp",L(0),s)<+Set("ne","%al")<+Mov(rax, s);
+								var codediv=case s of
+									R(2)->listBuffer({Mov(s,rbx),Mov(f,rax),Cltd,IDiv(rbx)})
+									|_->listBuffer({Mov(f,rax),Cltd,IDiv(s)})
+								esac;
+								var code0=code<+Sar1(s)<+Sar1(f);
+								var code2=case x of
+										"&&"->code0<+>straight
+										|"!!"->code0<+>straight
+										|_->code0
+									esac;
+								case case x of
+									"/"->[env,code0<+>withRDX(env,codediv)<+Mov(rax,r)]
+									|"%"->[env,code0<+>withRDX(env,codediv<+Mov(rdx,rax))<+Mov(rax,r)]
+									|_->
+									case suffix(x) of
+										0->[env,code2<+Binop(x,s,f)<+>move(f,r)]
+										|su->[env,code0<+Binop("^",rax,rax)<+Binop("cmp",s,f)<+Set(su,"%al")<+Mov(rax, r)]
+									esac
+								esac of [env,code]->[env,code<+>toFixedNum(r)] esac
+							esac
+					esac
+				|LABEL(x)->[env.retrieveStack(x),code<+Label(x)]
+				|JMP(x)->[env.setStack(x).setBarrier,code<+Jmp(x)]
+				|CJMP(x,y)->case env.pop of
+					[s,env]->[env.setStack(y),code<+Binop("cmp",L(1),s)<+CJmp(x,y)]
+					esac
+				|STRING(s)->case env.addString(s) of [env,s]->
+						case env.allocate of [v,env]->
+						case call(env,"Bstring",1) of
+						[env,callcode]->[env,code<+>lea(M(s),v)<+>callcode]
+						esac esac esac
+				|ELEM->case call(env,"Belem",2) of
+						[env, callcode]->[env,code<+>callcode]
+					esac
+				|STA->case call(env,"Bsta",3) of
+						[env,callcode]->[env,code<+>callcode]
+					esac
+				|ARRAY(n)->
+					case popMany(env,n) of [a,env]->
+					case pushMany(env.push(L(2*n+1)),a) of env->
+					case call(env,"Barray",n+1) of
+						[env,callcode]->[env,code<+>callcode]
+					esac
+					esac
+					esac
+				|SEXP(s,n)->
+					case env.addTag(s) of [s,env]->
+					case popMany(env,n) of [a,env]->
+					case pushMany(env.push(L(2*n+1)),a) of env->
+					case call(env.push(M(s)),"Bsexp",n+2) of
+						[env,callcode]->[env,code<+>callcode]
+					esac esac esac esac
 
-      -- printf ("compiling %s\n", showSMInsn (i));
-      
-      case i of      
-        READ ->
-          let [env, callCode] = call (env, "Lread", 0) in
-	  [env, code <+> callCode]
-      | WRITE ->
-          let [env, callCode] = call (env, "Lwrite", 1) in
-	  [env, code <+> callCode]
-	  
-      (* Assignment
-        1
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-      *)         
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)      
-      esac        
-    }, [env, emptyBuffer ()], code)
+			esac);
+			if env.isBarrier then
+				case a of
+				  LABEL(x)->[env.retrieveStack(x),code<+Label(x)]
+				  |_->[env,code]
+				esac
+			else result fi
+		esac
+	esac
+}
+fun compile (env, code) {
+	compileB(env,emptyBuffer(),code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
