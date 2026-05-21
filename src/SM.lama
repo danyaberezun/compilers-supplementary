@@ -128,12 +128,36 @@ fun eval (env, w, insns) {
     inner (n, {}, list)
   }
 
+  fun matchPatt (v, p) {
+    case p of
+      Tag (tag, n) ->
+        case v of
+          Sexp (vtag, xs) -> compare (tag, vtag) == 0 && xs.length == n
+        | _               -> false
+        esac
+    | Array (n) ->
+        case v of
+          xs@#array -> xs.length == n
+        | _         -> false
+        esac
+    | String (s) ->
+        case v of
+          x@#str -> compare (x, s) == 0
+        | _      -> false
+        esac
+    esac
+  }
+
   -- Core interpreter: takes a configuration and a program, returns a configuration
   fun eval (c@[st, cst, s, w], insns) {
     case insns of
       {}                 -> c
     | LABEL (_, _): rest -> eval(c, rest)
-    | META (_): rest     -> eval(c, rest)
+    | META (m): rest     ->
+        case m of
+          MF ([line, col]) -> failure ("match failure at %d:%d\n", line, col)
+        | _                -> eval(c, rest)
+        esac
     | JMP (lab): _       -> eval(c, fromLabel (env, lab))
     | CJMP (cond, lab): rest ->
         let v: stack1 = st in
@@ -172,6 +196,9 @@ fun eval (env, w, insns) {
         case take (st, n) of
           [stack1, args] -> eval([Sexp (tag, listArray (args)) : stack1, cst, s, w], rest)
         esac
+    | PATT(p): rest      ->
+        let v: stack1 = st in
+          eval([(if matchPatt (v, p) then 1 else 0 fi) : stack1, cst, s, w], rest)
     | ELEM: rest         ->
         let i: x: stack1 = st in
           case x of
@@ -528,6 +555,39 @@ public fun compileSM (stmt) {
     esac
   }
 
+  fun patternValue (path) {
+    foldl (fun (code, i) {code +++ {CONST (i), ELEM}}, {DUP}, path)
+  }
+
+  fun compilePattern (pat, path, failLab) {
+    case pat of
+      Any ->
+        {}
+    | Named (_, p) ->
+        compilePattern (p, path, failLab)
+    | Const (n) ->
+        patternValue (path) +++ {CONST (n), BINOP ("=="), CJMP ("z", failLab)}
+    | String (s) ->
+        patternValue (path) +++ {PATT (String (s)), CJMP ("z", failLab)}
+    | Sexp (tag, ps) ->
+        case foldl (fun ([code, i], p) {
+                      [code +++ compilePattern (p, path +++ {i}, failLab), i + 1]
+                    },
+                    [patternValue (path) +++ {PATT (Tag (tag, ps.size)), CJMP ("z", failLab)}, 0],
+                    ps) of
+          [code, _] -> code
+        esac
+    | Array (ps) ->
+        case foldl (fun ([code, i], p) {
+                      [code +++ compilePattern (p, path +++ {i}, failLab), i + 1]
+                    },
+                    [patternValue (path) +++ {PATT (Array (ps.size)), CJMP ("z", failLab)}, 0],
+                    ps) of
+          [code, _] -> code
+        esac
+    esac
+  }
+
   fun compileExpr (env, expr) {
     case expr of
       Var(x) ->
@@ -572,6 +632,37 @@ public fun compileSM (stmt) {
                             [env5, condCode +++ {CJMP ("z", elseLab)} +++ thenCode +++ {JMP (exitLab), LABEL (elseLab, false)} +++ elseCode +++ {LABEL (exitLab, false)}]
                         esac
                     esac
+                esac
+            esac
+        esac
+    | Case (matched, brs, loc) ->
+        case compileExpr (env, matched) of
+          [env1, matchedCode] ->
+            case genLabel (env1) of
+              [exitLab, env2] ->
+                fun compileBranches (env, brs) {
+                  case brs of
+                    {} ->
+                      [env, {META (MF (loc))}]
+                  | [pat, br] : brs1 ->
+                      case genLabel (env) of
+                        [failLab, env3] ->
+                          case compileExpr (env3, br) of
+                            [env4, brCode] ->
+                              case compileBranches (env4, brs1) of
+                                [env5, restCode] ->
+                                  [env5,
+                                   compilePattern (pat, {}, failLab) +++
+                                   {DROP} +++ brCode +++
+                                   {JMP (exitLab), LABEL (failLab, false)} +++ restCode]
+                              esac
+                          esac
+                      esac
+                  esac
+                }
+
+                case compileBranches (env2, brs) of
+                  [env3, branchCode] -> [env3, matchedCode +++ branchCode +++ {LABEL (exitLab, false)}]
                 esac
             esac
         esac
