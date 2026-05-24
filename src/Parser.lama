@@ -88,6 +88,11 @@ fun list (item) {
   listBy (item, s(","))
 }
 
+-- Helper parser: parses a non-empty list of items separated by "|"
+fun listPipe (item) {
+  listBy (item, s("|"))
+}
+
 -- Helper AST function: expands a "raw" scope expression, reifying
 -- initializers into assignments
 fun expandScope (defs, expr) {
@@ -160,6 +165,7 @@ fun reifyPatternBindings (matched, brs) {
           Sexp  (_, ps)   -> collectList (path, ps)
         | Array (ps)      -> collectList (path, ps)
         | Named (name, p) -> [name, path] : collectBindings (path, p)
+        | Var   (name)    -> {[name, path]}
         |  _              -> {}
         esac
       }
@@ -184,12 +190,7 @@ fun reifyPatternBindings (matched, brs) {
 
 var
   primary = memo $ eta syntax (
-    -- S-expression
-				      loc=pos tag=uident
-				              args=(args=inbr[s("("), list (syntax (e=exp {e (Val)})), s(")")]? {case args of
-				      Some (args) -> args | None -> {} esac}) {fun (a) {assertValue (a, Sexp (tag, args), loc)}} |
-
-                                      --array constant
+    --array constant
     loc=pos x=inbr[s("["), list0(syntax (e=exp {e(Val)})), s("]")] {
       fun (a) {assertValue (a, chainST (x) => fun (x) {Array (x)}, loc)}
     } |
@@ -231,8 +232,125 @@ var
                         esac, loc)}
     } |
 
-    $(failure ("the rest of primary parsing in not implemented\n"))),
+    kSkip {
+      fun (a) {assertVoid(a, returnST $ Skip, loc)}
+    } |
 
+    kIf e=exp kThen s1=exp s2=ifTail {
+      fun (a) {
+        e(Val) =>> fun(e) {
+        s1(a) =>> fun(s1) {
+        s2(a) => fun(s2) {
+        If(e, s1, s2)
+      }}}}
+    } |
+
+    kWhile e=exp kDo s=scopeExpr kOd {
+      fun (a) {
+        assertVoid(a, 
+          e(Val) =>> fun(e) {
+          s(Void) => fun(s) {
+          While(e, s)
+        }}, loc)}
+    } |
+
+    kDo s=scopeExpr kWhile e=exp kOd {
+      fun (a) {
+        assertVoid(a, 
+          s(Void) =>> fun(s) {
+          e(Val) => fun(e) {
+          distributeScope(s, fun(body) {DoWhile(body, e)})
+        }}, loc)}
+    } |
+
+    kFor s1=scopeExpr s[","] e=exp s[","] s2=exp kDo s3=scopeExpr kOd {
+      fun (a) {
+        assertVoid(a, 
+          s1(Void) =>> fun(s1) {
+          e(Val) =>> fun(e) {
+          s3(Void) =>> fun(s3) {
+          s2(Void) => fun(s2) {
+          distributeScope(s1, fun(init) {Seq(init, While(e, Seq(s3, s2)))})
+        }}}}, loc)}
+    } |
+
+    kCase e=exp kOf cases=listPipe[caseBranch] kEsac {
+      fun (a) {
+        e(Val) =>> fun(e) {
+        fun(env) {freshName (env)} =>> fun(name) {
+        chainST(map(fun(b){b(a)}, cases)) => fun(cases) {
+          expandScope(
+            {Var({[name, Some(e)]})}, Case(Var(name),
+            reifyPatternBindings(name, cases), loc))
+      }}}}
+    } |
+
+    s["("] e=scopeExpr s[")"] {e}
+  ),
+  
+  ifTail = memo $ eta syntax (
+    kFi {fun (a) {assertVoid(a, returnST $ Skip, loc)}} |
+
+    kElse s=exp kFi {fun (a) {s(a)}} |
+
+    kElif e=exp kThen s1=exp s2=ifTail {
+      fun (a) {
+        e(Val)  =>> fun (e_ast)  {
+        s1(a)   =>> fun (s1_ast) {
+        s2(a)   =>  fun (s2_ast) {
+          If (e_ast, s1_ast, s2_ast)
+        }}}}
+    }
+  ),
+
+  pat = memo $ eta syntax (
+    -- array constant
+    loc=pos x=inbr[s("["), list0(pat), s("]")] {
+      Array(x)
+    } |
+
+    -- string constant
+    loc=pos x=strlit {
+      String(x)
+    } |
+
+    -- character literal
+    loc=pos x=chrlit {
+      Const(x)
+    } |
+
+    -- decimal constant
+    loc=pos x=decimal {
+      Const(stringInt(x))
+    } |
+
+    -- identifier
+    x=lident {
+      Var(x)
+    } |
+
+    -- S-expression
+    loc=pos x=uident args=inbr[s("("), list0(pat), s(")")]? {
+      Sexp(x, case args of
+                None        -> {}
+              | Some (args) -> args
+              esac)
+    } |
+
+    x=lident s["@"] p=pat {
+      Named(x, p)
+    } |
+
+    s["_"] {
+      Wildcard
+    }
+  ),
+  
+  caseBranch = memo $ eta syntax (
+    p=pat s["->"] s=exp {
+      fun (a) {s(a) => fun(s) {[p, s]}}
+    }
+  ),
 
   basic = memo $ eta (
     expr ({[Right, {[s (":="), fun (l, loc, r) {
@@ -322,7 +440,5 @@ var
    }
   );
 
-                       s1=basic s[";"] s2=exp {fun (a) {Seq(s1(Void), s2(a))}}
-                     );
 -- Public top-level parser
 public parse = syntax (s=scopeExpr {s(Void) (emptyEnv ()) [1]});

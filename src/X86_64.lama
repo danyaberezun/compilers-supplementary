@@ -592,34 +592,34 @@ fun call (env, fLabel, nA) {
     esac
   }
 
-  fun pushArgs(args, i) {
+  fun pushStackArgs(args, i) {
     case args of
       {} -> emptyBuffer()
     | arg : args ->
         if i >= nRegArgs
-        then pushArgs(args, i + 1) <+> singletonBuffer(Push(arg))
-        else pushArgs(args, i + 1)
+        then pushStackArgs(args, i + 1) <+> singletonBuffer(Push(arg))
+        else pushStackArgs(args, i + 1)
         fi
     esac
   }
 
-  fun moveRegs(args, i) {
+  fun pushRegArgs(args, i) {
     case args of
       {} -> emptyBuffer()
     | arg : args ->
         if i < nRegArgs
-        then move(arg, R(i)) <+> moveRegs(args, i + 1)
+        then pushRegArgs(args, i + 1) <+> singletonBuffer(Push(arg))
         else emptyBuffer()
         fi
     esac
   }
 
-  fun moveRegsReversed(args, i) {
+  fun popRegArgs(args, i) {
     case args of
       {} -> emptyBuffer()
     | arg : args ->
         if i < nRegArgs
-        then moveRegsReversed(args, i + 1) <+> move(arg, R(i))
+        then singletonBuffer(Pop(R(i))) <+> popRegArgs(args, i + 1)
         else emptyBuffer()
         fi
     esac
@@ -635,10 +635,7 @@ fun call (env, fLabel, nA) {
                    | _        -> args
                    esac in
 
-  let pushArgsCode = pushArgs(args, 0) in
-  let moveRegsCode = moveRegs(args, 0) in
-  
-  let moveArgsCode = pushArgsCode <+> moveRegsCode in
+  let moveArgsCode = pushStackArgs(args, 0) <+> pushRegArgs(args, 0) <+> popRegArgs(args, 0) in
 
   let argsLen = case fLabel of
                         "Barray" -> nA + 1
@@ -743,7 +740,7 @@ fun compile (args, env, code) {
       -- are violated
       if env.isBarrier
       then case i of
-             LABEL (l, true) -> [env.dropBarrier, code <+ Label (l)]
+             LABEL (l, true) -> [env.retrieveStack(l).dropBarrier, code <+ Label (l)]
            | LABEL (l, _)    -> if hasStack (env, l)
                                 then [retrieveStack (env, l), code <+ Label (l)]
                                 else [env, code]
@@ -808,7 +805,7 @@ fun compile (args, env, code) {
         | DROP      -> let [_, env] = env.pop in [env, code]
         | DUP       -> let s = env.peek in
                        case env.allocate of [s2, env] -> [env, code <+> move(s, s2)] esac
-        | LABEL(l)  -> let env = if env.isBarrier then env.retrieveStack(l) else env fi in
+        | LABEL(l, _)  -> let env = if env.isBarrier then env.retrieveStack(l) else env fi in
                        [env, code <+ Label(l)]
         | JMP(l)    -> [env.setStack(l).setBarrier, code <+ Jmp(l)]
         | CJMP("z", l) -> let [s, env] = env.pop in
@@ -832,16 +829,35 @@ fun compile (args, env, code) {
         | ARRAY(n)  -> let [env, bArrayCode] = env.call("Barray", n) in
                        [env, code <+> bArrayCode]
         | SEXP(t, n) -> let [s, env] = env.allocate in
-                       let moveSexpHashCode = move(L(hash(t)), s) in 
+                       let moveSexpHashCode = move(L(tagHash(t)), s) in 
                        let [env, bStaCode] = env.call("Bsexp", n + 1) in
-                       [env, code <+> moveSexpHashCode <+> bStaCode]
+                       let [s_res, env] = env.pop in
+                       let env = env.push(s_res) in
+                       let fixTagCode = move(L(tagHash(t)), I(-16, s_res)) in
+                       [env, code <+> moveSexpHashCode <+> bStaCode <+> fixTagCode]
         | STA       -> let [env, bStaCode] = env.call("Bsta", 3) in
                        [env, code <+> bStaCode]
         | ELEM      -> let [env, bElemCode] = env.call("Belem", 2) in
                        [env, code <+> bElemCode]
-        | BUILTIN(f, n) -> let [env, builtinCallCode] = env.call(sprintf("L%s", f), n) in
-                       [env, code <+> builtinCallCode]
-        |_          -> failure("codegeneration for instruction %s is not yet implemented\n", i.string)
+        | PATT(patt) -> case patt of
+                          Tag(t, n) -> let [v, env] = env.pop in
+                                       let env = env.push(v).push(L(tagHash(t))).push(L(makeBox(n))) in
+                                       let [env, callCode] = env.call("Btag", 3) in
+                                       [env, code <+> callCode]
+                        | Array(n) -> let [v, env] = env.pop in
+                                      let env = env.push(v).push(L(makeBox(n))) in
+                                      let [env, callCode] = env.call("Barray_patt", 2) in
+                                      [env, code <+> callCode]
+                        esac
+        | BUILTIN(f, n) -> let fname = case f of
+                                         "match_failure" -> "Bmatch_failure"
+                                       | "string_patt"   -> "Bstring_patt"
+                                       | _               -> sprintf("L%s", f)
+                                       esac in
+                           let [env, builtinCallCode] = env.call(fname, n) in
+                           let env = if compare(f, "match_failure") == 0 then env.setBarrier else env fi in
+                           [env, code <+> builtinCallCode]
+        |_              -> failure("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
       fi
     }, [env, emptyBuffer ()], code)
