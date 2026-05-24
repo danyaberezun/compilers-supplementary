@@ -2,6 +2,7 @@
 # include <stdarg.h>
 # include <malloc.h>
 # include <string.h>
+#include <stdlib.h>
 
 # define ALIGN_STACK asm ("andq $0xFFFFFFFFFFFFFFF0,%rsp")
 
@@ -62,7 +63,7 @@ void* Bsexp (long k, ...) {
   
   for (i = 0; i<=n; i++) {
     ai = va_arg(args, long);
-    if (i == n) r->tag = ai;
+    if (i == n) r->tag = (void*) ai;
     else ((long*) r->data.contents)[i] = ai;
   }
   
