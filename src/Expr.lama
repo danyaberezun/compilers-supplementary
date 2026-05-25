@@ -92,7 +92,7 @@ fun addFunction (state, name, args, body) {
 fun evalList (c, exprs) {
   case foldl (fun ([c, vals], e) {
                 case eval (c, e) of
-                  [c, vl] -> [c, vl : vals]
+                  [c, v] -> [c, v : vals]
                 esac
               },
               [c, {}],
@@ -101,8 +101,176 @@ fun evalList (c, exprs) {
   esac
 }
 
+fun addDefs (state, defs) {
+  foldl (fun (s, def) {
+    case def of
+      Var (names) -> addNames (s, names)
+    | Val (names) -> addNames (s, names)
+    | Fun (name, args, body) -> addFunction (s, name, args, body)
+    esac
+  }, state, defs)
+}
+
+fun addVars (state, names, values) {
+  foldl (fun (s, name_and_value) {
+    case name_and_value of
+      [n, v] -> s.addName (n, Val (v))
+    esac
+  }, state, zip (names, values))
+}
+
+-- Matches a runtime value `v` against a pattern `p`.
+-- Returns true on match (variables are pre-extracted by reifyPatternBindings
+-- via Elem(Var(matched),Const(i)) wrappers in the branch body).
+fun matchPattern (v, p) {
+  case p of
+    Wildcard         -> true
+  | Named  (_, p)    -> matchPattern (v, p)
+  | Const  (n)       -> case v of x@Sexp (_, _) -> false | _ -> compare (v, n) == 0 esac
+  | String (s)       -> case v of x@String -> compare (v, s) == 0 | _ -> false esac
+  | Sexp   (tag, ps) ->
+      case v of
+        Sexp (vt, vargs) ->
+          if compare (vt, tag) == 0
+          then matchPatterns (vargs, ps, 0)
+          else false fi
+      | _ -> false
+      esac
+  | Array  (ps)      ->
+      case v of
+        x@Sexp (_, _) -> false
+      | x@String     -> false
+      | arr          -> matchPatterns (arr, ps, 0)
+      esac
+  esac
+}
+
+-- Walk vargs (array) and ps (list) in parallel; succeed iff both
+-- exhaust together and each pattern matches.
+fun matchPatterns (arr, ps, i) {
+  case ps of
+    {}      -> compare (i, arr.length) == 0
+  | p : ps' ->
+      if compare (i, arr.length) < 0
+      then if matchPattern (arr[i], p)
+           then matchPatterns (arr, ps', i+1)
+           else false fi
+      else false fi
+  esac
+}
+
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Assn (r, e) ->
+      let [c@[st, w], {ref, v}] = evalList (c, {r, e}) in
+      case ref of
+        Ref (x) -> lookupVal (st, x); [[st <- [x, Val (v)], w], v]
+      | ElemRef (arr, idx) -> arr[idx] := v; [c, v]
+      esac
+  | Set (x, e) ->
+      let [c@[st, w], v] = eval (c, e) in
+      lookupVal (st, x); [[st <- [x, Val (v)], w], v]
+  | Scope (defs, e) ->
+      case eval ([addDefs (enterScope (s), defs), w], e) of
+        [c@[s, w], v] -> [[leaveScope (s), w], v]
+      esac
+  | Seq (e1, e2) ->
+      case evalList (c, {e1, e2}) of
+        [c, {v1, v2}] -> [c, v2]
+      esac
+  | Skip -> [c, Void]
+  | If (e, e1, e2) ->
+      case eval (c, e) of
+        [c, v] -> if v != 0 then eval (c, e1) else eval(c, e2) fi
+      esac
+  | While (e, e1) ->
+      case eval (c, e) of
+        [c, v] ->
+          if v != 0 then
+            case eval (c, e1) of
+              [c, Void] -> eval (c, While (e, e1))
+            esac
+          else
+            [c, Void]
+          fi
+      esac
+  | DoWhile (e1, e) ->
+      case eval (c, e1) of
+        [c, Void] ->
+          case eval (c, e) of
+            [c, v] ->
+              if v != 0 then
+                eval (c, DoWhile (e1, e))
+              else [c, Void] fi
+          esac
+      esac
+  | Var (x) ->
+      lookupVal (s, x);
+      case s.lookup (x) of
+        Val (v) -> [c, v]
+      esac
+  | Ref (x) -> lookupVal (s, x); [c, Ref (x)]
+  | Const (n) -> [c, n]
+  | Binop (op, l, r) ->
+      case evalList (c, {l, r}) of
+        [c, {vl, vr}] -> [c, evalOp (op, vl, vr)]
+      esac
+  | Ignore (e) ->
+      case eval (c, e) of
+        [c, v] -> [c, Void]
+      esac
+  | Call (x, exprs) ->
+      lookupFun (s, x);
+      let Fun (args, e) = s.lookup (x) in
+      let [c@[s, w], vals] = evalList (c, exprs) in
+      let s' = addVars (enterFunction (s), args, vals) in
+      let [c@[s', w], v] = eval([s', w], e) in
+      [[leaveFunction (s, getGlobal (s')), w], v]
+  | Builtin (x, exprs) ->
+      let [c@[s, w], vals] = evalList (c, exprs) in
+      let [v, w] = evalBuiltin (x, vals, w) in
+      [[s, w], v]
+  | String (v) -> [c, v]
+  | Array (exprs) -> let [c, vals] = evalList (c, exprs) in [c, listArray (vals)]
+  | Elem (ea, ei) ->
+      let [c, arr] = eval (c, ea) in
+      let [c, idx] = eval (c, ei) in
+      let arr =
+        case arr of
+          Sexp (_, arr) -> arr
+        | arr -> arr
+        esac
+      in
+      [c, arr[idx]]
+  | ElemRef (ea, ei) ->
+      let [c, arr] = eval (c, ea) in
+      let [c, idx] = eval (c, ei) in
+      let arr =
+        case arr of
+          Sexp (_, arr) -> arr
+        | arr -> arr
+        esac
+      in
+      [c, ElemRef (arr, idx)]
+  | Sexp (tag, exprs) ->
+      let [c, args] = evalList (c, exprs) in
+        [c, Sexp (tag, listArray (args))]
+  | Case (scrut, brs, loc) ->
+      let [c, v] = eval (c, scrut) in
+      evalCase (c, v, brs, loc)
+  | _ -> failure ("eval expr is not implemented for %s", expr.string)
+  esac
+}
+
+fun evalCase (c, v, brs, loc) {
+  case brs of
+    {} -> failure ("match failure at %d:%d\n", loc.fst, loc.snd)
+  | [pat, br] : rest ->
+      if matchPattern (v, pat)
+      then eval (c, br)
+      else evalCase (c, v, rest, loc)
+      fi
+  esac
 }
 
 
