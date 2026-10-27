@@ -90,6 +90,7 @@ fun insnString (insn) {
   | IDiv  (s1)         -> sprintf ("\tidivq\t%s\n", opndString (s1))
   | Binop (op, s1, s2) -> sprintf ("\t%s\t%s,\t%s\n", binopString (op), opndString (s1), opndString (s2))
   | Mov   (s1, s2)     -> sprintf ("\tmovq\t%s,\t%s\n", opndString (s1), opndString (s2))
+  | Movzx (s1, s2)     -> sprintf ("\tmovzx\t%s,\t%s\n", s1, s2)
   | Push  (s)          -> sprintf ("\tpushq\t%s\n", opndString (s))
   | Pop   (s)          -> sprintf ("\tpopq\t%s\n", opndString (s))
   | Ret                -> "\tret\n"
@@ -263,6 +264,14 @@ fun memOpnd (opnd) {
   esac
 }
 
+-- Checks if an operand resides in a register
+fun regOpnd (opnd) {
+  case opnd of
+    R (_) -> true
+  | _     -> false
+  esac
+}
+
 -- Generates a move between locations, using
 -- intermediate register if needed
 fun move (from, to) {
@@ -285,12 +294,83 @@ fun suffix (op) {
   esac
 }
 
+fun isCmp (op) {
+  case op of
+    "<"  -> true
+  | "<=" -> true
+  | "==" -> true
+  | "!=" -> true
+  | ">=" -> true
+  | ">"  -> true
+  | _    -> false
+  esac
+}
+
+-- Assures value is in a register
+fun assureRegister (location, workbench) {
+    if regOpnd (location)
+    then [location, emptyBuffer ()]
+    else [workbench, move (location, workbench)] fi
+}
+
+fun compileArithmetic(op, left, right, out) {
+    emptyBuffer() 
+    <+ Binop(op, left, right)
+    <+> move(right, out)
+}
+
+fun compileIDiv(op, left, right) {
+    move(right, rax)
+    <+ Cqo
+    <+ IDiv(left)
+}
+
+fun compileLogic(op, left, right, out) {
+    compileBinop("!=", left, L(0), left)
+    <+> compileBinop("!=", right, L(0), right)
+    <+ Binop(op, left, right)
+    <+ Mov(rax, out)
+}
+
+fun compileCmp(op, left, right, out) {
+    let [left_reg, arc1] = assureRegister(left, rax) in
+    let [right_reg, arc2] = assureRegister(right, rdx) in
+    emptyBuffer()
+    <+> arc1
+    <+> arc2
+    <+ Binop("cmp", left_reg, right_reg)
+    <+ Set(suffix(op), "%al")
+    <+ Movzx("%al", "%eax")
+    <+ Mov(rax, out)
+}
+
+-- Compiles binop expr
+fun compileBinop (op, left, right, out) {
+    case op of
+      "+" -> compileArithmetic(op, left, right, out)
+    | "-" -> compileArithmetic(op, left, right, out)
+    | "*" -> compileArithmetic(op, left, right, out)
+    | "/" -> compileIDiv(op, left, right) <+> move(rax, out)
+    | "%" -> compileIDiv(op, left, right) <+> move(rdx, out)
+    | "&&" -> compileLogic(op, left, right, out)
+    | "!!" -> compileLogic(op, left, right, out)
+    | cmp -> compileCmp(op, left, right, out)
+    esac
+}
+
+fun log(message) {
+    let stderr = fopen("stderr", "a") in
+    fprintf(stderr, message ++ "\n");
+    fclose(stderr)
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      log(i.string);
       case i of
         READ ->
           case env.allocate of
@@ -300,6 +380,22 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
           esac
+      | BINOP(op) -> 
+          let [left, env] = env.pop in
+          let [right, env] = env.pop in
+          let [out, env] = env.allocate in
+          let opCode = compileBinop (op, left, right, out) in
+          [env, code <+> opCode]
+      | ST(x) ->
+          let [s, env] = env.pop in
+          let global_loc = env.loc(x) in
+          let env = env.addGlobal(x) in
+          [env, code <+> move (s, global_loc)]
+      | LD(x) ->
+          let [s, env] = env.allocate in 
+          let global_loc = env.loc(x) in
+          [env, code <+> move (global_loc, s)]
+      | CONST(x) -> let [s, env] = env.allocate in [env, code <+> move(L(x), s)]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
