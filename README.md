@@ -8,7 +8,7 @@
 Now our compiler has to work in three modes (see [`Driver`](src/Driver.lama)):
 * [old] (`-i` option) direct interpretation of `.lama` files
 * [old] (`-s` option) compilation to SM and SM program interpretation
-* [new] (`-o` option) compilation to X86 (via SM)
+* [new] (`-o` option) compilation to X86/64 (via SM)
 
 Advice: take a look into Lama Specification section 3.5 and functions `expr` and `syntax`
 
