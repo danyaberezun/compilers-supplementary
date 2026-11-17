@@ -299,24 +299,96 @@ fun suffix (op) {
   esac
 }
 
+-- Generates a binary operation between arguments 'a' and 'b', 
+-- using intermediate register if needed
+fun binop (instr, a, b) {
+   if memOpnd(a) then singletonBuffer(Mov(a, eax)) <+ Binop(instr, b, eax) <+ Mov(eax, a)
+   else singletonBuffer(Binop(instr, b, a))
+   fi
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  foldl (
-    fun ([env, scode], i) {
-      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+   foldl(fun ([env, scode], i) {
+      var code = scode <+ Meta("# " ++ showSMInsn(i) ++ "\n");
+
+      fun binMath (instr) {
+         let [b, a, env] = env.pop2 in [env.push(a), code <+> binop(instr, a, b)]
+      }
+
+      fun div(env) {
+         let [divider, dividend, env] = env.pop2 in
+         let [s, env] = env.allocate in [env, code 
+               <+> move(dividend, eax)
+               <+  Cqo
+               <+  IDiv(divider)
+               <+> move(eax, s)
+            ]
+      }
+
+      fun mod(env) {
+         let [divider, dividend, env] = env.pop2 in
+         let [s, env] = env.allocate in [env, code 
+               <+> move(dividend, eax)
+               <+  Cqo
+               <+  IDiv(divider)
+               <+> move(edx, s)
+            ]
+      }
+
+      fun compareTwo(op, a, b) {
+            binop("^", eax, eax)
+            <+> binop("cmp", a, b)
+            <+  Set(suffix(op), "%al")
+            <+> move(eax, a)
+      }
+
+      fun logical(op) {
+        let [b, a, env] = env.pop2 in [env.push(a), code 
+              <+> compareTwo(">", a, L(0))
+              <+> compareTwo(">", b, L(0))
+              <+> binop(op, a, b)
+            ]
+      }
+
+      fun compare(op) {
+        let [b, a, env] = env.pop2 in [env.push(a), code <+> compareTwo(op, a, b)]
+      }
+
       case i of
-        READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+> genCallF(env, "Lread", emptyBuffer(), emptyBuffer()) <+ Mov (eax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+> genCallF(env, "Lwrite", singletonBuffer(Push(s)), singletonBuffer(Pop (eax)))]
-          esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-    }, [env, emptyBuffer ()], code)}
+        READ      -> let [s, env] = env.allocate in [env, code <+ Call("Lread") <+ Mov(eax, s)]
+      | WRITE     -> let [s, env] = env.pop in [env, code <+ Mov(s, edi) <+ Call("Lwrite")]
+      | LD(name)  -> let [s, env] = env.allocate in [env, code <+> move(env.loc(name), s)]
+      | ST(name)  -> let [s, env] = env.addGlobal(name).pop in [env, code <+> move(s, env.loc(name))]
+      | CONST(n)  -> let [s, env] = env.allocate in [env, code <+ Mov(L(n), s)]
+      | BINOP(op) -> case op of
+                       "+"  -> binMath("+")
+                     | "-"  -> binMath("-")
+                     | "*"  -> binMath("*")
+                     | "!!" -> logical("!!")
+                     | "&&" -> logical("&&")
+                     | "^"  -> binMath("^")
+                     | "/"  -> let [env, code] = div(env) in [env, code]
+                     | "%"  -> let [env, code] = mod(env) in [env, code]
+                     | "==" -> compare("==")
+                     | "!=" -> compare("!=")
+                     | "<=" -> compare("<=")
+                     | "<"  -> compare("<")
+                     | ">=" -> compare(">=")
+                     | ">"  -> compare(">")
+                     esac
+
+      | LABEL (s)    -> [env, code <+ Label(s)]
+      | JMP   (l)    -> [env, code <+ Jump(l)]
+      | CJMP  (c, l) -> let [x, env] = env.pop in [env, code
+                            <+> binop("cmp", x, L(0))
+                            <+  CJmp(c, l)
+                          ]
+
+      esac
+    }, [env, emptyBuffer()], code)
+}
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
