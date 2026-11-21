@@ -119,7 +119,26 @@ fun eval (env, w, insns) {
   -- Core interpreter: takes a configuration and a program, returns a configuration
   (* Assignment *)
   fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+    let [stack, state, w] = c in
+      case insns of
+         READ : p -> let [z, w1] = readWorld(w) in eval(env, [z : stack, state, w1], p)
+         | WRITE : p -> let z:s = stack in eval(env, [s, state, writeWorld(z, w)], p)
+         | BINOP(op) : p -> let y:x:s = stack in eval(env, [evalOp(op, x, y) : s, state, w], p)
+         | LD(x) : p -> eval(env, [state(x) : stack, state, w], p)
+         | LDA(x) : p -> eval(env, [x : stack, state, w], p)
+         | ST(x) : p -> let z:s = stack in eval(env, [z:s, state <- [x, z], w], p)
+         | STI : p -> let z:x:s = stack in eval(env, [z:s, state <- [x, z], w], p)
+         | CONST(n) : p -> eval(env, [n : stack, state, w], p)
+         | LABEL (s) : p -> eval(env, c, p)
+         | JMP (l) : p -> eval(env, c, env.fromLabel(l))
+         | CJMP (suff, l) : p -> let z:s = stack in c := [s, state, w];
+                                  case suff of
+                                    "z" -> if z == 0 then eval(env, c, env.fromLabel(l)) else eval(env, c, p) fi
+                                    | "nz" -> if z != 0 then eval(env, c, env.fromLabel(l)) else eval(env, c, p) fi
+                                  esac
+         | DROP : p -> let x:s = stack in eval(env, [s, state, w], p)
+         | _ -> c
+      esac
   }
   (* End *)
   
@@ -365,7 +384,50 @@ public fun compileSM (stmt) {
     | Var    (x)        -> [false, env, singletonBuffer (LD (x))]
     | Ref    (x)        -> [false, env, singletonBuffer (LDA (x))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | _                 ->  failure ("compileSM not implemented\n")
+    | Binop (op, l, r)  -> let [rLab, binopLab, env] = env.genLabels(2) in
+                            let [rLabUsed, env, lCode] = compile (rLab, env, l) in
+                              let [binopLabUsed, env, rCode] = compile (binopLab, env, r) in
+                                [false, env, lCode <+> label (rLab, rLabUsed) <+> rCode <+> label (binopLab, binopLabUsed) <+ BINOP (op)]
+    | Ignore (e)        -> let [dropLab, env] = env.genLabel in 
+                            let [dropLabUsed, env, eCode] = compile (dropLab, env, e) in 
+                              [false, env, eCode <+> label (dropLab, dropLabUsed) <+ DROP]
+    | Read  (x)      -> [false, env, singletonBuffer (READ) <+ ST (x)]
+    | Write (e)      -> let [writeLab, env] = env.genLabel in 
+                          let [writeLabUsed, env, eCode] = compile (writeLab, env, e) in 
+                            [false, env, eCode <+> label (writeLab, writeLabUsed) <+ WRITE]
+    | Assn  (x, e)   -> let [eLab, stiLab, env] = env.genLabels(2) in
+                          let [eLabUsed, env, xCode] = compile (eLab, env, x) in 
+                            let [stiLabUsed, env, eCode] = compile (stiLab, env, e) in 
+                              [false, env, xCode <+> label (eLab, eLabUsed) <+> eCode <+> label (stiLab, stiLabUsed) <+ STI]
+    | Seq   (s1, s2) ->
+        case env.genLabel of
+          [s2Lab, env] ->
+             case compile (s2Lab, env, s1) of
+               [s2LabUsed, env, s1Code] ->
+                  case compile (lab, env, s2) of
+                    [labUsed, env, s2Code] -> [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
+                  esac
+             esac
+        esac
+    | If (e, s1, s2) -> let [jmpLab, s2Lab, env] = env.genLabels(2) in
+                          let [jmpLabUsed, env, eCode] = compile (jmpLab, env, e) in
+                            let [_, env, s1Code] = compile (lab, env, s1) in
+                              let [_, env, s2Code] = compile (lab, env, s2) in
+                                [
+                                  true, env, 
+                                  eCode <+> label (jmpLab, jmpLabUsed) <+ CJMP ("z", s2Lab) <+> s1Code <+ JMP (lab) <+ LABEL (s2Lab) <+> s2Code
+                                ]
+    | While (e, body) -> let [eLab, bodyLab, env] = env.genLabels(2) in
+                          let [_, env, bodyCode] = compile (eLab, env, body) in
+                            let [_, env, eCode] = compile (lab, env, e) in
+                              [
+                                false, env, 
+                                singletonBuffer (JMP (eLab)) <+ LABEL (bodyLab) <+> bodyCode <+ LABEL (eLab) <+> eCode <+ CJMP ("nz", bodyLab)
+                              ]
+    | DoWhile (body, e) -> let [eLab, bodyLab, env] = env.genLabels(2) in
+                            let [_, env, bodyCode] = compile (eLab, env, body) in
+                              let [_, env, eCode] = compile (lab, env, e) in
+                                [false, env, singletonBuffer (LABEL (bodyLab)) <+> bodyCode <+ LABEL (eLab) <+> eCode <+ CJMP ("nz", bodyLab)]
     esac
   }
 
