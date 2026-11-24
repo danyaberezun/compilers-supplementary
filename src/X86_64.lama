@@ -92,7 +92,7 @@ fun insnString (insn) {
   }
   
   case insn of
-    Cltd               -> "\tcqo\n"
+    Cqo                -> "\tcqo\n"
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
   | Sal   (s)          -> sprintf ("\tsalq\t%s\n", s)
   | IDiv  (s1)         -> sprintf ("\tidivq\t%s\n", opndString (s1))
@@ -335,6 +335,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -361,24 +362,105 @@ fun suffix (op) {
   esac
 }
 
+fun logicOp (op) {
+    case op of
+        "&&" -> true
+    |   "!!" -> true
+    |   _ -> false
+    esac
+}
+
+fun divOp (op) {
+    case op of
+        "/" -> true
+    |   "%" -> true
+    |   _   -> false
+    esac
+}
+
+fun arithmAndNotDivOp (op) {
+    case op of
+        "+" -> true
+    |   "-" -> true
+    |   "*" -> true
+    |   _   -> false
+    esac
+}
+
+fun doOp (op, src, dst) {
+    let al = "%al" in
+    let dl = "%dl" in
+    let cmp = "cmp" in 
+    move (dst, rax) <+>
+    (if logicOp(op)
+    then 
+        let suf = "ne" in
+        move(src, rdx) <+
+        Binop (cmp, L(0), rax) <+
+        Mov (L (0), rax)<+
+        Set (suf, al) <+
+        Binop (cmp, L(0), rdx) <+
+        Mov (L (0), rdx)<+
+        Set (suf, dl) <+
+        Binop (op, rdx, rax)
+    else
+        if divOp(op)
+        then 
+            singletonBuffer(Cqo) <+
+            IDiv(src) <+>
+            (case op of 
+                "%" -> singletonBuffer(Mov (rdx, rax))
+             |  _ -> emptyBuffer()
+             esac)
+        else
+            if arithmAndNotDivOp(op)
+            then singletonBuffer(Binop(op, src,rax))
+            else 
+                let suf = suffix(op) in
+                singletonBuffer(Binop (cmp, src, rax)) <+
+                Mov (L (0), rax)<+
+                Set (suf, al)
+            fi
+        fi
+    fi) <+> move(rax, dst)
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        
       case i of
-        READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (rax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
-          esac
+        READ             -> let [s, env] = env.allocate in [env, code <+ Call ("Lread") <+ Mov (rax, s)]
+      | WRITE            -> let [s, env] = env.pop in [env, code <+ Mov (s, rdi) <+ Call ("Lwrite")]
+      | CONST (n)        -> let [location, env] = env.allocate in [env, code <+ Mov (L(n), location)]
+      | ST (name)        -> 
+        let env = env.addGlobal(name) in
+        let [from, env] = env.pop in 
+        let to = env.loc(name) in 
+            [env.push(from), code <+> move(from, to)]
+      | STI ->
+          let [s, rx, env] = env.pop2 in
+          let [dst, env] = env.allocate in
+              [env, code <+> move (rx, rdx) <+> move (s, I(0, rdx)) <+> move (s, dst)]
+      | LD (name)        -> 
+        let [to, env] = env.allocate in
+        let from = env.loc(name) in 
+            [env, code <+> move(from, to)]
+      | LDA (name) ->
+          let [s, env] = env.addGlobal(name).allocate in
+              [env, code <+ Lea (env.loc(name), rax) <+> move(rax, s)]
+      | BINOP (op)       ->  let [src, dst, env] = env.pop2 in [env.push(dst), code <+> doOp(op, src, dst)]
+      | JMP (lab)        -> [env.setStack(lab).setBarrier, code <+ Jmp (lab)]
+      | LABEL (lab)      ->
+          let env = if env.isBarrier then env.retrieveStack(lab) else env.setStack(lab) fi in
+              [env, code <+ Label (lab)]
+      | CJMP (cond, lab) -> let [from, env] = env.pop in [env.setStack(lab), code <+> move(from, rax) <+ Binop ("cmp", L(0), rax) <+ CJmp (cond, lab)]
+      | DROP -> let [_, env] = env.pop in [env, code]
+      | DUP -> let from = env.peek in let [to, env] = env.allocate in [env, code <+> move(from, to)]
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
+      esac
     }, [env, emptyBuffer ()], code)
 }
 
