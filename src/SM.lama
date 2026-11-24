@@ -72,16 +72,16 @@ fun eval (env, cfg, insns) {
                       let nw = writeWorld(head, world) in 
                       eval(env, [tail, state, nw], rest)
 
-      | BINOP(s)   -> let y: x: tail = stack in 
-                      eval(env, [evalExpr(state, Binop(s, Const(x), Const(y))) : tail, state, world], rest)
+      | BINOP (s) ->  let y : x : tail = stack in 
+                      eval (env, [evalOp (s, x, y) : tail, state, world], rest)
 
       | LD(x)      -> eval(env, [state(x) : stack, state, world], rest)
-      | ST(x)      -> let head: tail = stack in 
-                      eval(env, [tail, state <- [x, head], world], rest)
+      | ST(x)      -> let head : tail = stack in 
+                      eval(env, [stack, state <- [x, head], world], rest)
 
-      | CONST(n)     -> eval(env, [n : stack, state, world], rest)
-      | LABEL(s)     -> eval(env, cfg, rest)
-      | JMP(l)       -> eval(env, cfg, env.fromLabel(l))
+      | CONST(n)   -> eval(env, [n : stack, state, world], rest)
+      | LABEL(s)   -> eval(env, cfg, rest)
+      | JMP(l)     -> eval(env, cfg, env.fromLabel(l))
 
       | CJMP("z", l) -> let x : stackRest = stack in 
                         if x == 0
@@ -94,6 +94,10 @@ fun eval (env, cfg, insns) {
                          then eval(env, [stackRest, state, world], env.fromLabel(l)) 
                          else eval(env, [stackRest, state, world], rest) 
                          fi      
+      | STI    -> let v : ref : stack = stack in eval (env, [v : stack, state <- [ref, v], world], rest)
+      | DUP    -> let head : stack = stack in eval (env, [head : head : stack, state, world], rest)
+      | DROP   -> let _ : stack = stack in eval (env, [stack, state, world], rest)
+      | LDA(i) -> eval (env, [i : stack, state, world], rest)
       
       esac
     esac
@@ -134,21 +138,6 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
--- Compiles an expression into a stack machine code.
-<<<<<<< HEAD
--- Takes an expression, returns a list of stack machine
--- instructions.
-public fun compileSM (stmt) {
-=======
--- Takes an expression, returns a list of stack machine instructions
-fun compileExpr (expr) {
-   case expr of
-     Var(v)                 -> singletonBuffer(LD(v))
-   | Const(c)               -> singletonBuffer(CONST(c))
-   | Binop(op, left, right) -> compileExpr(left) <+> compileExpr(right) <+ BINOP(op)
-   esac
-}
-
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
@@ -160,42 +149,73 @@ public fun compileSM (stmt) {
     fi
   }
   
-  fun compile (lab, env, stmt) {
-    case stmt of
-      Skip           -> [false, env, emptyBuffer ()]
-    | Read  (x)      -> [false, env, singletonBuffer (READ) <+ ST (x)]
-    | Write (e)      -> [false, env, compileExpr (e) <+ WRITE]
-    | Assn  (x, e)   -> [false, env, compileExpr (e) <+ ST (x)]
-    | Seq   (s1, s2) ->
-        case env.genLabel of
-          [s2Lab, env] ->
-             case compile (s2Lab, env, s1) of
-               [s2LabUsed, env, s1Code] ->
-                  case compile (lab, env, s2) of
-                    [labUsed, env, s2Code] -> [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
-                  esac
-             esac
-        esac
+  fun compile (lab, env, expr) {
+    case expr of
+      Skip              -> [false, env, emptyBuffer ()]
+    | Var(x)            -> [false, env, singletonBuffer (LD(x))]
+    | Ref(x)            -> [false, env, singletonBuffer (LDA(x))]
+    | Const(c)          -> [false, env, singletonBuffer (CONST(c))]
+
+    | Ignore(e)         ->  let [dropLab, env] = env.genLabel in 
+                            let [labUsed, env, code] = compile (dropLab, env, e) in 
+                            [false, env, code <+> label (dropLab, labUsed) <+ DROP]
+
+    | Binop(op, e1, e2) ->  let [e2Lab, binopLab, env] = env.genLabels (2) in  
+                            let [lab2Used, env, e1code] = compile (e2Lab, env, e1) in
+                            let [binopLabUsed, env, e2code] = compile (binopLab, env, e2) in
+                            [false, env,  
+                                    e1code 
+                                <+> label (e2Lab, lab2Used) 
+                                <+> e2code 
+                                <+> label (binopLab, binopLabUsed) 
+                                <+  BINOP(op)
+                              ]  
+
+
+    | Read(x)           -> [false, env, singletonBuffer (READ) <+ ST (x) <+ DROP]
+
+    | Write(e)          ->  let [writeLab, env] = env.genLabel in
+                            let [labUsed, env, code] = compile (writeLab, env, e) in 
+                            [false, env, code <+> label (writeLab, labUsed) <+ WRITE]
+
+    | Assn(x, e)        ->  let [eLab, stiLab, env] = env.genLabels (2) in
+                            let [eLabUsed, env, xCode] = compile (eLab, env, x) in 
+                            let [stiLabUsed, env, eCode] = compile (stiLab, env, e) in 
+                            [false, env, 
+                                    xCode 
+                                <+> label (eLab, eLabUsed) 
+                                <+> eCode
+                                <+> label (stiLab, stiLabUsed)  
+                                <+  STI
+                              ]
     
-    | If(expr, s1, s2) -> 
-        let [s2Lab, env] = env.genLabel in 
-        let [_, env, s1Code] = compile(lab, env, s1) in 
-        let [_, env, s2Code] = compile(lab, env, s2) in 
-        let code =  compileExpr(expr)
-                <+  CJMP("z", s2Lab) 
-                <+> s1Code
+    | Seq(s1, s2)       ->  let [s2Lab, env] = env.genLabel in 
+                            let [s2LabUsed, env, s1Code] = compile (s2Lab, env, s1) in
+                            let [labUsed, env, s2Code] = compile (lab, env, s2) in
+                            [labUsed, env, s1Code <+> label (s2Lab, s2LabUsed) <+> s2Code]
+    
+    | If(cond, th, els) -> 
+        let [cjmpLab, elsLab, env] = env.genLabels (2) in 
+        let [cjmpLabUsed, env, condCode] = compile (cjmpLab, env, cond) in
+        let [_, env, thCode] = compile (lab, env, th) in 
+        let [_, env, elsCode] = compile (lab, env, els) in 
+        let code =  condCode
+                <+> label (cjmpLab, cjmpLabUsed)
+                <+  CJMP("z", elsLab) 
+                <+> thCode
                 <+  JMP(lab)
-                <+  LABEL(s2Lab)
-                <+> s2Code
+                <+  LABEL(elsLab)
+                <+> elsCode
         in  
           [true, env, code]
 
-    | While(expr, s) ->
-        let [startLab, env] = env.genLabel in 
-        let [bodyLab, env] = env.genLabel in 
-        let [_, env, bodyCode] = compile(startLab, env, s) in 
-        let code = label(startLab, true)
-               <+> compileExpr(expr)
+    | While(cond, body) ->
+        let [cjmpLab, startLab, bodyLab, env] = env.genLabels (3) in 
+        let [cjmpLabUsed, env, condCode] = compile (cjmpLab, env, cond) in 
+        let [_, env, bodyCode] = compile (startLab, env, body) in 
+        let code = label (startLab, true)
+               <+> condCode
+               <+> label (cjmpLab, cjmpLabUsed)
                <+  CJMP("nz", bodyLab)
                <+  JMP(lab)
                <+  LABEL(bodyLab)
@@ -204,14 +224,15 @@ public fun compileSM (stmt) {
         in 
           [true, env, code]
 
-    | DoWhile(s, expr) ->
-        let [startLab, env] = env.genLabel in 
-        let [bodyLab, env] = env.genLabel in 
-        let [_, env, bodyCode] = compile(startLab, env, s) in 
+    | DoWhile(body, cond) ->
+        let [cjmpLab, startLab, bodyLab, env] = env.genLabels (3) in 
+        let [cjmpLabUsed, env, condCode] = compile (cjmpLab, env, cond) in 
+        let [_, env, bodyCode] = compile (startLab, env, body) in 
         let code = singletonBuffer(
                     JMP(bodyLab))
                 <+  LABEL(startLab)
-                <+> compileExpr(expr)
+                <+> condCode
+                <+> label (cjmpLab, cjmpLabUsed)
                 <+  CJMP("nz", bodyLab)
                 <+  JMP(lab)
                 <+  LABEL(bodyLab)
